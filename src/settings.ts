@@ -229,7 +229,7 @@ export class SpecgitSettingTab extends PluginSettingTab {
   }
 
   private redraw(): void {
-    if (this.declarative && requireApiVersion("1.13.0")) {
+    if (requireApiVersion("1.13.0") && this.declarative) {
       this.flush();
       this.updating = true;
       try {
