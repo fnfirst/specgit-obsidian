@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an improvement for specgit for Obsidian
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow or problem you want to solve.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Proposed behavior or context
+      description: Share any details, constraints, or examples that would help.

@@ -1,0 +1,31 @@
+name: Bug report
+description: Report something broken in specgit for Obsidian
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Please avoid sharing tokens, private note text, or sensitive repository details in public issues. For private support, visit https://specgit.com/support.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe what went wrong and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a note in...
+        2. Select...
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Environment
+      description: Plugin version, Obsidian version, and OS/device (for example, 0.3.5, Obsidian 1.15.0, macOS or iOS).
+    validations:
+      required: true
