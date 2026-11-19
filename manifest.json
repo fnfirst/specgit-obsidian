@@ -1,7 +1,7 @@
 {
   "id": "specgit",
   "name": "specgit",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "minAppVersion": "1.11.5",
   "description": "Edit notes live with your team, comment on them, and send them for review in your own GitHub repository. No repository yet? Put your vault on GitHub, free.",
   "author": "FnFirst",

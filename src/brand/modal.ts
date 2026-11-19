@@ -23,20 +23,13 @@ export abstract class SpecgitModal extends Modal {
 function brandOver(title: HTMLElement): void {
   const header = title.parentElement;
   if (!header) return;
-  const doc = title.ownerDocument;
-  const brand = doc.createElement("div");
-  brand.className = "specgit-modal-brand";
-  const logo = doc.createElement("span");
-  logo.className = "specgit-modal-logo";
-  drawLogo(logo).setAttribute("aria-hidden", "true");
-  const word = doc.createElement("span");
-  word.className = "specgit-wordmark";
-  const git = doc.createElement("span");
-  git.className = "specgit-wordmark-git";
 
-  git.append("git");
-  word.append("spec", git);
-  brand.append(logo, word);
+  const brand = header.createDiv({ cls: "specgit-modal-brand" });
+  drawLogo(brand.createSpan({ cls: "specgit-modal-logo" })).setAttribute("aria-hidden", "true");
+
+  const word = brand.createSpan({ cls: "specgit-wordmark" });
+  word.append("spec");
+  word.createSpan({ cls: "specgit-wordmark-git" }).append("git");
   header.insertBefore(brand, title);
 }
 

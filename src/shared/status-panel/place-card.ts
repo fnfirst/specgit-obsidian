@@ -69,7 +69,7 @@ export function positionCard(card: HTMLElement, anchor: HTMLElement, pane: Eleme
     if (style.overflowY !== "visible") clip = { ...clip, top: Math.max(clip.top, rectOf(el).top), bottom: Math.min(clip.bottom, rectOf(el).bottom) };
   }
 
-  card.style.maxHeight = "";
+  card.style.removeProperty("max-height");
   card.style.maxWidth = `${Math.max(0, clip.right - clip.left - 2 * CARD_EDGE)}px`;
   const size = { width: card.offsetWidth, height: card.offsetHeight };
   const control = rectOf(anchor);
