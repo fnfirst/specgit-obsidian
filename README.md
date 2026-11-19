@@ -1,154 +1,142 @@
 # specgit for Obsidian
 
-**Write notes with your team, live, and send them for review in your own GitHub repository.**
+**Edit notes live, auto-sync your vault, comment inline, and review or publish changes to your GitHub repository without thinking about Git.**
 
-A vault on GitHub is a good home for a team's notes. Writing in it together is the hard part. Two people change the same note, and one of them loses their words. Feedback lands somewhere else, far from the sentence it's about. And sending anything for review means someone on the team has to run Git.
+GitHub is a dependable home for an Obsidian vault: every edit has an author and a history, and engineers already work there. Keeping a vault in step across devices or writing in it with a team is where things break down. Concurrent edits collide, feedback gets scattered across tools, and publishing asks everyone to learn Git.
 
-specgit already solves this for Obsidian vaults in your browser. This plugin brings it inside Obsidian: the same live editing together, the same comments, and the same easy path to GitHub. It works in Obsidian on your computer and on your phone. The plugin is free, and specgit has a free plan.
+[specgit.com](https://specgit.com) already gives individuals and teams a visual editor for Obsidian vaults in the browser, keeping your Markdown, Canvas boards, and Bases files intact. This plugin brings the best of specgit inside Obsidian on desktop and phone, connecting everyday actions (saving, commenting, and publishing) directly to how GitHub works (commits, pull request review threads, and merges). Teammates can join you from their own Obsidian app, from a browser on specgit.com, or through a connected agent, while your GitHub repository stays the source of truth.
 
-![The specgit panel on the right side of Obsidian. At the top is a card for the open note with a Submit for review button. Below it is a list of the vault's other changed notes, each with a tick box.](docs/images/panel.png)
+The plugin is free and open source (MIT), specgit includes a Free plan, and Zero Content Retention means we never keep a copy of your documents or comments.
 
-## Write together, live
+![The specgit panel on the right side of Obsidian, showing the open note card with Submit for review and a list of other changed notes below](docs/images/panel.png)
 
-You open the spec you're writing. It starts **Local**: an ordinary note that nobody else sees. When you want your tech lead in it, you choose **Connect Live** in the specgit panel. They can join from their own Obsidian, from specgit in a browser, or through an agent. You see their cursor with their name, and what either of you types shows up for both. Undo only takes back your own words. When you're done, **Disconnect** makes the note Local again and stops sharing right away.
+## What you can do
 
-If anything changed while you were away, specgit tells you when you connect, and **See changes** shows you what. If you and your tech lead changed the same words, specgit shows you each place before it changes anything. For each one, you keep yours, keep theirs, keep both, or edit it yourself. Nothing is chosen for you. If you close that screen, your note stays Local, and nothing is lost.
+### Live editing, when you want it
 
-![A screen with one card for each place where you and a teammate changed the same words, with Keep mine, Keep theirs, Keep both and Edit](docs/images/choose-what-to-keep.png)
+Every note starts **Local** as an ordinary Markdown file that stays on your device. When you want to collaborate, select **Connect Live** in the specgit panel. Teammates editing the same note in Obsidian, on [specgit.com](https://specgit.com), or through a connected agent appear as live cursors with their names and avatars. Undo only reverts your own edits, and **Disconnect** returns the note to Local right away.
 
-## Talk about the exact words
+Nothing changes silently. If a note changed while you were offline or Local, specgit tells you when you connect and lets you inspect the diff with **See changes**. When two people edit the same lines, specgit opens a conflict resolution screen with one card per overlapping edit, letting you pick **Keep mine**, **Keep theirs**, **Keep both**, or **Edit**. Closing that screen leaves your note Local with nothing lost.
 
-Your tech lead isn't sure about one requirement. They select it and choose **Comment with specgit**, and those words are underlined in your note. You read the question in the panel's **Comments** tab, reply, and resolve it once you agree. Anyone can reopen it later. When they suggest new wording, **Apply suggestion** puts it into your note. The underlines are only marks on the screen. They never change your note.
+![Conflict resolution screen showing one card per overlapping edit, with Keep mine, Keep theirs, Keep both, and Edit buttons](docs/images/choose-what-to-keep.png)
 
-![The Comments tab: a teammate's question beside the words it's about, which are underlined in the note](docs/images/comments.png)
+### Inline comments anchored to the text
 
-## Send it for review, then publish
+Select any passage and choose **Comment with specgit** to open a review thread tied to those words. Read, reply, resolve, and reopen threads in the **Comments** tab, or apply a teammate's proposed wording with **Apply suggestion**. Comment highlights are visual markers only and never alter your Markdown.
 
-The panel's **Status** tab keeps track of everything in progress: the notes, Canvas boards and Bases files you changed, the reviews you sent, and the reviews waiting for you. Each one is marked with where it stands, like **Draft**, **In review** or **Ready to publish**. When the spec is ready, you choose **Submit for review** and pick your tech lead. If you finished three notes, you tick all three and send them together. On the Pro and Pro Plus plans, **Group together** sends several notes as one review.
+![The Comments tab beside a note, with an open review thread anchored to underlined text](docs/images/comments.png)
 
-Your tech lead approves the spec or asks for changes, from Obsidian or from specgit in a browser. Once it's approved, you choose **Publish**, and the spec becomes the version everyone sees in your GitHub repository. Publishing is always your click, and every save leaves an audit trail.
+### Review and publish from one Status panel
 
-## Stay connected all day
+The **Status** tab tracks every draft, changed note, Canvas board, and Bases file in your linked folder, along with reviews waiting on you. Each row shows its state (**Draft**, **In review**, **Ready to publish**, and more). Select one or several files to **Submit for review**, assign reviewers, **Approve** or **Ask for changes** inside Obsidian, and **Publish** once approved.
 
-Some days you're in the vault from morning to night. **Stay connected** is off until you turn it on, with the switch at the top of the panel. While it's on, your whole vault stays up to date without opening each note, and notes open Live. A few seconds after you stop typing, your edits are saved to a draft. Nothing goes for review until you choose. Your teammates' changes, and your own from your other devices, come into your notes by themselves. Where you and a teammate changed the same words, nothing changes until you choose. You decide whether teammates' unpublished changes are added to your notes (the default) or offered to you first. Stay connected never publishes, and it never sends a delete on its own.
+On Pro and Pro Plus plans, **Group together** combines multiple related files into one review (a single pull request in GitHub) so they are reviewed and published as a set. Publishing always takes your explicit click.
 
-## No repository yet?
+Canvas live editing, Writing mode, Riff, and Ask Agent live on [specgit.com](https://specgit.com), one click away via **Open in specgit**.
 
-If your vault lives only on your computer, or in a folder like Google Drive, choose **Put this vault on GitHub**. It's free. specgit makes a new repository on your GitHub account and uploads your vault to it. The details are below.
+### Background sync with Stay connected
 
-For everything else specgit does, visit [specgit.com](https://specgit.com) whenever you like.
+**Stay connected** is off by default. Turn it on at the top of the panel to keep your linked folder in step without opening each note:
 
-## Putting a vault on GitHub
+- Notes open live, and edits save to a draft a few seconds after you stop typing.
+- Published changes and edits from your other devices flow into your vault automatically.
+- You choose in settings whether teammates' unpublished drafts apply automatically or ask first.
+- Overlapping edits always wait for your choice, and Stay connected never publishes or deletes files on GitHub on its own.
 
-- **It's free.** It doesn't count toward your plan's limits. After that, your plan applies as usual. On the Free plan, this is your one repository.
-- **The new repository** is named after your vault and is private. You can change the name, or make it public, before you start.
-- **What goes up:** your notes, Canvas boards, Bases files, attachments and Obsidian settings, including themes and CSS snippets. specgit also adds a small file named `.gitignore` that keeps everything else out.
-- **What stays on your computer:** community plugins and their settings, because they can hold passwords and keys. Obsidian installs them again from your plugin list. The window layout, the trash and files over 20 MB stay too. specgit tells you how many files stay behind.
-- **The first time,** GitHub opens a page to add specgit to your account. specgit can make a repository for you. It can't change a repository's settings, delete one or give one away.
-- **While it uploads,** you can hide the upload, but keep Obsidian open. If the upload stops, **Continue** picks up where it left off.
+### Put a local vault on GitHub, free
+
+If your vault isn't on GitHub yet, choose **Put this vault on GitHub** from the panel, the repository picker, or the command palette. specgit creates a private GitHub repository (or public, if you switch it) and uploads your vault.
+
+- **Free and unmetered:** creating and uploading the repository doesn't count against your plan limits. After setup, your plan applies as usual (on Free, it becomes your one repository).
+- **Uploaded:** notes, Canvas boards, Bases files, attachments (up to 20 MB each), Obsidian settings, themes, CSS snippets, and a `.gitignore` file.
+- **Kept local:** community plugins and their settings (so passwords and API keys never leave your device), window layouts, Obsidian's trash, and files over 20 MB.
+- **Scoped permissions:** GitHub asks once to let specgit create repositories on your account. specgit cannot change repository settings, delete a repository, or transfer one.
+- **Resumable:** you can hide the progress view while keeping Obsidian open; if interrupted, **Continue** picks up where it left off.
 
 ## Get started
 
-1. In Obsidian, open **Settings**, then **Community plugins**. Search for "specgit", install it and turn it on.
-2. In **Settings**, open **specgit** and choose **Sign in**. Your browser opens specgit. Choose **Allow**, confirm with GitHub, then choose **Open Obsidian** to come back.
-3. Choose **Choose repository** and pick the GitHub repository your notes are in. specgit finds the folder in your vault that matches it. Confirm it, or choose another folder or the whole vault. Notes outside that folder stay in this vault only, and the plugin never touches them.
-   No repository yet? Choose **Put this vault on GitHub** instead.
-4. If the repository has notes your vault doesn't, specgit offers to copy them in. It never writes over a note you already have.
-5. Open a note and choose **Connect Live** in the specgit panel. To open the panel, click the specgit icon in the ribbon, or run the **Open specgit** command.
+1. Open **Settings → Community plugins**, search for `specgit`, install it, and turn it on.
+2. Open **Settings → specgit** and select **Sign in**. Your browser opens specgit to confirm with GitHub and returns you to Obsidian.
+3. Select **Choose repository** to pick an existing GitHub repository and confirm the matching vault folder, or select **Put this vault on GitHub** to create a new one. Notes outside the linked folder are never touched.
+4. If the repository has notes missing from your vault, select **Copy them in** (existing files are never overwritten).
+5. Open a note and select **Connect Live** in the specgit panel (open it from the ribbon icon or the **Open specgit** command).
 
-![The specgit panel before signing in: a short welcome and one Sign in button](docs/images/welcome.png)
+![The specgit panel before signing in, showing a short welcome and a Sign in button](docs/images/welcome.png)
 
-## What it looks like
+## Desktop and mobile
 
-The panel uses Obsidian's own colors and fonts, in light mode, dark mode and community themes. On a phone, the panel is in the right-hand drawer.
+The panel uses Obsidian's native colors and typography across light mode, dark mode, and community themes. On mobile, it opens in the right sidebar drawer.
 
-| | |
+| Dark theme | Mobile |
 | --- | --- |
 | ![The specgit panel in Obsidian's dark theme](docs/images/panel-dark.png) | ![The specgit panel open in Obsidian on a phone, showing the Status tab](docs/images/phone.png) |
 
-## Before you use it
+## Requirements and plans
 
-- **A specgit account is required.** You sign in with GitHub.
-- **Payment is optional.** The plugin is free, and specgit has a free plan.
-- **Your notes need to be in a GitHub repository you can edit**, or one the plugin makes for you. specgit saves to that repository. The plugin never writes to GitHub itself.
+- **Account required:** you sign in with GitHub to use specgit.
+- **Payment optional:** the plugin is free and open source, and specgit includes a Free plan.
+- **GitHub repository:** your notes live in a GitHub repository you can edit (read-only repositories open live in read-only mode), or one created with **Put this vault on GitHub**.
 
-## Plans
+| Plan | Price | Includes |
+| --- | --- | --- |
+| **Free** | $0 | Unlimited collaborators, 1 repository, 5 publishes a month |
+| **Pro** | $8/seat/month ($6.40/seat/month billed yearly) | Unlimited repositories, unlimited publishes, **Group together** |
+| **Pro Plus** | $16/seat/month ($12.80/seat/month billed yearly) | Everything in Pro, plus $10/month of agent usage per seat on specgit.com |
 
-- **Free:** unlimited collaborators, so your whole team can comment, write drafts and edit live. 1 repository and 5 publishes a month.
-- **Pro:** unlimited repositories and unlimited publishes, plus **Group together**. You pay for editors only. Viewers and commenters are free.
-- **Pro Plus:** everything in Pro, plus agent usage included every month.
+Only editors use paid seats; viewing and commenting are free. Full details are at [specgit.com/pricing](https://specgit.com/pricing).
 
-Prices and full details are at [specgit.com/pricing](https://specgit.com/pricing).
+## Privacy and disclosures
 
-## Privacy
+Zero Content Retention: we never keep a copy of your documents or comments. While people edit a note together, specgit holds temporary live-editing state to sync and save changes to your GitHub repository. See retention details in the [Privacy Policy](https://specgit.com/privacy).
 
-Zero Content Retention: we never keep a copy of your documents or comments. While people are editing a note, specgit's service holds the note's live state, then saves the note to your GitHub repository. Our privacy policy says how long the live state is kept: [specgit.com/privacy](https://specgit.com/privacy).
+The plugin contains no client-side analytics or tracking.
 
-### Who the plugin talks to
+### Network services used
 
-The plugin talks to three services and nothing else. It has no analytics or tracking of any kind.
+| Service | Purpose |
+| --- | --- |
+| `specgit.com` | Sign-in (GitHub login, display name, avatar URL), pre-connect room presence count, short-lived room tokens, GitHub file comparisons, reading/posting/resolving comments, repository and file metadata for the Status tab (names and Git IDs, never file text), submitting reviews and publishing on your click, creating/uploading a vault on **Put this vault on GitHub**, and sending **Report a problem** submissions when you press **Send**. |
+| `wss://specgit.com/realtime` | Real-time sync of live note text and cursor positions with other people in the note. |
+| `avatars.githubusercontent.com` and `private-avatars.githubusercontent.com` | Loading collaborator profile pictures. No auth token or note metadata is sent; initials are shown if unavailable. |
 
-**specgit.com**, to:
+Your notes and comments reach GitHub only through specgit; profile pictures are the only direct requests to GitHub. An **Advanced** setting lets developers point the plugin at a custom specgit server.
 
-- sign you in, and get your GitHub login, your name and the address of your profile picture
-- tell you how many people are in a note before you connect (just the number, and nobody is told you asked)
-- get a short-lived token for each note you connect
-- get GitHub's copy of a note when the plugin needs to compare it with yours
-- read, post and resolve comments
-- list your repositories, and the names and file IDs of the files in the one you chose, for the Status tab (never the files' text)
-- send notes for review and publish them, only when you press the button
-- make a repository and upload your vault, only when you choose **Put this vault on GitHub**
-- send a problem report, only when you press **Send**
+### Data leaving your device
 
-**specgit's live service** (`wss://specgit.com/realtime`), to share a live note's text and your cursor with the people in it.
+- **Live note text:** only for notes you explicitly connect (or while **Stay connected** is enabled). Local notes send nothing.
+- **Repository name and note path:** sent without note text when comparing a note against GitHub.
+- **Identity and cursor position:** your name, GitHub login, avatar URL, and cursor position while in a live note.
+- **Comments:** your comment text and selected passage, posted to GitHub as review comments.
+- **Vault files on onboarding:** only when you run **Put this vault on GitHub**; specgit keeps no copy.
+- **Problem reports:** only when you press **Send** in **Report a problem**. You review and edit the text first. With **Include setup details** enabled, it attaches plugin/Obsidian versions, OS and device type, repository name, sign-in state, and whether the active note is Local or Live (never note names, paths, text, or tokens). Signed-out reports are copied locally instead of sent.
+- **Auth token:** stored in Obsidian's encrypted secret storage (Obsidian 1.11.5+), never in your vault files, and cleared on sign-out.
 
-**GitHub's picture servers** (`avatars.githubusercontent.com` and `private-avatars.githubusercontent.com`), to show people's profile pictures. The plugin asks only for the picture. It sends no token, and it doesn't say which note the picture is for. It loads pictures only from these two addresses. Otherwise it shows the person's initials.
+### Data stored locally
 
-Your notes and comments reach GitHub only through specgit. The pictures are the only thing the plugin asks GitHub for directly.
+- **Settings (`data.json`):** chosen repository, linked folder, cursor color, GitHub profile metadata, and server URL. The **Stay connected** toggle is stored per device only.
+- **File change index:** file sizes, modified times, and Git IDs for the linked folder, kept in Obsidian's per-vault local storage (outside your vault and not synced) so the Status tab only hashes changed files.
+- **Merge base cache:** recent matched text for connected notes (up to 300 notes / ~1 million characters, oldest evicted first) in Obsidian's per-vault local storage, used to merge offline changes cleanly.
+- **Temporary state:** connected note state and loaded comments exist in memory only while Obsidian is open. Interrupted **Put this vault on GitHub** metadata clears on completion or after 30 days. Problem reports are never saved on disk.
 
-Settings has an Advanced section that can point the plugin at a different specgit server.
+The plugin creates no files of its own in your vault beyond notes you explicitly pull in via **Copy them in** or **Stay connected**.
 
-### What leaves your device
+### Files accessed outside your vault
 
-- **The text of notes you connect**, as you type, so the people in the note can see it. Notes you haven't connected send nothing.
-- **A note's location, without its text.** When the plugin asks for GitHub's copy of a note (for example, the first time you open it), it sends the repository's name and the note's location in it.
-- **Your name, GitHub login, profile picture address and cursor position**, so people in a note can see who's there.
-- **Comments you send**, with the words you selected. specgit posts them to your repository as review comments.
-- **Your vault's files**, only when you choose **Put this vault on GitHub**. specgit keeps no copy.
-- **A problem report**, only when you press **Send**. You see it first and can edit it. It holds what you wrote, and your email address if you give one. If you turn on **Include setup details**, it also holds: the plugin and Obsidian versions, your operating system, whether you're on a computer, tablet or phone, the repository's name, whether you're signed in, and whether the open note is Local or Live. It never holds a note's name, location or text, or your token. It goes to specgit's support inbox under your GitHub login. We can reply only if you give an email address. If you're signed out, nothing is sent: the plugin copies your report and opens specgit's support page.
-- **A sign-in token**, so specgit knows it's you. It's kept in Obsidian's secure storage (encrypted from Obsidian 1.11.5), not in your vault's files. Signing out ends it.
+On desktop only, and only while **Stay connected** is enabled, the plugin reads `.git/logs/HEAD` and `.git/logs/refs/stash` (inside your vault's `.git` folder, a parent `.git` folder, or the target of a `.git` file) about once per second. This distinguishes Git operations like `pull` or `checkout` from your own typing so Git changes aren't submitted as new edits. The plugin reads nothing else outside your vault, writes nothing there, and sends none of it off your device. On mobile, it accesses nothing outside your vault.
 
-### What stays on your device
+### Open source and license
 
-- **Your settings:** the repository and folder you chose, your cursor color, your GitHub login, name and picture address, and the server. They're in the plugin's `data.json` file in your vault's `.obsidian` folder. Whether Stay connected is on is kept on this device only.
-- **A short record of each file** in that folder (its size, when it last changed, and its file ID), so the Status tab only checks what changed.
-- **Copies of notes you connect:** the text from when a note last matched its live copy, and the text it started as. These let specgit combine changes made while you were offline instead of writing over them. It keeps up to 300 notes and about a million characters, and drops the oldest first.
+This plugin is open source under the [MIT License](LICENSE). The specgit web app and realtime service are closed source.
 
-The file record and the note copies are kept in Obsidian's own storage for this vault. They aren't in your vault, aren't synced to your other devices, and aren't saved to your repository.
+## Support
 
-- **Which notes are connected, and the comments the panel shows**, only while Obsidian is open.
-- **An unfinished upload's details** (the new repository's name and when the upload began), so **Continue** can pick it up. They're removed when the upload finishes, or after 30 days.
-- **Problem reports are never kept** on your device.
+Use **Report a problem** in **Settings → specgit**, or visit [specgit.com/support](https://specgit.com/support).
 
-The plugin creates no files of its own. The only files it adds to your vault are notes from your repository that you asked for, through **Copy them in** or Stay connected. It never writes over a note you already have. With Stay connected on, it also brings your team's changes into your notes, as described above.
+## Build from source
 
-### Files outside your vault
-
-On a computer, and only while Stay connected is on, the plugin reads Git's own log for the repository your vault is in. That's the `HEAD` log and the stash log, in the `.git` folder of your vault's folder or a folder above it, or wherever a `.git` file there points. It checks about once a second. It does this only to tell a change Git made apart from your own typing, so a change Git made is never sent as yours. It reads nothing else outside your vault, writes nothing there, and sends none of it anywhere.
-
-On a phone, it reads nothing outside your vault.
-
-### Open source
-
-The plugin is open source under the MIT license. specgit's service (the website and the live service) isn't open source.
-
-## Questions or a problem?
-
-Use **Report a problem** in the plugin's settings, or go to [specgit.com/support](https://specgit.com/support).
-
-## Build
-
-    npm ci
-    npm run build
+```bash
+npm ci
+npm run build
+```
 
 Made by FnFirst.
