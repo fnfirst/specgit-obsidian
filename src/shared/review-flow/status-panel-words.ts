@@ -48,10 +48,15 @@ export const statusOtherStepLine = (row: StatusStep, chosen: StatusStep, checked
 
 export const STATUS_NO_STEP = {
   teammate: { name: "Someone else's", line: (who: string, step: "submit" | "publish"): string => `Only ${who || "the person who wrote it"} can ${step} it.` },
+  notInVault: { name: "Not in this vault", line: "Open the ⋯ menu and choose Bring into this vault to submit it here." },
+  propose: { name: "Propose instead", line: (repo: string): string => `Propose this to ${repo} from the card above.` },
   inReview: { name: "In review", line: "You can publish it once it's approved." },
+  changesRequested: { name: "Changes requested", line: "Update it before publishing." },
   outOfDate: { name: "Catch up first", line: "The published version changed." },
   changedInBoth: { name: "Choose what to keep first", line: "It changed here and on GitHub." },
   deleted: { name: "Deleted", line: "There's nothing to submit or publish." },
+  published: { name: "Published", line: "There are no unpublished changes to send." },
+  nothingToSend: { name: "No step right now", line: "There's nothing to submit or publish here." },
 } as const;
 
 export const statusHere = (logins: readonly string[]): string => `${statusWho(logins)} ${logins.length > 1 ? "are" : "is"} here`;
