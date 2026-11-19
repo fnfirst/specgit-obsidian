@@ -22,6 +22,7 @@ function restack(): void {
 
 function stack(notice: Notice): void {
   const box = notice.containerEl;
+  box.classList.add("specgit-notice-lasting-host");
   stacked.push(box);
   const container = box.parentElement;
   if (container && !stackWatch) {
@@ -64,12 +65,12 @@ export function showNoticeWithAction(message: string, label: string, run: () => 
     createFragment((fragment) => {
       if (!awareNotices) {
 
-        const body = fragment.createSpan({ cls: lasting ? "specgit-notice-lasting" : "specgit-notice-plain" });
+        const body = fragment.createSpan();
         words = body.createSpan({ text: message });
         body.createEl("button", { text: label, cls: "specgit-notice-action" }, (button) => button.addEventListener("click", act));
         return;
       }
-      const body = fragment.createSpan({ cls: lasting ? ["specgit-notice-body", "specgit-notice-lasting"] : "specgit-notice-body" });
+      const body = fragment.createSpan({ cls: "specgit-notice-body" });
       words = body.createSpan({ text: message });
 
       body.createEl("a", { text: label, cls: "specgit-notice-link", attr: { href: "#", role: "button" } }, (link) =>
@@ -92,7 +93,7 @@ export function showNoticeWithAction(message: string, label: string, run: () => 
 export function showNoticeWithActions(message: string, actions: ReadonlyArray<{ label: string; run: () => void }>, lasting = true): { shown(): boolean; hide(): void } {
   const notice: Notice = new Notice(
     createFragment((fragment) => {
-      const body = fragment.createSpan({ cls: lasting ? ["specgit-notice-body", "specgit-notice-lasting"] : "specgit-notice-body" });
+      const body = fragment.createSpan({ cls: "specgit-notice-body" });
       body.createSpan({ text: message });
       for (const action of actions) {
         body.createEl("a", { text: action.label, cls: "specgit-notice-link", attr: { href: "#", role: "button" } }, (link) =>

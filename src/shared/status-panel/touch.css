@@ -120,11 +120,10 @@
   transform: none;
 }
 
-.sp-coarse .sp-edge:not(:has(.sp-more)) {
+.sp-coarse .sp-edge.sp-edge-no-more {
   padding-inline-end: 30px;
 }
-.sp-coarse .sp-edge:has(.sp-more[aria-expanded="true"]) .sp-when,
-.sp-coarse .sp-edge:has(.sp-more:focus-visible) .sp-when,
+.sp-coarse .sp-edge.sp-edge-open .sp-when,
 .sp-coarse .sp-row:hover .sp-edge .sp-when,
 .sp-coarse .sp-row:focus-within .sp-edge .sp-when,
 .sp-coarse .sp-group:hover .sp-edge .sp-when,

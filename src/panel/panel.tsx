@@ -105,11 +105,12 @@ export function Panel({ model, actions, badges = NO_BADGES, comments }: { model:
       </div>
     );
   }
+  const statusTab = tab === "status" ? mine?.contents({ state, actions }).status : null;
   return (
     <div class="specgit-panel">
       <Header state={state} actions={actions} />
       <Tabs ids={ids} tab={tab} tabs={ALL_TABS} select={model.selectTab} badges={shown} />
-      <div class="specgit-panel-body" role="tabpanel" id={`${ids}-panel`} aria-labelledby={`${ids}-tab-${tab}`}>
+      <div class={`specgit-panel-body${statusTab ? " specgit-panel-body-status" : ""}`} role="tabpanel" id={`${ids}-panel`} aria-labelledby={`${ids}-tab-${tab}`}>
         { }
         {tab === "status" && note !== null && cameIn !== null && (
           <p class="specgit-said" role="status">
@@ -119,7 +120,7 @@ export function Panel({ model, actions, badges = NO_BADGES, comments }: { model:
             </button>
           </p>
         )}
-        {tab === "comments" ? <CommentsTab env={comments.env} path={note?.path ?? null} file={state.file?.kind} /> : mine?.contents({ state, actions }).status}
+        {tab === "comments" ? <CommentsTab env={comments.env} path={note?.path ?? null} file={state.file?.kind} /> : statusTab}
       </div>
     </div>
   );
