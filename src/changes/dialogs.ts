@@ -168,6 +168,7 @@ class ReviewerModal extends SpecgitModal {
     for (const reviewer of this.candidates) {
       const row = new Setting(contentEl).setName(reviewer.login).addButton((button) => button.setButtonText("Ask").onClick(() => this.choose(reviewer)));
 
+      row.nameEl.classList.add("specgit-reviewer-name");
       const face = row.nameEl.createSpan();
       row.nameEl.prepend(face);
       render(h(Face, { src: reviewer.avatarUrl, name: reviewer.login }), face);

@@ -126,11 +126,11 @@ export function Row({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }
   const doc = entry.item as StatusDoc;
   const menu = rowMenuItems(doc, ctx);
   const more = menuIsWorthDrawing(menu) ? <MoreButton id={doc.id} name={doc.name} ctx={ctx} /> : null;
-  const edge = <Edge when={doc.when} more={more} />;
+  const edge = <Edge when={doc.when} more={more} open={ctx.openMenuId === doc.id} />;
   const fix = !ctx.readOnly && doc.button && FIX_BUTTONS.includes(doc.button) ? doc.button : null;
   const button = fix ? <RowButton button={fix} id={doc.id} ctx={ctx} /> : null;
   const check = <Check item={doc} ctx={ctx} />;
-  const boxed = ctx.boxes || ctx.checkables.has(doc.id);
+  const boxed = ctx.boxes || (!ctx.readOnly && ctx.checkables.has(doc.id));
   const dropPill = !!doc.state && pillRepeatsChip(lane, doc.state, doc.asksYou);
   const pill = doc.state && !dropPill ? <Pill state={doc.state} tipPeople={doc.tipPeople} reason={doc.reason} asksYou={doc.asksYou} autoPublish={doc.autoPublish} id={doc.id} ctx={ctx} /> : null;
   const classes = cx("sp-row", entry.open && "sp-row-open", entry.needs && "sp-row-needs", flashClass(doc.id, ctx));
@@ -179,6 +179,7 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
   const button = !ctx.readOnly && group.button && FIX_BUTTONS.includes(group.button) ? <RowButton button={group.button} id={group.id} ctx={ctx} group {...(group.ending ? { ending: true } : {})} /> : null;
   const listId = `${group.id}-members`;
   const count = statusGroupCount(group.members.length, ctx.noun);
+  const groupMore = groupMenuItems(group, ctx).length > 0 ? <MoreButton id={group.id} name={group.name} ctx={ctx} /> : null;
 
   return (
     <li className={cx("sp-group", entry.open && "sp-row-open", flashClass(group.id, ctx))} data-row-id={group.id}>
@@ -217,9 +218,9 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
               <Pill state={group.state} tipPeople={group.tipPeople} reason={group.reason} autoPublish={group.autoPublish} id={group.id} ctx={ctx} />
             </span>
           )}
-          <Edge when={group.when} more={groupMenuItems(group, ctx).length > 0 ? <MoreButton id={group.id} name={group.name} ctx={ctx} /> : null} />
+          <Edge when={group.when} more={groupMore} open={ctx.openMenuId === group.id} />
         </div>
-        {button ? <div className="sp-line sp-line-2">{button}</div> : null}
+        {button ? <div className={cx("sp-line sp-line-2", !boxed && "sp-line-flush")}>{button}</div> : null}
       </div>
       {open ? (
         <ul className={cx("sp-members", !boxed && "sp-members-flush")} id={listId} aria-label={STATUS_LABELS.files(group.name)}>

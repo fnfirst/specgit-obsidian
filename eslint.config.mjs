@@ -14,8 +14,6 @@ export default defineConfig([
     rules: {
 
       "obsidianmd/ui/sentence-case": ["warn", { brands: ["specgit", "GitHub", "Markdown", "Obsidian"], allowAutoFix: false }],
-
-      "obsidianmd/settings-tab/prefer-setting-definitions": "off",
     },
   },
   {

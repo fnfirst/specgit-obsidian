@@ -188,9 +188,9 @@ export function LiveWho({ people, id, ctx }: { people: readonly (string | Status
   );
 }
 
-export function Edge({ when, more }: { when?: string; more: ReactNode }) {
+export function Edge({ when, more, open }: { when?: string; more: ReactNode; open?: boolean }) {
   return (
-    <span className="sp-edge">
+    <span className={cx("sp-edge", !more && "sp-edge-no-more", Boolean(more) && open && "sp-edge-open")}>
       {when ? <span className="sp-when">{when}</span> : null}
       {more}
     </span>
