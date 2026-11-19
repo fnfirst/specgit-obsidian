@@ -46,7 +46,9 @@ export interface StatusDoc extends StatusPeople {
 
   hasReview?: boolean;
 
-  menu?: readonly StatusRowMenuItem[];
+  bringIn?: boolean;
+
+  propose?: string;
 
   tipPeople?: readonly string[];
 

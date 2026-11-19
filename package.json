@@ -1,6 +1,6 @@
 {
   "name": "specgit-obsidian",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "private": true,
   "description": "Edit notes live, auto-sync your vault, comment inline, and review or publish to GitHub without thinking about Git. Use specgit on desktop or phone, solo or with a team.",
   "license": "MIT",

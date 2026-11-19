@@ -64,8 +64,13 @@ export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [
       return { picture: "ladder", lit: null, name, line: reason ?? STATUS_NO_STEP.changedInBoth.line };
     case "held":
       return { picture: "ladder", lit: null, name, line: reason ?? "" };
-    default:
+    case "published":
+    case "deleted":
       return null;
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
   }
 }
 
@@ -93,10 +98,38 @@ export function noStepTip(item: StatusDoc | StatusGroup): TipContent {
     const step = item.state === "draft" || item.state === "edited" ? "submit" : "publish";
     return card({ name: STATUS_NO_STEP.teammate.name, line: STATUS_NO_STEP.teammate.line(statusWho(loginsOf(item.people)), step) });
   }
-  if (item.state === "out-of-date") return card(STATUS_NO_STEP.outOfDate);
-  if (item.state === "changed-in-both" || item.state === "held") return card({ name: STATUS_NO_STEP.changedInBoth.name, line: item.reason ?? STATUS_NO_STEP.changedInBoth.line });
-  if (item.state === "deleted") return card(STATUS_NO_STEP.deleted);
-  return card(STATUS_NO_STEP.inReview);
+  if (item.kind === "doc" && item.bringIn && item.state === "draft") return card(STATUS_NO_STEP.notInVault);
+  if (item.kind === "doc" && item.propose && (item.state === "draft" || item.state === "edited")) {
+    return card({ name: STATUS_NO_STEP.propose.name, line: STATUS_NO_STEP.propose.line(item.propose) });
+  }
+  const { state } = item;
+  switch (state) {
+    case "in-review":
+      return card(STATUS_NO_STEP.inReview);
+    case "changes-requested":
+      return card({
+        name: STATUS_NO_STEP.changesRequested.name,
+        line: item.tipPeople?.length ? STATUS_TIPS.changesRequested(item.tipPeople) : STATUS_NO_STEP.changesRequested.line,
+      });
+    case "out-of-date":
+      return card(STATUS_NO_STEP.outOfDate);
+    case "changed-in-both":
+    case "held":
+      return card({ name: STATUS_NO_STEP.changedInBoth.name, line: item.reason ?? STATUS_NO_STEP.changedInBoth.line });
+    case "deleted":
+      return card(STATUS_NO_STEP.deleted);
+    case "published":
+      return card(STATUS_NO_STEP.published);
+    case "draft":
+    case "edited":
+    case "ready":
+    case undefined:
+      return card(STATUS_NO_STEP.nothingToSend);
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
+  }
 }
 
 export function Check({ item, ctx }: { item: StatusDoc | StatusGroup; ctx: Ctx }) {

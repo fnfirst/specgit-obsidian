@@ -23,10 +23,10 @@ const VIEW_ONLY_MENU: readonly StatusRowMenuItem[] = ["open", "show-changes", "s
 function menuFor(doc: StatusDoc): readonly StatusRowMenuItem[] {
 
   const withReview: readonly StatusRowMenuItem[] = doc.hasReview ? ["stop-review", "view-on-github"] : [];
-  if (doc.teammate) return ["open", ...(doc.menu?.includes("bring-in") ? (["bring-in"] as const) : []), ...(doc.hasReview ? (["view-on-github"] as const) : [])];
+  if (doc.teammate) return ["open", ...(doc.bringIn ? (["bring-in"] as const) : []), ...(doc.hasReview ? (["view-on-github"] as const) : [])];
   if (doc.asksYou) return ["open", "show-changes", "view-on-github"];
 
-  return [...COMPARISONS, ...ownMenu(doc, withReview), ...(doc.menu?.includes("bring-in") ? (["bring-in"] as const) : [])];
+  return [...COMPARISONS, ...ownMenu(doc, withReview), ...(doc.bringIn ? (["bring-in"] as const) : [])];
 }
 
 const COMPARISONS: readonly StatusRowMenuItem[] = ["see-github", "see-difference"];

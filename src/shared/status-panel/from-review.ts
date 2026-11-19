@@ -120,7 +120,7 @@ export interface DocExtra {
   behind?: boolean;
   renamedFrom?: string;
   hasChanges?: boolean;
-  menu?: StatusDoc["menu"];
+  bringIn?: boolean;
 
   reason?: string;
   folder?: string;
@@ -183,7 +183,7 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
     hasReview: entry.prNumber > 0,
     ...(known?.autoMergeEnabled === true ? { autoPublish: true } : {}),
     ...(extra.hasChanges ? { hasChanges: true } : {}),
-    ...(extra.menu ? { menu: extra.menu } : {}),
+    ...(extra.bringIn ? { bringIn: true } : {}),
     ...(tipPeople ? { tipPeople } : {}),
     ...(extra.reason ? { reason: extra.reason } : state === "held" && extra.held ? { reason: extra.held } : {}),
     ...(extra.folder ? { folder: extra.folder } : {}),

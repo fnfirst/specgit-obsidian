@@ -121,6 +121,7 @@ export function layoutOf(model: StatusPanelModel): Layout {
         openComments: pinned.openComments,
         reason: pinned.reason,
         autoPublish: pinned.autoPublish,
+        ...(pinned.propose ? { propose: pinned.propose } : {}),
 
         check: pinnedCheck(pinned),
         views: pinned.views,

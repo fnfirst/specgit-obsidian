@@ -254,7 +254,7 @@ export function panelModelOf(input: PanelInput): Built {
         if (input.vaultHas(item.id)) return [joinable(listedItem)];
 
         const { check, ...rest } = listedItem;
-        return [{ ...(check === "submit" ? rest : listedItem), menu: ["bring-in" as const] }];
+        return [{ ...(check === "submit" ? rest : listedItem), bringIn: true }];
       })
     : [];
   const items: StatusItem[] = [...listed, ...docs, ...groups];
