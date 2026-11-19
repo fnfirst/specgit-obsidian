@@ -1,0 +1,136 @@
+.sp-tip {
+  position: absolute;
+  z-index: 30;
+  padding: 10px;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  background: var(--sp-bg-raised);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
+  pointer-events: none;
+
+  overflow-y: auto;
+}
+.sp-tip-art {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin-bottom: 6px;
+  color: var(--sp-muted);
+}
+.sp-art-accent {
+  stroke: var(--sp-accent);
+}
+.sp-art-live {
+  stroke: var(--sp-live);
+}
+.sp-tip-name {
+  font-weight: 600;
+}
+.sp-tip-line,
+.sp-tip-reason {
+  margin: 2px 0 0;
+  color: var(--sp-muted);
+}
+.sp-tip-reason {
+  color: var(--sp-warning);
+}
+
+.sp-tip-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  color: inherit;
+  text-decoration: underline;
+}
+.sp-coarse .sp-tip-link {
+  min-height: 44px;
+}
+.sp-ladder {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 24px 12px;
+  font-size: 12px;
+}
+.sp-ladder::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--sp-border);
+}
+.sp-ladder li {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sp-muted);
+  opacity: 0.5;
+}
+.sp-ladder li[data-lit] {
+  width: 12px;
+  height: 12px;
+  background: var(--sp-accent);
+  opacity: 1;
+}
+.sp-menu {
+  position: absolute;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  max-width: calc(100% - 8px);
+  padding: 4px;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  background: var(--sp-bg-raised);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
+}
+.sp-menu-item {
+  display: block;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--sp-radius);
+  background: none;
+  text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sp-menu-item:hover,
+.sp-menu-item:focus-visible {
+  background: var(--sp-hover, color-mix(in srgb, var(--sp-muted) 18%, transparent));
+}
+.sp-danger {
+  color: var(--sp-danger);
+}
+.sp-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: rgb(0 0 0 / 0.4);
+}
+.sp-dialog {
+  width: 100%;
+  max-width: 320px;
+  padding: 14px;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  background: var(--sp-bg-raised);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.3);
+}
+.sp-dialog-title {
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+.sp-dialog-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}

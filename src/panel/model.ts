@@ -1,0 +1,154 @@
+import type { Board } from "../board";
+import { changesIn, type Shown } from "../disk/regions";
+import { type DocumentRef, docKey, type FileKind, noteName, type PathKind, type Place } from "../mapping";
+import type { NoteStatus, StatusBoard } from "../status";
+
+export type TabId = "status" | "comments";
+
+export const PEOPLE_FRESH_MS = 25_000;
+
+export interface PanelState {
+
+  note: { path: string; name: string } | null;
+
+  file: { path: string; name: string; kind: FileKind } | null;
+
+  elsewhere: PathKind | null;
+  signedIn: boolean;
+
+  mapped: boolean;
+
+  repo: string;
+
+  folder: string;
+
+  stay: boolean;
+
+  status: NoteStatus | null;
+
+  people: number | null;
+
+  cameIn: number | null;
+}
+
+export interface PanelDeps {
+
+  activeNote(): string | null;
+
+  placeOf(path: string): Place;
+  status: StatusBoard;
+  cameIn: Board<Shown[]>;
+  signedIn(): boolean;
+
+  mapped(): boolean;
+
+  repo?(): string;
+
+  folder?(): string;
+
+  stayConnected(): boolean;
+
+  peopleIn(doc: DocumentRef): Promise<number | null>;
+  now?: () => number;
+}
+
+export class PanelModel {
+  private current: PanelState;
+  private readonly listeners = new Set<() => void>();
+  private readonly asked = new Map<string, { people: number | null; at: number }>();
+  private readonly asking = new Set<string>();
+  private open = 0;
+  private tabId: TabId = "status";
+  private readonly now: () => number;
+
+  constructor(private readonly deps: PanelDeps) {
+    this.now = deps.now ?? Date.now;
+    this.current = this.read();
+  }
+
+  state(): PanelState {
+    return this.current;
+  }
+
+  tab = (): TabId => this.tabId;
+
+  selectTab = (tab: TabId): void => {
+    if (tab === this.tabId) return;
+    this.tabId = tab;
+    this.listeners.forEach((listener) => listener());
+  };
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  attach(): () => void {
+    this.open++;
+    this.update();
+    return () => {
+      this.open--;
+    };
+  }
+
+  update(): void {
+    this.current = this.read();
+    this.listeners.forEach((listener) => listener());
+    this.askPeople();
+  }
+
+  askPeople(): void {
+    const { note, status } = this.current;
+    if (this.open === 0 || !note || !this.current.signedIn || (status && status.phase !== "local")) return;
+    const place = this.deps.placeOf(note.path);
+    if (place.kind !== "note") return;
+    const key = docKey(place.doc);
+    const last = this.asked.get(key);
+    if (this.asking.has(key) || (last && this.now() - last.at < PEOPLE_FRESH_MS)) return;
+    this.asking.add(key);
+    void this.deps.peopleIn(place.doc).then((people) => {
+      this.asking.delete(key);
+      this.asked.set(key, { people, at: this.now() });
+      this.update();
+    });
+  }
+
+  private read(): PanelState {
+    const path = this.deps.activeNote();
+
+    const vault: PanelState = {
+      note: null,
+      file: null,
+      elsewhere: null,
+      signedIn: this.deps.signedIn(),
+      mapped: this.deps.mapped(),
+      repo: this.deps.repo?.() ?? "",
+      folder: this.deps.folder?.() ?? "",
+      stay: this.deps.stayConnected(),
+      status: null,
+      people: null,
+      cameIn: null,
+    };
+    if (path === null) return vault;
+    const place = this.deps.placeOf(path);
+    switch (place.kind) {
+      case "unlinked":
+        return vault;
+
+      case "outside":
+        return { ...vault, elsewhere: place.file };
+
+      case "board":
+      case "base":
+      case "other":
+        return { ...vault, file: { path, name: noteName(path), kind: place.kind } };
+      case "note": {
+        const status = this.deps.status.get(path) ?? null;
+        const shown = this.deps.cameIn.get(path);
+
+        const people = status && status.phase !== "local" ? status.others : (this.asked.get(docKey(place.doc))?.people ?? null);
+        return { ...vault, note: { path, name: noteName(path) }, status, people, cameIn: shown ? changesIn(shown) : null };
+      }
+    }
+  }
+}

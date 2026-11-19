@@ -1,0 +1,11 @@
+export { AUTH_ACTION, DEFAULT_SERVER, PLUGIN_OUTDATED_CODE, VERSION_HEADER } from "./config";
+export { AuthError, type AuthErrorCode } from "./errors";
+export { SpecgitAuth, type AuthEvent, type AuthOptions, type Profile } from "./session";
+export { AuthStorage, secretId, type SecretStore, type SignInKeeping } from "./storage";
+export { SpecgitGitCopy } from "./git-copy";
+export { SpecgitRoomPeople } from "./room-people";
+export { type Bearer, withBearer } from "./bearer";
+export { RoomTokenError, SpecgitTokenSource } from "./token-source";
+export { addAuthCommands, setUpAuth, type AuthSetup, type AuthSetupOptions } from "./setup";
+export { obsidianTransport } from "./obsidian-transport";
+export type { HttpRequest, HttpResponse, Transport } from "./transport";

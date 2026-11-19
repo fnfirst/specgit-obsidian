@@ -1,0 +1,144 @@
+.sp-coarse .sp-btn:not(.sp-row-button),
+.sp-coarse .sp-menu-item,
+.sp-coarse .sp-icon-button {
+  min-height: 44px;
+}
+
+.sp-coarse .sp-name-input {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+.sp-coarse .sp-row-one,
+.sp-coarse .sp-group-row {
+  min-height: 52px;
+  justify-content: center;
+}
+.sp-coarse .sp-member {
+  min-height: 52px;
+}
+
+.sp-coarse .sp-row-one .sp-name,
+.sp-coarse .sp-group-row .sp-name,
+.sp-coarse .sp-member .sp-name-link {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.sp-coarse .sp-pinned-head {
+  gap: 16px;
+}
+.sp-coarse .sp-switch::after {
+  content: "";
+  position: absolute;
+  inset: -13px -6px;
+}
+.sp-coarse .sp-link {
+  min-height: 44px;
+  padding-inline: 4px;
+}
+.sp-coarse .sp-more {
+  opacity: 1;
+  color: var(--sp-muted);
+}
+
+.sp-coarse .sp-row-button::after,
+.sp-coarse .sp-more::after,
+.sp-coarse .sp-pill::after,
+.sp-coarse .sp-twisty::after,
+.sp-coarse .sp-chip-btn::after,
+.sp-coarse .sp-chip::after {
+  content: "";
+  position: absolute;
+  inset: -9px -6px;
+}
+.sp-coarse .sp-row-button,
+.sp-coarse .sp-twisty,
+.sp-coarse .sp-chip-btn,
+.sp-coarse .sp-chip {
+  position: relative;
+}
+.sp-coarse .sp-twisty {
+  width: 24px;
+}
+.sp-coarse .sp-check-hit {
+  padding: 14px;
+  margin: -14px;
+}
+.sp-coarse .sp-chip-row {
+  padding-block: 4px;
+}
+.sp-coarse .sp-chip-btn {
+  min-height: 36px;
+  padding-inline: 14px;
+}
+.sp-coarse .sp-chip-btn::after {
+  inset: -4px -3px;
+}
+
+.sp-coarse .sp-more::after {
+  inset: -8px;
+}
+.sp-coarse .sp-pill::after {
+  inset: -12px 0;
+}
+.sp-coarse .sp-chip {
+  min-height: 32px;
+}
+.sp-coarse .sp-chip::after {
+  inset: -6px -3px;
+}
+
+.sp-coarse .sp-chip .sp-icon-button {
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+}
+.sp-coarse .sp-switch {
+  width: 44px;
+  height: 26px;
+}
+.sp-coarse .sp-switch-knob {
+  width: 22px;
+  height: 22px;
+}
+.sp-coarse .sp-switch[aria-checked="true"] .sp-switch-knob {
+  transform: translateX(18px);
+}
+.sp-coarse .sp-edge {
+  width: 5rem;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.sp-coarse .sp-edge .sp-more {
+  position: relative;
+  inset: auto;
+  transform: none;
+}
+
+.sp-coarse .sp-edge:not(:has(.sp-more)) {
+  padding-inline-end: 30px;
+}
+.sp-coarse .sp-edge:has(.sp-more[aria-expanded="true"]) .sp-when,
+.sp-coarse .sp-edge:has(.sp-more:focus-visible) .sp-when,
+.sp-coarse .sp-row:hover .sp-edge .sp-when,
+.sp-coarse .sp-row:focus-within .sp-edge .sp-when,
+.sp-coarse .sp-group:hover .sp-edge .sp-when,
+.sp-coarse .sp-group:focus-within .sp-edge .sp-when {
+  visibility: visible;
+}
+.sp-coarse .sp-rows > li:not(.sp-more-row):hover {
+  background: none;
+}
+.sp-coarse .sp-group .sp-member .sp-more {
+  opacity: 1;
+}
+@container sp (max-width: 299px) {
+  .sp-coarse .sp-edge {
+    width: 32px;
+  }
+}
