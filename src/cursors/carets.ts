@@ -4,7 +4,7 @@ import type { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 import { isAgentState } from "../presence";
 import { CURSOR_FIELD } from "../protocol";
-import { fillChip, forgetCaretName, roomPerson, showCaretName, watchCaretChips } from "../shared/review-flow";
+import { fillChip, forgetCaretName, pictureFailed, roomPerson, showCaretName, watchCaretChips } from "../shared/review-flow";
 import { Alignment, type TreePoint } from "./alignment";
 import type { TreeIndex } from "./tree-index";
 
@@ -18,15 +18,23 @@ export interface CaretFields {
   placed: string;
 }
 
-export const sameFields = (a: CaretFields, b: CaretFields): boolean => a.color === b.color && a.label === b.label && a.initials === b.initials && a.photo === b.photo && a.placed === b.placed;
+export const BRIDGE_LAG_GRACE_MS = 500;
 
-export function drawCaret(fields: CaretFields): HTMLElement {
+const sameVisual = (a: CaretFields, b: CaretFields): boolean => a.color === b.color && a.label === b.label && a.initials === b.initials && a.photo === b.photo;
+
+export const sameFields = (a: CaretFields, b: CaretFields): boolean => sameVisual(a, b) && a.placed === b.placed;
+
+export function drawCaret(fields: CaretFields, onPictureError?: () => void): HTMLElement {
   const { color, label, initials, photo } = fields;
   const caret = createSpan({ cls: "specgit-caret" });
   caret.setCssProps({ "--specgit-peer": color });
   const chip = caret.createSpan({ cls: "specgit-caret-chip" });
 
-  fillChip(chip, initials, photo, () => createEl("img"));
+  fillChip(chip, initials, photo, () => {
+    const img = createEl("img");
+    if (onPictureError) img.addEventListener("error", onPictureError);
+    return img;
+  });
   caret.createSpan({ cls: "specgit-caret-flag", text: label });
   showCaretName(caret);
   return caret;
@@ -39,6 +47,8 @@ export interface PeerCaret extends CaretFields {
   anchor: number;
   head: number;
 }
+
+const drawnFields = new WeakMap<HTMLElement, { fields: CaretFields; drewFailed: boolean }>();
 
 class Caret extends WidgetType {
 
@@ -54,10 +64,25 @@ class Caret extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    return drawCaret(this.fields);
+    const record = { fields: this.fields, drewFailed: this.fields.photo !== null && pictureFailed(this.fields.photo) };
+    const dom = drawCaret(this.fields, () => {
+      record.drewFailed = true;
+    });
+    drawnFields.set(dom, record);
+    return dom;
+  }
+
+  override updateDOM(dom: HTMLElement): boolean {
+    const prev = drawnFields.get(dom);
+    if (!prev || !sameVisual(this.fields, prev.fields)) return false;
+
+    if (prev.drewFailed && this.fields.photo !== null && !pictureFailed(this.fields.photo)) return false;
+    showCaretName(dom);
+    return true;
   }
 
   override destroy(dom: HTMLElement): void {
+    drawnFields.delete(dom);
     forgetCaretName(dom);
   }
 
@@ -94,6 +119,8 @@ export class CaretLayer {
   peers: readonly PeerCaret[] = [];
   private published = "";
   private pending: number | null = null;
+  private graceTimer: number | null = null;
+  private readonly lastPlaced = new Map<number, { from: number; to: number; fields: CaretFields; heldSince: number | null }>();
   private cache: { text: Text; version: number; alignment: Alignment } | null = null;
   private readonly stops: Array<() => void> = [];
   private readonly listeners = new Set<(peers: readonly PeerCaret[]) => void>();
@@ -140,6 +167,12 @@ export class CaretLayer {
   }
 
   update(update: ViewUpdate): void {
+    if (update.docChanged) {
+      for (const held of this.lastPlaced.values()) {
+        held.from = update.changes.mapPos(held.from);
+        held.to = update.changes.mapPos(held.to);
+      }
+    }
     if (update.docChanged || update.transactions.some((transaction) => transaction.effects.some((effect) => effect.is(redrawCarets)))) {
       this.decorations = this.draw();
       this.listeners.forEach((listener) => listener(this.peers));
@@ -151,6 +184,8 @@ export class CaretLayer {
   destroy(): void {
     this.stops.forEach((stop) => stop());
     if (this.pending !== null) window.clearTimeout(this.pending);
+    if (this.graceTimer !== null) window.clearTimeout(this.graceTimer);
+    this.lastPlaced.clear();
     this.withdraw();
   }
 
@@ -196,27 +231,72 @@ export class CaretLayer {
     const marks: Array<Range<Decoration>> = [];
     const peers: PeerCaret[] = [];
     let alignment: Alignment | null = null;
+    const now = Date.now();
+    const active = new Set<number>();
+    let nextExpiry: number | null = null;
+
+    const emit = (client: number, from: number, to: number, fields: CaretFields): void => {
+      peers.push({ ...fields, id: client, anchor: from, head: to });
+      if (from !== to) {
+        marks.push(Decoration.mark({ class: "specgit-selection", attributes: { style: `--specgit-peer: ${fields.color}` } }).range(Math.min(from, to), Math.max(from, to)));
+      }
+
+      marks.push(Decoration.widget({ widget: new Caret(fields), side: to > from ? -1 : 1 }).range(to));
+    };
+
     this.awareness.getStates().forEach((state: PeerState | undefined, client) => {
       const cursor = state?.[CURSOR_FIELD];
       if (client === this.doc.clientID || !cursor) return;
+      active.add(client);
       const [anchor, head] = [treeText(this.doc, cursor.anchor), treeText(this.doc, cursor.head)];
-      if (!anchor || !head) return;
-      alignment ??= this.alignment();
-      const [anchorAt, headAt] = [alignment.toText(anchor.node, anchor.index, anchor.assoc), alignment.toText(head.node, head.index, head.assoc)];
-      if (anchorAt === null || headAt === null) return;
-
-      const [from, to] = [Math.min(anchorAt, length), Math.min(headAt, length)];
 
       const person = roomPerson(state);
       const color = person.color;
       const fields: CaretFields = { color, label: person.label, initials: person.initials, photo: isAgentState(state) ? null : person.picture, placed: JSON.stringify(cursor.head) };
-      peers.push({ ...fields, id: client, anchor: from, head: to });
-      if (from !== to) {
-        marks.push(Decoration.mark({ class: "specgit-selection", attributes: { style: `--specgit-peer: ${color}` } }).range(Math.min(from, to), Math.max(from, to)));
+
+      if (anchor && head) {
+        alignment ??= this.alignment();
+        const [anchorAt, headAt] = [alignment.toText(anchor.node, anchor.index, anchor.assoc), alignment.toText(head.node, head.index, head.assoc)];
+        if (anchorAt !== null && headAt !== null) {
+
+          const [from, to] = [Math.min(anchorAt, length), Math.min(headAt, length)];
+          this.lastPlaced.set(client, { from, to, fields, heldSince: null });
+          emit(client, from, to, fields);
+          return;
+        }
       }
 
-      marks.push(Decoration.widget({ widget: new Caret(fields), side: to > from ? -1 : 1 }).range(to));
+      const prev = this.lastPlaced.get(client);
+      if (!prev) return;
+      const since = prev.heldSince ?? now;
+      const remaining = BRIDGE_LAG_GRACE_MS - (now - since);
+      if (remaining <= 0) {
+        this.lastPlaced.delete(client);
+        return;
+      }
+      prev.heldSince = since;
+      const heldFields: CaretFields = { ...fields, placed: prev.fields.placed };
+      prev.fields = heldFields;
+      const [from, to] = [Math.min(prev.from, length), Math.min(prev.to, length)];
+      emit(client, from, to, heldFields);
+      nextExpiry = nextExpiry === null ? remaining : Math.min(nextExpiry, remaining);
     });
+
+    for (const client of this.lastPlaced.keys()) {
+      if (!active.has(client)) this.lastPlaced.delete(client);
+    }
+
+    if (this.graceTimer !== null) {
+      window.clearTimeout(this.graceTimer);
+      this.graceTimer = null;
+    }
+    if (nextExpiry !== null) {
+      this.graceTimer = window.setTimeout(() => {
+        this.graceTimer = null;
+        this.redraw();
+      }, nextExpiry);
+    }
+
     this.peers = peers.sort((a, b) => a.id - b.id);
     return Decoration.set(marks, true);
   }
