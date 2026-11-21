@@ -11,11 +11,9 @@ export interface BarLine {
 
 export function barLines(row: AwareRow | undefined, live: boolean, doing: { join: () => void; add: () => void }, panelShown: boolean, choice?: { words: string; label: string; run: () => void }): BarLine[] {
   const lines: BarLine[] = [];
-
   if (choice) lines.push({ kind: "choice", words: `${choice.words} ${choice.label}.`, action: { label: choice.label, run: choice.run } });
   if (row?.who && !live && !panelShown) lines.push({ kind: "live", words: noteBarLive(row.who.names, row.who.many), action: { label: JOIN, run: doing.join } });
   const draft = row?.draft;
-
   if (draft && !draft.mine && draft.inNote === false && draft.others !== "") lines.push({ kind: "draft", words: noteBarDraft(draft.others, draft.others.includes(" and ") || draft.others.includes(", ")), action: { label: ADD_TO_MY_NOTE, run: doing.add } });
   return lines;
 }
@@ -52,10 +50,11 @@ export const sameLines = (a: readonly BarLine[], b: readonly BarLine[]): boolean
 
 export function showBar(view: EditorView, lines: readonly BarLine[]): void {
   void Promise.resolve().then(() => {
-
     try {
       if (sameLines(view.state.field(noteBar, false) ?? [], lines)) return;
       view.dispatch({ effects: setBar.of(lines) });
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   });
 }

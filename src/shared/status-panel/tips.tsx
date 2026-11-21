@@ -8,21 +8,16 @@ const CARD_WIDTH = 264;
 export type TipPicture = "ladder" | "join" | "group" | "changes" | "held";
 
 export interface TipContent {
-
   picture?: TipPicture;
-
   lit?: StatusPillState | null;
   name: string;
   line: string;
-
   reason?: string;
-
   link?: { label: string; href: string };
 }
 
 interface OpenTip {
   key: string;
-
   anchor: HTMLElement;
   content: TipContent;
   pinned: boolean;
@@ -48,7 +43,6 @@ export interface Tips {
   open: OpenTip | null;
   id: string;
   bind: (key: string, content: TipContent) => TipHandlers;
-
   toggle: (anchor: HTMLElement, key: string, content: TipContent) => void;
   openAt: (anchor: HTMLElement, key: string, content: TipContent) => void;
   hide: () => void;
@@ -63,7 +57,6 @@ export function useTips(rootRef: { current: HTMLElement | null }): Tips {
     window.clearTimeout(timer.current);
     setOpen(null);
   }, []);
-
   useEffect(() => {
     if (open && !open.anchor.isConnected) hide();
   });
@@ -86,7 +79,6 @@ export function useTips(rootRef: { current: HTMLElement | null }): Tips {
     };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("pointerdown", onDown, true);
-
     const onScroll = (event: Event) => {
       if (rootRef.current?.contains(event.target as Node | null)) hide();
     };
@@ -108,7 +100,6 @@ export function useTips(rootRef: { current: HTMLElement | null }): Tips {
       },
       onPointerLeave: (event) => {
         if (event.pointerType === "touch") return;
-
         window.clearTimeout(timer.current);
         setOpen((now) => (now?.pinned ? now : null));
       },
@@ -143,7 +134,6 @@ const LADDER: readonly StatusPillState[] = ["draft", "in-review", "ready", "publ
 
 function Picture({ content }: { content: TipContent }) {
   if (content.picture === "ladder") {
-
     return (
       <ol className="sp-ladder" aria-hidden="true">
         {LADDER.map((step) => (
@@ -164,7 +154,6 @@ function Picture({ content }: { content: TipContent }) {
         </svg>
       );
     case "group":
-
       return (
         <svg {...common}>
           <path d="M70 9h70M70 22h70M70 35h70" />
@@ -190,7 +179,6 @@ function Picture({ content }: { content: TipContent }) {
 
 export function TipCard({ tip, id, root }: { tip: OpenTip; id: string; root: { current: HTMLElement | null } }) {
   const card = useRef<HTMLDivElement>(null);
-
   useLayoutEffect(() => {
     if (card.current) positionCard(card.current, tip.anchor, root.current);
   }, [tip, root]);

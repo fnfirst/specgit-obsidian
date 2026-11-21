@@ -3,7 +3,6 @@ import { Notice } from "obsidian";
 const ACTION_MS = 15_000;
 
 const STACK_GAP_PX = 8;
-
 const stacked: HTMLElement[] = [];
 let stackWatch: MutationObserver | null = null;
 
@@ -49,13 +48,11 @@ export function setAwareNotices(on: boolean): void {
 
 export type NoticeHandle = ((message: string) => void) & {
   hide(): void;
-
   shown(): boolean;
 };
 
 export function showNoticeWithAction(message: string, label: string, run: () => void, lasting = false): NoticeHandle {
   let words: HTMLElement | null = null;
-
   const duration = lasting ? 0 : ACTION_MS;
   const act = (): void => {
     notice.hide();
@@ -64,7 +61,6 @@ export function showNoticeWithAction(message: string, label: string, run: () => 
   const notice: Notice = new Notice(
     createFragment((fragment) => {
       if (!awareNotices) {
-
         const body = fragment.createSpan();
         words = body.createSpan({ text: message });
         body.createEl("button", { text: label, cls: "specgit-notice-action" }, (button) => button.addEventListener("click", act));
@@ -72,7 +68,6 @@ export function showNoticeWithAction(message: string, label: string, run: () => 
       }
       const body = fragment.createSpan({ cls: "specgit-notice-body" });
       words = body.createSpan({ text: message });
-
       body.createEl("a", { text: label, cls: "specgit-notice-link", attr: { href: "#", role: "button" } }, (link) =>
         link.addEventListener("click", (event) => {
           event.preventDefault();
@@ -83,7 +78,6 @@ export function showNoticeWithAction(message: string, label: string, run: () => 
     duration,
   );
   if (lasting) stack(notice);
-
   const update = ((text: string): void => (words ? void words.setText(text) : void notice.setMessage(text))) as NoticeHandle;
   update.hide = () => notice.hide();
   update.shown = () => notice.messageEl.isConnected;

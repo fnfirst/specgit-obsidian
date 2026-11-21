@@ -5,7 +5,6 @@ import { appHidden, watchWindows } from "../windows";
 
 export interface EventsSetup {
   api: SpecgitApi;
-
   repo: () => string;
   signedIn: () => boolean;
 }
@@ -16,7 +15,6 @@ export function setUpEvents(plugin: Plugin, deps: EventsSetup): LiveEvents {
     repo: deps.repo,
     signedIn: deps.signedIn,
     hidden: appHidden,
-
     onWake: (wake) =>
       watchWindows(plugin, (win, on) => {
         on(win.document, "visibilitychange", () => {

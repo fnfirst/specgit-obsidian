@@ -33,9 +33,7 @@ import {
 export interface ThreadListing {
   threads?: AnchoredThreadView[];
   revisions?: RevisionView[];
-
   prNumber?: number | null;
-
   historyLoaded?: boolean;
 }
 
@@ -54,7 +52,6 @@ export interface NewThread {
 export interface ThreadsIo {
   list(history: boolean): Promise<ThreadListing>;
   create(input: NewThread): Promise<AnchoredThreadView>;
-
   write(threadId: string, action: string, extra: Record<string, unknown>, prNumber: number | undefined): Promise<WriteAnswer>;
 }
 
@@ -65,11 +62,8 @@ export function createLocalIntents(): LocalIntents {
 }
 
 export interface ThreadsState {
-
   threads: readonly AnchoredThreadView[];
-
   visible: readonly AnchoredThreadView[];
-
   current: readonly AnchoredThreadView[];
   loading: boolean;
   error: string | null;
@@ -83,13 +77,10 @@ export type ThreadsMe = NonNullable<ThreadComment["author"]>;
 
 export interface ThreadsStoreDeps {
   io: ThreadsIo;
-
   me(): ThreadsMe;
   intents?: LocalIntents;
   now?: () => number;
-
   settle?: SettleDeps;
-
   later?: (run: () => void, ms: number) => () => void;
 }
 
@@ -99,15 +90,10 @@ interface SentReply {
 }
 
 interface SameWords {
-
   threadId: string;
-
   words: string;
-
   known: Map<string, number>;
-
   out: Map<string, SentReply>;
-
   idleAt?: number;
 }
 
@@ -138,27 +124,18 @@ export class ThreadsStore {
   private readonly listeners = new Set<() => void>();
   private readonly intents: LocalIntents;
   private readonly now: () => number;
-
   private readonly ledger = new Ledger();
-
   private readonly aliases = new Map<string, { to: string; at: number }>();
-
   private timer: (() => void) | null = null;
-
   private firedAt: number | null = null;
-
   private retry: (() => void) | null = null;
-
   private awaiting = false;
   private watched: number | null = null;
   private readonly later: (run: () => void, ms: number) => () => void;
-
   private readonly sent: SameWords[] = [];
-
   private reads = 0;
   private applied = 0;
   private replySeq = 0;
-
   private readonly flights = new Map<string, Flight>();
 
   private reaction: EventReload | null = null;
@@ -203,7 +180,6 @@ export class ThreadsStore {
     const gone = (comment: ThreadComment): boolean => this.ledger.gone(comment.id, since);
     let next: AnchoredThreadView | undefined;
     if (answer.thread) next = held ? answeredOnto(answer.thread, held, gone) : answer.thread;
-
     if (answer.comment) {
       const target = next ?? held;
       if (target) next = repliedOnto(target, answer.comment);
@@ -215,7 +191,6 @@ export class ThreadsStore {
       const login = this.deps.me().login;
       const brought = next.displayComments.filter((comment) => !shown.has(comment.id) || comment.id === answer.comment?.id);
       const first = next.displayComments[0];
-
       const mine = (comment: ThreadComment): boolean => (placeholder !== undefined ? comment === first : answer.comment ? comment.id === answer.comment.id : comment.author?.login === login);
       this.ledger.brought(brought.filter(mine).map((comment) => comment.id), this.now());
       this.ledger.heardFrom(brought.filter((comment) => !mine(comment)).map((comment) => comment.id), this.reads);
@@ -244,7 +219,6 @@ export class ThreadsStore {
     for (const id of names) this.aliases.set(id, { to, at: now });
     for (const group of this.sent) if (names.includes(group.threadId)) group.threadId = to;
     for (const id of names) {
-
       const click = this.intents.get(id);
       if (click) {
         this.intents.delete(id);
@@ -337,7 +311,6 @@ export class ThreadsStore {
   reload = async (): Promise<void> => {
     const order = ++this.reads;
     if (this.awaiting) {
-
       this.awaiting = false;
       this.watched = order;
     }
@@ -351,7 +324,6 @@ export class ThreadsStore {
       }
       this.applied = order;
       const now = this.now();
-
       const raw = listing.threads ?? [];
       const pairs = pairListed(raw, this.core.threads);
       for (const [thread, held] of pairs) {
@@ -361,10 +333,8 @@ export class ThreadsStore {
       const listed = applyLocalIntents(raw, this.intents, now);
       const pairing = new Map(listed.flatMap((thread, index) => (pairs.has(raw[index]!) ? [[thread, pairs.get(raw[index]!)!] as const] : [])));
       const merged = listedOnto(listed, this.core.threads, (comment) => this.ledger.awaited(comment.id, { startedAt, order }), pairing);
-
       const unduplicated = this.withoutDuplicates(merged, startedAt);
       const threads = withPendingReplies(unduplicated.threads, unduplicated.replies).sort(byPosition);
-
       const before = this.core.threads.flatMap((thread) => (thread.pending ? [] : thread.displayComments.filter((comment) => !comment.pending).map((comment) => comment.id)));
       this.ledger.settled({ order, now }, commentIds(listed), before, commentIds(threads));
       for (const [id, alias] of this.aliases) if (alias.at <= now - CONFIRMED_CAP_MS) this.aliases.delete(id);
@@ -377,12 +347,9 @@ export class ThreadsStore {
         loading: false,
       });
       if (this.watched === order) this.watched = null;
-
       if (!history && order === this.reads && this.core.filter !== "open" && !this.core.historyLoaded) void this.reload();
     } catch (error) {
-
       if (order >= this.applied) this.set({ error: (error as Error).message, loading: false });
-
       if (this.watched === order && this.reaction !== null) {
         this.watched = null;
         this.askAgain();
@@ -405,7 +372,6 @@ export class ThreadsStore {
     const stopTimer = every(() => {
       if (gate.due()) poll();
     }, THREADS_POLL_MS);
-
     const reaction = gate.reaction(poll, this.deps.settle);
     this.reaction = reaction;
     const stopReaction = reaction.start();
@@ -461,7 +427,6 @@ export class ThreadsStore {
       }
       const since = this.began();
       const real = await this.deps.io.create({ ...input, lineStart, lineEnd });
-
       this.absorb({ written: real.id, answer: { thread: real }, since, placeholder: tempId });
       return sameConversation(this.core.threads, real) ?? real;
     } catch (error) {
@@ -479,7 +444,6 @@ export class ThreadsStore {
       isBot: false,
       pending: true,
     };
-
     const group = this.groupFor(this.current(threadId), body);
     const sent: SentReply = { comment };
     group.out.set(comment.id, sent);
@@ -495,7 +459,6 @@ export class ThreadsStore {
         accountFor(group, data.comment);
         left();
       } else {
-
         const own = this.madeBy(data.thread, group);
         if (own === undefined) sent.answeredAt = this.now();
         else {
@@ -535,7 +498,6 @@ export class ThreadsStore {
     }
     const firedAt = this.firedAt;
     const end = (click: LocalIntent): number => click.at + RESOLVED_CAP_MS;
-
     const batch = standing.filter((click) => firedAt !== null && click.at <= firedAt).map(end);
     const fresh = standing.filter((click) => firedAt === null || click.at > firedAt).map(end);
     this.timer = this.later(() => {
@@ -607,7 +569,6 @@ export class ThreadsStore {
             return;
           }
           if (flight.intent !== intent) continue;
-
           const landed: ThreadStatus = intent ? "resolved_current" : "open";
           this.setThreads((threads) => {
             const target = findConversation(threads, this.current(flight.id));
@@ -628,7 +589,6 @@ export class ThreadsStore {
     const open = this.core.threads.filter((thread) => !thread.resolved && !thread.pending);
     for (const thread of open) {
       this.rememberIntent(thread.id, true);
-
       const flight = this.flightOf(thread.id);
       if (flight) {
         flight.intent = true;

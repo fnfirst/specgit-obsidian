@@ -11,7 +11,6 @@ abstract class ScreenModal extends SpecgitModal {
   constructor(app: App, title: string) {
     super(app);
     this.setTitle(title);
-
     this.modalEl.addClass("is-wide");
   }
 

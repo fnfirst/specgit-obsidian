@@ -13,7 +13,6 @@ export interface GitCopyOptions {
 export type MainFile =
   | { kind: "absent" }
   | { kind: "file"; text: string; sha: string }
-
   | { kind: "unreadable"; outage?: true };
 
 export type BranchFile = MainFile;
@@ -80,7 +79,6 @@ export class SpecgitGitCopy {
   }
 
   async readBlob(doc: DocumentRef, sha: string): Promise<string | null> {
-
     const key = `${doc.repo}\n${sha}`;
     const kept = this.blobs.get(key);
     if (kept !== undefined) return kept;
@@ -90,7 +88,6 @@ export class SpecgitGitCopy {
     if (this.blobs.size > BLOBS_KEPT) this.blobs.delete(this.blobs.keys().next().value!);
     return body.source;
   }
-
   private readonly blobs = new Map<string, string>();
 
   async readBlobs(repo: string, commit: string | null, files: ReadonlyArray<{ sha: string; path: string }>, byBlob = false): Promise<BlobsAnswer> {

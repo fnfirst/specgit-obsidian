@@ -3,14 +3,11 @@ import type { PrState } from "./pr-info";
 export interface ThreadComment {
   id: string;
   body: string;
-
   author: { login: string; name?: string | null; avatarUrl: string | null } | null;
   createdAt: string;
   isBot: boolean;
-
   prNumber?: number;
   url?: string | null;
-
   pending?: boolean;
 }
 
@@ -157,7 +154,6 @@ export function pairListed(listed: readonly AnchoredThreadView[], held: readonly
       claimed.add(mate);
     }
   };
-
   pass((thread, free) => free.find((one) => one.id === thread.id));
   pass((thread, free) => free.find((one) => conversationIds(one).includes(thread.id)));
   pass((thread, free) => {
@@ -209,7 +205,6 @@ export interface LocalIntent {
 export function applyLocalIntents(threads: AnchoredThreadView[], intents: Map<string, LocalIntent>, now: number): AnchoredThreadView[] {
   if (intents.size === 0) return threads;
   for (const [id, click] of intents) if (click.at <= now - RESOLVED_CAP_MS) intents.delete(id);
-
   const clickOf = new Map<AnchoredThreadView, LocalIntent>();
   for (const [id, click] of intents) {
     const own = threads.find((thread) => thread.id === id);

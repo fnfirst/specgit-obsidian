@@ -5,13 +5,10 @@ import { type MissingNotes, missingNotes } from "./missing-notes";
 import { unchangedHere } from "./unchanged-here";
 
 export interface TheirReview {
-
   by: string;
   branch: string;
-
   prNumber: number | null;
   prUrl: string | null;
-
   draft: boolean;
 }
 
@@ -33,9 +30,7 @@ type Held = Pick<CacheEntry, "sha" | "base" | "same">;
 
 interface OnBoth {
   vault: Held;
-
   repoSha: string;
-
   foreign?: string;
 }
 
@@ -43,39 +38,29 @@ interface OnlyHere {
   vault: Held;
   repoSha: null;
   foreign?: string;
-
   renamedFrom?: string;
-
   movedTo?: string;
-
   keptFromMain?: boolean;
 }
 
 interface OnlyOnGitHub {
   vault?: undefined;
   repoSha: string;
-
   gone?: Gone;
-
   nameTaken?: boolean;
 }
 
 export type FileFacts = (OnBoth | OnlyHere | OnlyOnGitHub) & {
-
   theirs?: TheirReview;
-
   live?: boolean;
-
   leftOut?: boolean;
 };
 
 function onBoth({ vault, repoSha, foreign }: OnBoth): Compared | LeftOut {
   if (vault.sha === repoSha) return { kind: "same" };
-
   if (vault.base === null && foreign === vault.sha) return { kind: "leftOut", why: "foreign" };
   if (vault.same === repoSha) return { kind: "layout" };
   if (vault.base === null) return { kind: "both", here: "edited", github: "edited", baseUnknown: true };
-
   if (unchangedHere(vault)) return { kind: "github", change: "updated" };
   return vault.base === repoSha ? { kind: "here", change: "edited" } : { kind: "both", here: "edited", github: "edited", baseUnknown: false };
 }
@@ -83,16 +68,13 @@ function onBoth({ vault, repoSha, foreign }: OnBoth): Compared | LeftOut {
 function onlyHere({ vault, foreign, renamedFrom, movedTo, keptFromMain }: OnlyHere): Compared | LeftOut {
   if (foreign === vault.sha) return { kind: "leftOut", why: "foreign" };
   if (renamedFrom !== undefined) return { kind: "here", change: "renamed", from: renamedFrom };
-
   if (vault.base === null) return keptFromMain ? { kind: "both", here: "edited", github: "deleted", baseUnknown: true } : { kind: "here", change: "new" };
-
   if (!unchangedHere(vault)) return { kind: "both", here: "edited", github: "deleted", baseUnknown: false };
   return movedTo !== undefined ? { kind: "github", change: "moved", to: movedTo } : { kind: "github", change: "deleted" };
 }
 
 function onlyOnGitHub({ repoSha, gone, nameTaken }: OnlyOnGitHub): Compared | LeftOut {
   if (!gone) return nameTaken ? { kind: "leftOut", why: "sameName" } : { kind: "github", change: "new" };
-
   if (gone.base === null ? gone.sha === repoSha : gone.base === repoSha) return { kind: "here", change: "deleted" };
   return { kind: "both", here: "deleted", github: "edited", baseUnknown: gone.base === null };
 }
@@ -116,16 +98,11 @@ export function comparedOf(state: VaultState): Compared | null {
 }
 
 export interface VaultFile {
-
   path: string;
   state: VaultState;
-
   sha: string | null;
-
   repoSha: string | null;
-
   base: string | null;
-
   added?: boolean;
 }
 
@@ -140,23 +117,18 @@ export function rebasedOnto(file: VaultFile, sha: string): VaultFile {
 
 export interface LookFacts {
   files: ReadonlyMap<string, CacheEntry>;
-
   repo: ReadonlyMap<string, string>;
   deleted: readonly Gone[];
   foreign?: ReadonlyMap<string, string>;
   keptFromMain?: (path: string) => boolean;
-
   added?: ReadonlySet<string>;
-
   theirs?: ReadonlyMap<string, TheirReview>;
   live?: (path: string) => boolean;
   leftOut?: (path: string) => boolean;
 }
 
 export interface VaultStates {
-
   files: ReadonlyMap<string, VaultFile>;
-
   missing: MissingNotes;
 }
 
@@ -184,7 +156,6 @@ export function vaultStates(looked: LookFacts): VaultStates {
   const { files, repo, deleted } = looked;
   const found = new Map<string, VaultFile>();
   const stateOf = (path: string, facts: OnBoth | OnlyHere | OnlyOnGitHub): VaultState => fileState({ ...facts, theirs: looked.theirs?.get(path), live: looked.live?.(path), leftOut: looked.leftOut?.(path) });
-
   const lost = new Map<string, Gone>();
   const sources = new Unpaired<string>();
   for (const gone of deleted) {
@@ -192,7 +163,6 @@ export function vaultStates(looked: LookFacts): VaultStates {
     lost.set(gone.path, gone);
     if (repo.get(gone.path) === gone.sha) sources.add(gone.sha, gone.path);
   }
-
   const arrivals = new Unpaired<string>();
   for (const [path, sha] of repo) if (!files.has(path) && !lost.has(path)) arrivals.add(sha, path);
   const renamedFrom = new Set<string>();
@@ -216,7 +186,6 @@ export function vaultStates(looked: LookFacts): VaultStates {
     const repoSha = repo.get(gone.path)!;
     found.set(gone.path, { path: gone.path, state: stateOf(gone.path, { gone, repoSha }), sha: gone.sha, repoSha, base: gone.base });
   }
-
   const missing = missingNotes(repo.keys(), files.keys(), deleted.map((gone) => gone.path));
   const onGitHub = (path: string, nameTaken: boolean): void => {
     if (movedTo.has(path)) return;
@@ -240,7 +209,6 @@ export function onGitHubFiles(states: VaultStates): string[] {
   const found: string[] = [];
   for (const file of states.files.values()) {
     const compared = comparedOf(file.state);
-
     if (compared === null || compared.kind !== "github" || onlyGitHubHas(file, compared)) continue;
     found.push(file.path);
   }

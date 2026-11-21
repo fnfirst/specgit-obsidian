@@ -31,64 +31,37 @@ export interface PanelInput {
   state: ChangesState;
   viewer: string;
   now: number;
-
   facts: ReadonlyMap<number, ReviewFacts>;
-
   flight: InFlightResponse | null;
-
   rooms: ReadonlyMap<string, readonly string[]>;
-
   unchanged?: (path: string) => ChangeRow | undefined;
-
   vaultHas: (path: string) => boolean;
-
   docFor: (path: string) => DocumentRef | null;
-
   holdOf: (path: string) => string | null;
-
   told: (path: string) => string | null;
-
   both: ReadonlySet<string>;
-
   viewsOf: (path: string) => readonly ("github" | "difference")[];
-
   newer: readonly string[];
-
   heldDeletes: number;
   offered: number;
-
   isLive: (path: string) => boolean;
-
   openComments: (path: string) => number;
-
   linked: string;
-
   plansUrl: string;
-
   active?: { path: string; status: NoteStatus | null; behind: boolean; people?: number | null } | null;
-
   showChanges: boolean;
-
   checked: readonly string[];
-
   notice: StatusNotice | null;
-
   editingGroup: string | null;
-
   reviewers: readonly StatusReviewer[];
-
   readOnly: boolean;
-
   onAction: (action: PanelAction) => void | Promise<ActionAnswer>;
   onChecked?: (ids: readonly string[]) => void;
 }
 
 export interface Units {
-
   rows: ReadonlyMap<string, ChangeRow>;
-
   members: ReadonlyMap<string, ChangeRow>;
-
   urls: ReadonlyMap<string, string>;
 }
 
@@ -135,7 +108,6 @@ function ownListedOf(flight: InFlightResponse | null, viewer: string): Map<strin
   const mine = new Set<string>();
   const seen = new Set<string>();
   for (const { path, entry, isViewer } of draftWorkItems(flight.paths, viewer, flight.base)) {
-
     if (seen.has(path)) continue;
     seen.add(path);
     if (isViewer && !isGroupBranch(entry.branch)) mine.add(path);
@@ -153,7 +125,6 @@ export function panelModelOf(input: PanelInput): Built {
   const flight = input.flight;
   const branches = branchesOf(flight, viewer);
   const ownListed = ownListedOf(flight, viewer);
-
   const firstListed = new Map(flight ? inFlightEntries(flight, viewer, flight.base).map((entry) => [entry.path, entry] as const) : []);
   const rooms = new Map(Array.from(input.rooms, ([path, logins]) => [path, peopleOf(logins)] as const));
   const factsOf = (number: number, pr?: PrInfo | null): ReviewFacts | null => (number > 0 ? (input.facts.get(number) ?? factsFromPr(pr)) : null);
@@ -165,9 +136,7 @@ export function panelModelOf(input: PanelInput): Built {
     const { folder } = placeUnder(input.linked, path);
     return folder === "" ? {} : { folder };
   };
-
   const joinable = (item: StatusDoc): StatusDoc => ((item.here?.length ?? 0) > 0 && !item.button && input.vaultHas(item.id) && !input.isLive(item.id) && item.id !== input.active?.path ? { ...item, button: "join" as const } : item);
-
   const drawn = (path: string, from: Drawn): StatusDoc => {
     rows.set(path, from.acts);
     if (from.url !== null) urls.set(path, from.url);
@@ -176,16 +145,12 @@ export function panelModelOf(input: PanelInput): Built {
     const comments = input.openComments(path);
     return joinable({ ...item, ...(views.length > 0 ? { views } : {}), ...(comments > 0 ? { openComments: comments } : {}) });
   };
-
   const fromChange = (row: ChangeRow): Drawn => {
     const path = row.change.path;
-
     const listedOwn = row.entry === null ? (ownListed.get(path) ?? null) : null;
     const settled = state.aware?.settled.has(path) === true;
     const branch = branches.get(path) ?? null;
-
     const wroteIn = state.aware?.own.has(path) === true || (branch !== null && writersOf(branch).some((login) => sameLogin(login, viewer)));
-
     const theirs = listedOwn === null && settled && !wroteIn && (row.entry === null || isSomeoneElses(row.entry, viewer)) ? (firstListed.get(path) ?? null) : null;
     if (theirs) {
       const reviewRow = theirs.prNumber > 0 ? reviewRowOf(theirs, branch, input.docFor(path)) : null;
@@ -193,9 +158,7 @@ export function panelModelOf(input: PanelInput): Built {
     }
     const reviewed = row.entry ?? listedOwn ?? row.unit;
     const facts = row.entry ? factsOf(row.entry.prNumber, row.review?.pr) : listedOwn ? factsOf(listedOwn.prNumber) : null;
-
     const yours = listedOwn === null && isSomeoneElses(reviewed, viewer) && (!settled || (facts?.isDraft ?? reviewed.isDraft));
-
     const unsent = listedOwn === null && !settled && (row.entry === null || yours);
     const deleted = row.change.kind === "deleted";
     const { from } = row.change;
@@ -208,11 +171,9 @@ export function panelModelOf(input: PanelInput): Built {
       extra: {
         deleted,
         edited: unsent && !deleted,
-
         changedInBoth: state.choices.has(path) || input.both.has(path) || (unsent && row.change.mainMoved),
         held: input.holdOf(path),
         ...(told === null ? {} : { reason: told }),
-
         behind: input.active?.path === path ? input.active.behind : undefined,
         ...(row.change.kind === "renamed" && from ? { renamedFrom: noteName(from) } : {}),
         ...(row.unchanged ? {} : { hasChanges: true }),
@@ -220,7 +181,6 @@ export function panelModelOf(input: PanelInput): Built {
     };
   };
   const docs: StatusDoc[] = state.loose.map((row) => drawn(row.change.path, fromChange(row)));
-
   const openPath = input.active?.path ?? null;
   const unchanged = openPath !== null && !rows.has(openPath) ? input.unchanged?.(openPath) : undefined;
   if (openPath !== null && unchanged?.entry) {
@@ -245,24 +205,19 @@ export function panelModelOf(input: PanelInput): Built {
   const named = new Set<string>([...docs.map((one) => one.id), ...state.groups.flatMap((card) => card.group?.files.map((file) => file.path) ?? [])]);
   const listed: StatusItem[] = flight
     ? itemsFromInFlight({ inFlight: flight, facts: input.facts, rooms, viewer, now, exclude: named }).flatMap((item): StatusItem[] => {
-
         if (item.kind === "group") return [];
         const entry = flight.paths[item.id]?.find((one) => one.prUrl);
         if (entry?.prUrl) urls.set(item.id, entry.prUrl);
-
         const listedItem: StatusDoc = { ...item, ...folderOf(item.id) };
         if (input.vaultHas(item.id)) return [joinable(listedItem)];
-
         const { check, ...rest } = listedItem;
         return [{ ...(check === "submit" ? rest : listedItem), bringIn: true }];
       })
     : [];
   const items: StatusItem[] = [...listed, ...docs, ...groups];
-
   if (flight) {
     for (const entry of inFlightEntries(flight, viewer, flight.base)) {
       if (named.has(entry.path) || entry.group || rows.has(entry.path)) continue;
-
       if (entry.prNumber <= 0 && !sameLogin(entry.authorLogin, viewer)) continue;
       const found = reviewRowOf(entry, branches.get(entry.path) ?? null, input.docFor(entry.path));
       if (found) rows.set(entry.path, found);
@@ -282,10 +237,8 @@ export function panelModelOf(input: PanelInput): Built {
   ].filter((fold) => fold.count > 0 || (fold.id === "not-here" && copying !== null));
 
   const offline = state.phase === "offline";
-
   const running = state.doing?.kind;
   const model: StatusPanelModel = {
-
     ...(state.phase === "loading" || state.phase === "signed-out" ? { loading: true } : {}),
     ...(offline ? { offline: true } : {}),
     ...(offline && items.length === 0 && !pinned ? { loadFailed: true } : {}),
@@ -333,9 +286,7 @@ function pinnedOf(
   const phase = phaseOf(status);
   const author = entry?.authorLogin ?? facts?.authorLogin ?? null;
   const isMine = author === null || sameLogin(author, input.viewer);
-
   const publishable = entry !== null && entry.prNumber > 0 && isMine && (own?.state === "in-review" || own?.state === "changes-requested");
-
   const canApprove = submitted && entry !== null && facts?.state === "open" && !isMine && !asksYouOf(entry, facts, input.viewer);
   const comments = input.openComments(path);
   return {
@@ -351,13 +302,11 @@ function pinnedOf(
     ...(own?.hasChanges ? { hasChanges: true } : {}),
     showChanges: input.showChanges,
     ...(submitted && facts ? { reviewers: reviewerChips(facts) } : {}),
-
     ...(state.choices.has(path) || own?.state === "changed-in-both" ? { step: "choose" as const } : {}),
     ...(own?.tipPeople ? { tipPeople: own.tipPeople } : {}),
     ...(card?.group ? { groupId: groupId(card.group.id) } : {}),
     hasReview: own?.hasReview ?? false,
     ...(own?.teammate ? { teammate: true } : {}),
-
     ...(own?.teammate && !own.hasChanges ? { nothingToSend: true } : {}),
     ...(publishable ? { publishable: true } : {}),
     ...(canApprove ? { canApprove: true } : {}),
@@ -366,7 +315,6 @@ function pinnedOf(
     ...(own?.reason ? { reason: own.reason } : {}),
     ...(own?.views ? { views: own.views } : {}),
     menu: ["open-in-specgit", "copy-link"],
-
     plugin: { connected: phase !== "local", joining: phase === "joining", ...(phase === "local" && (active.people ?? 0) > 0 ? { people: active.people! } : {}) },
   };
 }

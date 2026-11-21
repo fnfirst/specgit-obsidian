@@ -119,7 +119,6 @@ export class Binding {
     const edits: Splice[] = [];
     const budget = new Budget(NARROW_MS);
     transaction.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-
       for (const change of splices(before.sliceString(fromA, toA), inserted.sliceString(0), budget)) {
         edits.push({ from: fromA + change.from, to: fromA + change.to, insert: change.insert });
       }
@@ -135,7 +134,6 @@ export class Binding {
   }
 
   private readonly onRoomChange = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
-
     if (transaction.meta.get(this)) return;
     const changes: ChangeSpec[] = [];
     let at = 0;
@@ -145,7 +143,6 @@ export class Binding {
         changes.push({ from: this.lens.toEditor(at), insert: toLf(op.insert) });
         inserted += op.insert;
       } else if (op.insert !== undefined) {
-
         this.fail();
         return;
       } else if (op.delete !== undefined) {
@@ -156,7 +153,6 @@ export class Binding {
       }
     }
     if (changes.length === 0) return;
-
     this.lens.changed(inserted);
     const inCell = cellFocus(this.view);
     try {

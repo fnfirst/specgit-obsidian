@@ -6,9 +6,7 @@ export interface DocumentRef {
 export const docKey = (doc: DocumentRef): string => `${doc.repo}\0${doc.path}`;
 
 export interface MappingSettings {
-
   repo: string;
-
   folder: string;
 }
 

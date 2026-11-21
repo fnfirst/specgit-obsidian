@@ -28,7 +28,6 @@ export interface OnboardAccount {
   next: VaultNextStep;
   installUrl: string | null;
   formUrl: string;
-
   freeInUse: boolean;
 }
 
@@ -46,24 +45,20 @@ export interface UploadView {
   kind: "reading" | "uploading";
   done: number;
   total: number;
-
   waiting: "slow" | "offline" | null;
 }
 
 export type OnboardView =
-  | { step: "name"; typed: string; private: boolean; plan: VaultPlan | null;   unread: boolean; account: OnboardAccount | null; signedIn: boolean; problem: string | null }
+  | { step: "name"; typed: string; private: boolean; plan: VaultPlan | null;  unread: boolean; account: OnboardAccount | null; signedIn: boolean; problem: string | null }
   | { step: "creating"; name: string }
   | { step: "waiting"; why: "install" | "accept"; name: string; notSeen: boolean }
   | { step: "form"; name: string; canGiveAccess: boolean; notSeen: boolean }
   | { step: "upload"; progress: UploadView }
   | { step: "done"; repo: string }
-
   | { step: "problem"; why: "changed" | "gone" | "not_empty" | "failed" | "link"; line: string; action: "start_again" | "try_again" | null };
 
 export interface OnboardEvents {
-
   edit(typed: string, isPrivate: boolean): void;
-
   press(typed: string, isPrivate: boolean): void;
   closed(): void;
   openAgain(): void;
@@ -77,41 +72,30 @@ export interface OnboardEvents {
 }
 
 export interface OnboardUi {
-
   show(view: OnboardView, on: OnboardEvents): void;
-
   close(): void;
-
   bringForward(): boolean;
 }
 
 export interface UploadControl {
   progress(state: UploadProgress): void;
-
   isCurrent(): boolean;
 }
 
 export interface OnboardDeps {
   ui: OnboardUi;
   signedIn(): boolean;
-
   signIn(options: { install: boolean }): Promise<"signed_in" | "unfinished">;
-
   call(action: string, body: Record<string, unknown>): Promise<ApiAnswer>;
-
   plan(): Promise<VaultPlan>;
-
   upload(repo: string, control: UploadControl): Promise<void>;
   record: { read(): UploadRecord | null; write(repo: string): void; markUploaded(): void; clear(): void };
   openUrl(url: string): void;
-
   onFront(listener: () => void): () => void;
   wait(ms: number): Promise<void>;
   now(): number;
-
   apply(mapping: { repo: string; folder: string }): Promise<void>;
   vaultName(): string;
-
   repoChosen(): boolean;
   notify(message: string): void;
   notifyWithAction(message: string, label: string, run: () => void): void;
@@ -126,22 +110,17 @@ const LOOK_FOR_MS = 10 * 60_000;
 interface Session {
   typed: string;
   private: boolean;
-
   name: string;
   plan: VaultPlan | null;
   account: OnboardAccount | null;
-
   planFailed: boolean;
   problem: string | null;
   view: OnboardView | null;
   windowOpen: boolean;
-
   upload: { repo: string; counts: { kind: "reading" | "uploading"; done: number; total: number } | null; waiting: "slow" | "offline" | null } | null;
   stopRequested: boolean;
   notice: { set(message: string): void; hide(): void } | null;
-
   watching: object | null;
-
   refused: boolean;
   pressing: boolean;
   ended: boolean;
@@ -181,7 +160,6 @@ export class VaultOnboarding {
   }
 
   start(): void {
-
     if (this.deps.repoChosen()) return;
     if (this.session && this.again(this.session)) return;
     const typed = safeRepoName(this.deps.vaultName()) ?? "";
@@ -203,7 +181,6 @@ export class VaultOnboarding {
       return this.deps.notify(SIGN_IN_UNFINISHED);
     }
     if (s.ended) return;
-
     if (record.uploaded === true) {
       s.upload = { repo: record.repo, counts: null, waiting: null };
       return void this.link(s, record.repo);
@@ -382,7 +359,6 @@ export class VaultOnboarding {
 
   private async press(s: Session): Promise<void> {
     if (s.pressing) return;
-
     if (s.planFailed) {
       s.planFailed = false;
       s.problem = null;
@@ -440,7 +416,6 @@ export class VaultOnboarding {
     const { name } = s;
     this.show(s, { step: "creating", name });
     const answer = await this.ask("create", { name, private: s.private });
-
     const made = answer?.status === 200 && typeof answer.body?.repo === "string" && isRepoName(answer.body.repo) ? answer.body.repo : null;
     if (made !== null) this.deps.record.write(made);
     if (s.ended) return;
@@ -451,7 +426,6 @@ export class VaultOnboarding {
     if (answer?.code === "name_taken") return this.back(s, nameTaken(name));
     if (answer?.code === "bad_name") return this.back(s, BAD_NAME);
     if (answer?.code !== "cannot_create") return this.back(s, CREATE_FAILED);
-
     const again = await this.account();
     if (s.ended) return;
     if (again === null) return this.back(s, ACCOUNT_UNREAD);

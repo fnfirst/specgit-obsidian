@@ -7,47 +7,31 @@ import type { CopyInQuestion, FolderAnswer, FolderQuestion, SwitchQuestion } fro
 import { CHOOSE_A_REPOSITORY_FIRST, linked, SETUP_BAD_LINK, SETUP_SIGN_IN, SIGN_IN, STILL_WORKING } from "./words";
 
 export interface PickerUi {
-
   pickRepository(): Promise<string | null>;
-
   confirmFolder(question: FolderQuestion | Promise<FolderQuestion>): Promise<FolderAnswer | null>;
-
   pickFolder(): Promise<string | null>;
-
   confirmSetup(repo: string): Promise<boolean>;
-
   confirmCopyIn(question: CopyInQuestion): Promise<boolean>;
-
   confirmSwitch(question: SwitchQuestion): Promise<boolean>;
-
   bringForward(): boolean;
 }
 
 export interface PickerDeps {
   ui: PickerUi;
-
   settings(): { repo: string; folder: string };
-
   apply(mapping: { repo: string; folder: string }): Promise<void>;
-
   repoFiles(repo: string): Promise<string[] | null>;
-
   listing?(repo: string): Promise<{ commit: string | null; files: ReadonlyMap<string, string> } | null>;
-
   vaultPaths(): string[];
-
   unsent(): Promise<number | null>;
-
   copyIn(files: readonly CopyInFile[], skipped?: readonly string[]): Promise<void>;
   signedIn(): boolean;
   signIn(): Promise<void>;
   notify(message: string): void;
-
   notifyWithAction(message: string, label: string, run: () => void): void;
 }
 
 export class RepoPicker {
-
   private busy = false;
 
   constructor(private readonly deps: PickerDeps) {}
@@ -93,7 +77,6 @@ export class RepoPicker {
 
   private async link(repo: string): Promise<void> {
     const from = this.deps.settings().repo;
-
     const unsent = from !== repo && isRepoName(from) ? await this.deps.unsent() : 0;
     if ((unsent === null || unsent > 0) && !(await this.deps.ui.confirmSwitch({ from, to: repo, unsent }))) return;
     const settled = await this.folderFor(repo);
@@ -104,7 +87,6 @@ export class RepoPicker {
   }
 
   private async folderFor(repo: string): Promise<{ folder: string; files: string[] | null } | null> {
-
     const read = this.deps.repoFiles(repo).then((files) => {
       const hidden = files?.filter((path) => LISTED_FILE.test(path) && isHiddenPath(path)).length ?? 0;
       const documents = files?.filter((path) => LISTED_FILE.test(path) && !isHiddenPath(path)) ?? null;
@@ -117,7 +99,6 @@ export class RepoPicker {
       const answer = await this.deps.ui.confirmFolder(known);
       if (answer === null) return null;
       const { files, proposal, question } = await read;
-
       known = Promise.resolve(question);
       if (answer === "whole") return { folder: "", files };
       if (answer === "use") return { folder: proposal === null ? "" : normalizeFolder(proposal.folder), files };
@@ -130,7 +111,6 @@ export class RepoPicker {
     if (settled.files === null) return;
     const { copy: missing, skipped } = missingNotes(settled.files, this.deps.vaultPaths(), [], settled.folder);
     const hidden = settled.files.filter((path) => LISTED_FILE.test(path) && isHiddenPath(path)).length;
-
     const held = new Set(this.deps.vaultPaths().map((path) => path.toLowerCase()));
     const every = (await this.deps.listing?.(repo).catch(() => null))?.files.keys() ?? settled.files;
     const leftOut = leftOutKinds([...every].filter((path) => !held.has((settled.folder === "" ? path : `${settled.folder}/${path}`).toLowerCase())));

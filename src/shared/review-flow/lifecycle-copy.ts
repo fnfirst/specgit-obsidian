@@ -37,7 +37,6 @@ export function openCommentsWarning(openComments: number, noun: Noun = "document
 }
 
 export const SUBMITTED_TITLE = "Submitted for review";
-
 export const submittedDescription = (reviewers: readonly string[]): string | null => (reviewers.length ? `${reviewers.join(", ")} will get a GitHub notification.` : null);
 export const SUBMIT_FAILED = "Couldn't submit for review";
 export const ASK_REVIEW_FAILED = "Couldn't ask for review";
@@ -52,11 +51,8 @@ export const PUBLISH_CONFIRM = publishConfirm();
 export const PUBLISHED: Words = { title: "Published", description: "Your changes are now live." };
 export const ALREADY_PUBLISHED: Words = { title: "Already published", description: "This review was already published on GitHub." };
 export const VIEW_ON_GITHUB = "View it on GitHub";
-
 export const VIEW_ON_GITHUB_LINK = "View the review on GitHub";
-
 export const VIEW_DRAFT_ON_GITHUB_LINK = "View the draft on GitHub";
-
 export const viewOnGithubLink = (draft: boolean): string => (draft ? VIEW_DRAFT_ON_GITHUB_LINK : VIEW_ON_GITHUB_LINK);
 
 export const ABANDON_REVIEW_ITEM = "Abandon review…";
@@ -90,11 +86,9 @@ const ARM_OFFER = { confirm: "Publish when approved", cancel: "Not now", questio
 export const ABANDON_CONFIRM = {
   title: "Abandon this review?",
   confirm: "Abandon review",
-
   description: (comments: string, publishedBranch: string, riff = "") =>
     `Your draft edits will be permanently discarded.${riff ? ` ${riff}` : ""} The review will be closed on GitHub and its branch deleted. ${comments} The published document on ${publishedBranch} is not affected.`,
 } as const;
-
 export const approveConfirm = (count: number, noun: Noun = "document", autoMerge = false) =>
   ({
     title: count === 1 ? `Approve this ${noun}?` : `Approve ${count} ${noun}s?`,
@@ -107,14 +101,11 @@ export const approveConfirm = (count: number, noun: Noun = "document", autoMerge
     confirm: "Approve",
   }) as const;
 export const APPROVE_FAILED = "Couldn't approve";
-
 export const REVIEW_NOT_ACCEPTED = "GitHub didn't accept this review.";
-
 export const approved = (autoMerge: boolean): Words => ({
   title: "Approved",
   description: autoMerge ? "Your sign-off is in. This publishes automatically in a moment." : "Your sign-off is in. Publish unlocks once every required approval is met.",
 });
-
 export const ASK_CHANGES_PROMPT = {
   title: "Ask for changes",
   description: "Tell the author what needs another pass. Publishing pauses until you approve an updated version.",
@@ -125,7 +116,6 @@ export const ASK_CHANGES_PROMPT = {
 } as const;
 export const ASK_CHANGES_SENT: Words = { title: "Sent to the author", description: "Publishing is paused until you approve an updated version." };
 export const ASK_CHANGES_FAILED = "Couldn't send that";
-
 export const abandonGroupConfirm = (name: string, files: number, noun: Noun = "document") =>
   ({
     title: `Stop the review of ${name}?`,

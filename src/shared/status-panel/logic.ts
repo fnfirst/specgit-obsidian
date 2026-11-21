@@ -1,7 +1,6 @@
 import type { Lane, CheckKind, StatusChipKey, StatusDoc, StatusGroup, StatusItem, StatusPanelModel, StatusPerson, StatusPinned } from "./types";
 
 export const DRAW_LIMIT = 20;
-
 export const ASK_ABOVE = 5;
 
 export const LANES: readonly Exclude<Lane, "none">[] = ["approve", "publish", "drafts", "others"];
@@ -16,7 +15,6 @@ export function laneOf(item: { lane?: Lane; check?: CheckKind; state?: StatusDoc
   if (item.lane) return item.lane;
   if (item.check) return LANE_OF_KIND[item.check];
   switch (item.state) {
-
     case "out-of-date":
     case "ready":
       return item.teammate ? "others" : "publish";
@@ -38,7 +36,6 @@ export function pinnedCheck(pinned: StatusPinned): CheckKind | undefined {
   if (pinned.check) return pinned.check;
   if (pinned.nothingToSend) return pinned.state === "in-review" && pinned.asksYou ? "approve" : undefined;
   const unsent = pinned.state === "draft" || pinned.state === "edited";
-
   if (unsent && pinned.propose) return undefined;
   if (unsent) return "submit";
   if (pinned.state === "in-review" && pinned.asksYou) return "approve";
@@ -51,9 +48,7 @@ export interface Entry {
   lane: Lane;
   open: boolean;
   live: boolean;
-
   needs: boolean;
-
   check?: CheckKind;
 }
 
@@ -61,7 +56,6 @@ export interface Checkable {
   id: string;
   name: string;
   kind: CheckKind;
-
   documents: number;
   isGroup: boolean;
   isDraft: boolean;
@@ -73,17 +67,13 @@ export interface Layout {
   pinned: StatusPinned | null;
   entries: readonly Entry[];
   byLane: Readonly<Record<Lane, readonly Entry[]>>;
-
   all: readonly Entry[];
-
   live: readonly Entry[];
-
   counts: Readonly<Record<Exclude<Lane, "none">, number>>;
   empty: boolean;
 }
 
 const byChange = (entries: readonly Entry[]): Entry[] => [...entries].sort((a, b) => Number(b.needs) - Number(a.needs) || (b.item.changed ?? 0) - (a.item.changed ?? 0));
-
 const liveFirst = (entries: readonly Entry[]): Entry[] => [...entries].sort((a, b) => Number(b.needs) - Number(a.needs) || Number(b.live) - Number(a.live));
 
 export function layoutOf(model: StatusPanelModel): Layout {
@@ -98,7 +88,6 @@ export function layoutOf(model: StatusPanelModel): Layout {
     const checkOf = open && pinned && !ownCheck ? pinnedCheck(pinned) : item.check;
     entries.push({ item, lane: laneOf({ ...item, check: checkOf }), open, live: loginsOf(item.here).length > 0, needs: needs.has(item.id), check: model.readOnly ? undefined : checkOf });
   };
-
   const openGroup = pinned?.groupId ? model.items.find((item) => item.kind === "group" && item.id === pinned.groupId) : undefined;
   if (openGroup) add(openGroup, true, true);
   else if (pinned) {
@@ -122,7 +111,6 @@ export function layoutOf(model: StatusPanelModel): Layout {
         reason: pinned.reason,
         autoPublish: pinned.autoPublish,
         ...(pinned.propose ? { propose: pinned.propose } : {}),
-
         check: pinnedCheck(pinned),
         views: pinned.views,
       },
@@ -160,7 +148,6 @@ export function checkablesOf(layout: Layout, chip: StatusChipKey): Map<string, C
       kind,
       documents: item.kind === "group" ? item.members.length : 1,
       isGroup: item.kind === "group",
-
       isDraft: item.kind === "doc" && (item.state === "draft" || item.state === "edited"),
       hasChanges: !!item.hasChanges,
       isOpen: entry.open,
@@ -172,13 +159,9 @@ export function checkablesOf(layout: Layout, chip: StatusChipKey): Map<string, C
 export interface Selection {
   checked: readonly Checkable[];
   documents: number;
-
   reviews: number;
-
   drafts: readonly Checkable[];
-
   groups: readonly Checkable[];
-
   discardable: readonly Checkable[];
   discardCount: number;
 }

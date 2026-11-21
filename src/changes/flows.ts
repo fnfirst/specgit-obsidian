@@ -47,6 +47,7 @@ import {
   ATTACHMENT_WORDS,
 } from "../shared/review-flow";
 import { ATTACHMENT_LATER, ATTACHMENT_NOT_SENT, ATTACHMENTS_SAID, attachmentName, toldOf } from "./attachment-memory";
+import { carriesAttachments } from "./attachment-links";
 import { gitBlobShaOfText, isTextOfBytes } from "./blob-sha";
 import { type Behind, behindOf, type BranchHead, deletedOnGitHub, lastMatched, levelWith, sameAsVault, sendThroughBranch } from "./branch-send";
 import { type CatchUpAsked, CatchUpFlows } from "./catch-up-flows";
@@ -85,15 +86,10 @@ interface SendOptions {
   quiet?: boolean;
   afresh?: boolean;
   carried?: Carried;
-
   auto?: { deps: FlowDeps; memory: SentMemory };
-
   edit?: boolean;
-
   branch?: string;
-
   found?: BranchFile;
-
   viaGroup?: true;
 }
 
@@ -120,24 +116,18 @@ export interface SubmitPlan {
   key: string;
   title: string;
   names: string;
-
   reviews: string | null;
-
   warning: string | null;
   pickReviewer: () => Promise<Reviewer | null>;
   submit: (reviewers: readonly Reviewer[]) => Promise<boolean>;
-
   stale: () => boolean;
 }
 
 export class ChangesFlows {
-
   private readonly uploaded = new Map<string, string | null>();
 
   private readonly deps: FlowDeps;
-
   private lostAnswers = 0;
-
   private refusals = 0;
   private unsureTold = false;
 
@@ -215,7 +205,6 @@ export class ChangesFlows {
           const cost = writeCost(String(key), args);
           meter.writes += cost;
           const result: unknown = await (value as (...a: unknown[]) => unknown).apply(target, args);
-
           if (String(key) === "moves" && result !== null && typeof result === "object") {
             const said = ((result as { body?: Record<string, unknown> | null }).body ?? {}).writes;
             if (typeof said === "number") meter.writes += said - cost;
@@ -223,7 +212,6 @@ export class ChangesFlows {
           if (result !== null && typeof result === "object" && "ok" in result) {
             if (isLostAnswerResult(result as StepResult)) lost();
             else if ((result as StepResult).ok === false) refused();
-
             else if (!READS.has(String(key))) model.wroteOk();
           }
           return result;
@@ -239,7 +227,6 @@ export class ChangesFlows {
       this.unsureTold = true;
       this.deps.dialogs.toast(LOST_ANSWER_TITLE, LOST_ANSWER_DESCRIPTION);
       void this.model.refresh();
-
       if (this.refusals === 0) return;
     }
     return this.deps.dialogs.alert(options);
@@ -264,7 +251,6 @@ export class ChangesFlows {
     try {
       return await work();
     } finally {
-
       if (this.lostAnswers > 0 && !this.unsureTold) this.deps.dialogs.toast(LOST_ANSWER_TITLE, LOST_ANSWER_DESCRIPTION);
       this.model.setBusy(false);
       void this.model.refresh();
@@ -272,7 +258,6 @@ export class ChangesFlows {
   }
 
   private async send(row: ChangeRow, options: { toReview?: boolean; afresh?: boolean } = {}): Promise<Sent> {
-
     let carried: Carried | undefined;
     for (let attempt = 1; ; attempt++) {
       const sent = await this.sendOnce(row, { ...options, carried });
@@ -284,23 +269,17 @@ export class ChangesFlows {
 
   private async sendOnce(row: ChangeRow, options: SendOptions = {}): Promise<Sent> {
     const { change, doc } = row;
-
     const { deps, memory } = options.auto ?? { deps: this.deps, memory: this.memory };
     const name = noteName(change.path);
-
     if (options.quiet && this.model.groupOf(change.path) && !options.viaGroup) return { ok: false, held: true };
     if (change.kind === "deleted") return { ok: true, expectMain: null };
-
     if (change.kind === "renamed" && change.from && !(row.entry && (await this.reviewHoldsRename(row, change.from)))) return options.toReview ? { ok: false, message: COULDNT_FINISH } : this.sendRename(row, change.from, options.quiet === true);
     const text = await deps.readText(change.path);
     if (text === null) return { ok: false, message: COULDNT_FINISH };
     const main: MainFile = options.toReview ? { kind: "absent" } : await deps.gitFile(doc);
     if (main.kind === "unreadable") return { ok: false, unreadable: true, message: UNREADABLE(name) };
-
     if (!options.toReview && deletedOnGitHub(row, main)) return options.quiet ? { ok: false, held: true } : { ok: false, message: DELETED_ON_GITHUB(name) };
-
     if (options.quiet && (options.toReview || options.edit)) {
-
       if (options.edit && (main.kind !== "file" || !lastMatched(row, main))) return { ok: false, held: true };
     } else if (options.quiet) {
       if (main.kind === "file") return { ok: false, held: true };
@@ -308,14 +287,11 @@ export class ChangesFlows {
       if (existing === null) return { ok: false, unreadable: true, message: UNREADABLE(name) };
       if (reviewIsOpen(existing)) return this.alreadyThere(doc, existing, text);
     }
-
     const branch = options.quiet ? options.branch : (row.theirs?.branch ?? row.review?.reviewBranch ?? undefined);
     const found = options.found ?? (branch ? await deps.branchFile(doc, branch) : undefined);
     if (found?.kind === "unreadable") return { ok: false, unreadable: true, message: UNREADABLE(name) };
     const first = found?.kind === "file" ? found : undefined;
-
     const prior = options.carried?.text === text ? options.carried : undefined;
-
     const moved = main.kind === "file" && !lastMatched(row, main);
     let throughDraft = false;
     if (moved && first !== undefined && prior === undefined) {
@@ -336,7 +312,6 @@ export class ChangesFlows {
     return sendThroughBranch({ deps: deps, memory: memory }, row, mine, first, (body, there, levelledWith) => this.saveToReview(row, { text, body, there, main, merged: merging, levelledWith, options }), {
       branch,
       ...(merging && prior?.branch !== undefined ? { held: prior.branch } : {}),
-
       level: options.toReview ? async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) : "level",
     });
   }
@@ -345,17 +320,14 @@ export class ChangesFlows {
     const { change, doc } = row;
     const named: Array<NamedAttachment & { key: string }> = [];
     const problems: Array<{ name: string; why: string; server?: true }> = [];
-    if (!/\.md$/i.test(change.path)) return { named, problems };
+    if (!carriesAttachments(change.path)) return { named, problems };
     const used = await deps.attachments(change.path);
-
     deps.attachmentTold?.(change.path, toldOf(used));
     for (const attachment of used) {
       if ("skipped" in attachment) continue;
-
       const base64Of = async (): Promise<string> => (typeof attachment.base64 === "string" ? attachment.base64 : attachment.base64());
       const sha = attachment.sha ?? (await nameAttachments([{ repoPath: attachment.repoPath, base64: await base64Of() }]))[0]!.sha;
       const key = `${doc.repo}\n${doc.path}\n${attachment.repoPath}\n${sha}`;
-
       if (this.uploaded.get(key) === (row.review?.reviewBranch ?? null)) continue;
       const base64 = await base64Of();
       const size = Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
@@ -367,7 +339,6 @@ export class ChangesFlows {
   private async sendAttachmentsAlone(row: FileRow, deps: FlowDeps, onlyDue = false): Promise<Sent | null> {
     const picked = await this.nameAttachments(row, deps);
     const { problems } = picked;
-
     const named = onlyDue ? picked.named.filter((attachment) => deps.attachmentHeld?.(attachment.repoPath, attachment.sha) !== true) : picked.named;
     for (const attachment of named) {
       const uploaded = await deps.review.attachment(row.doc, attachment.repoPath, attachment.base64, attachment.expectSha);
@@ -399,36 +370,27 @@ export class ChangesFlows {
     const { deps, memory } = step.options.auto ?? { deps: this.deps, memory: this.memory };
     const { text, body, there, main, merged, levelledWith, options } = step;
     const expectMain = main.kind === "file" ? main.sha : null;
-
     const lenient = step.options.auto !== undefined;
     const { named, problems } = await this.nameAttachments(row, deps);
     const probe = change.kind !== "new" || Boolean(row.review?.reviewBranch);
     const carried = probe ? new Set<NamedAttachment>() : attachmentsToCarry(named);
-
     const like = main.kind === "file" ? main.text : options.toReview ? there?.text : undefined;
     const outgoing = like === undefined ? body : inRepoEndings(body, like);
-
     const createOver = lenient ? null : (this.deps.deletedAt?.(change.path) ?? null);
     const saved = await this.backs.save(row.doc, outgoing, await deps.review.save(doc, outgoing, options.toReview ? undefined : expectMain, { toExistingReview: options.toReview === true, ...(createOver === null ? {} : { createOver }), ...(options.afresh ? { afresh: true } : {}), ...(row.review?.reviewBranch ? { hasReview: true } : {}), ...(there ? { expectBranch: there.sha } : {}), ...(named.length > 0 ? { attachments: named.map((attachment) => attachmentEntry(attachment, carried.has(attachment))), ...(lenient ? { attachmentsKeepGoing: true as const } : {}) } : {}) }));
     if (saved.ok && createOver !== null) this.deps.restored?.(change.path);
     if (saved.ok) {
-
       const savedBranch = typeof saved.body.reviewBranch === "string" ? saved.body.reviewBranch : (row.review?.reviewBranch ?? null);
       if (named.length > 0) {
         const sent = await this.sendMissingAttachments(row, named, saved.body, savedBranch, { expectMain, outgoing, options }, deps, problems, lenient);
         if (sent !== null) return sent;
       }
-
       if (lenient) deps.attachmentProblems?.(change.path, problems);
-
       if (saved.body.unchanged === true && expectMain !== null && saved.body.contentSha === expectMain && body === text) {
-
         const ours = main.kind === "file" && (pathKind(change.path) === "board" ? sameCanvasText(main.text, text) : /\.md$/i.test(change.path) && sameDocumentText(main.text, text));
-
         if (isTextOfBytes(text, change.sha)) deps.model.learnSame(change.path, change.sha, expectMain, ours ? undefined : "server");
         return { ok: true, expectMain, unchanged: true };
       }
-
       const inVault = await memory.accepted(change.path, text, outgoing, merged && main.kind === "file" && !options.toReview ? main.sha : levelledWith, saved.body);
       const said = !lenient && problems.length > 0 ? { attachments: ATTACHMENTS_SAID(problems) } : {};
       return inVault ? { ok: true, expectMain, ...said } : { ok: true, expectMain, inVault: false, ...said };
@@ -438,7 +400,6 @@ export class ChangesFlows {
     if (isLostAnswerResult(saved)) return { ok: false, unsure: true, message: failure(saved, COULDNT_FINISH) };
     if (isLimited(saved)) return { ok: false, message: failure(saved, COULDNT_FINISH), limited: true };
     if (isDenied(saved)) return { ok: false, message: this.refusal(saved, doc, COULDNT_FINISH), decide: true };
-
     const behind = behindOf(saved, COULDNT_FINISH);
     if (behind) return behind;
     if (saved.code !== MAIN_MOVED) return { ok: false, message: failure(saved, COULDNT_FINISH) };
@@ -457,13 +418,11 @@ export class ChangesFlows {
   ): Promise<Sent | null> {
     const said = attachmentAnswer(answer);
     const done = new Set<string>();
-
     const sent = (attachment: NamedAttachment & { key: string }, at: string | null): void => {
       done.add(attachment.repoPath);
       this.uploaded.set(attachment.key, at);
       deps.attachmentAgreed?.(attachment.repoPath, attachment.sha);
     };
-
     const refused = (attachment: NamedAttachment, why: "exists" | "changed"): void => {
       done.add(attachment.repoPath);
       problems.push({ name: attachmentName(attachment.repoPath), why: attachmentWhy(why) });
@@ -484,7 +443,6 @@ export class ChangesFlows {
       if (carry.size > 0) {
         const second = await deps.review.save(doc, again.outgoing, undefined, { toExistingReview: true, hasReview: true, ...(again.options.afresh ? { afresh: true } : {}), ...(typeof answer.contentSha === "string" ? { expectBranch: answer.contentSha } : {}), attachments: needed.map((attachment) => attachmentEntry(attachment, carry.has(attachment))), ...(lenient ? { attachmentsKeepGoing: true as const } : {}) });
         if (!second.ok) {
-
           const why = lenient ? { why: ATTACHMENT_LATER } : attachmentNotSent(second);
           for (const attachment of needed) problems.push({ name: attachmentName(attachment.repoPath), ...why });
           return null;
@@ -531,7 +489,6 @@ export class ChangesFlows {
   private async sendRename(row: ChangeRow, fromPath: string, quiet = false): Promise<Sent> {
     const { change, doc } = row;
     if (quiet) {
-
       const text = await this.deps.readText(change.path);
       const existing = text === null ? null : await this.deps.review.status(doc);
       if (existing !== null && text !== null && reviewIsOpen(existing)) return this.alreadyThere(doc, existing, text);
@@ -595,9 +552,7 @@ export class ChangesFlows {
       if ("held" in sent) return "held";
       if (sent.deleted !== undefined) return "deleted";
       if (sent.limited) return "limited";
-
       if (sent.unsure) return "unsure";
-
       if (sent.unreadable) return "later";
       if (sent.decide) return "held";
       if (!sent.moved) return "retry";
@@ -629,11 +584,8 @@ export class ChangesFlows {
     if (isGroupBranch(hooks.memberBranch)) return this.autoViaGroup(row, isCurrent, hooks, hooks.memberBranch);
     const status = await this.deps.review.status(row.doc);
     if (status === null) return "later";
-
     if (status.reviewBranch !== hooks.memberBranch || !reviewIsOpen(status)) return "held";
-
     const attachments = await this.sendAttachmentsAlone({ ...row, review: status }, deps);
-
     if (attachments !== null && "deleted" in attachments && attachments.deleted !== undefined) return "deleted";
     if (attachments !== null) return "unsure" in attachments && attachments.unsure ? "unsure" : "limited" in attachments && attachments.limited ? "limited" : "retry";
     const members = new MemberSync({ deps, backs: this.backs, memory, send: async () => ({ ok: false, held: true }) });
@@ -678,16 +630,13 @@ export class ChangesFlows {
       const status = await this.deps.review.status(row.doc);
       if (status === null) return "later";
       const draft = reviewIsOpen(status) ? status.reviewBranch : null;
-
       if (draft === null && (hooks.ended === true || this.model.sentSha(row.change.path) !== null)) return "later";
-
       let found: BranchFile | undefined;
       if (draft !== null) {
         found = await this.deps.branchFile(row.doc, draft);
         if (found.kind === "unreadable") return "later";
         if (found.kind === "absent") return "held";
       }
-
       const sent = await this.sendOnce(row, { quiet: true, auto: { deps, memory }, ...(draft !== null ? { toReview: true, branch: draft, found: found! } : { edit: row.change.kind === "edited" }) });
       if (sent.ok) return "committed";
       if ("held" in sent) return conflicted() ? "conflict" : "held";
@@ -718,9 +667,7 @@ export class ChangesFlows {
 
   private async readUnits(asked: readonly ChangeRow[]): Promise<ChangeRow[]> {
     const units = this.expand(asked);
-
     const read = await this.model.read(units.flatMap((unit) => (unit.group && unit.group.members.length > BURST_FROM ? unit.group.members.slice(0, 1) : this.filesOf(unit))));
-
     const unchecked = read.filter((row) => row.unchecked === true);
     if (unchecked.length > 0) {
       await this.alert({ title: REVIEW_UNCHECKED_TITLE, description: REVIEW_UNCHECKED(unchecked.map((row) => noteName(row.change.path))) });
@@ -764,7 +711,6 @@ export class ChangesFlows {
 
   async changesSinceMain(row: ChangeRow): Promise<Since> {
     const [main, mine] = await Promise.all([row.change.kind === "new" ? Promise.resolve("") : this.deps.gitCopy(row.doc), this.deps.readText(row.change.path)]);
-
     if (mine === null) return { kind: "gone" };
     if (main === null) return { kind: "unreadable" };
     const shown = changesBetween(toLf(main), toLf(mine));
@@ -814,7 +760,6 @@ export class ChangesFlows {
   }
 
   async submit(asked: readonly ChangeRow[], reviewers: readonly string[], options: { asked?: true } = {}): Promise<boolean> {
-
     const freshAsked = options.asked ? [] : this.freshOf(asked);
     if (asksBeforeSeparate(freshAsked.length)) {
       const fresh = freshAsked;
@@ -827,14 +772,12 @@ export class ChangesFlows {
         return this.submit([grouped, ...left], reviewers, { asked: true });
       }
     }
-
     return this.busy(async () => {
       const rows = await this.readUnits(asked);
       if (rows.length === 0) return false;
       const problems: string[] = [];
       const wereAsked: string[] = [];
       const refused: string[] = [];
-
       let held = false;
       const unchanged: string[] = [];
       const attachmentNotes: string[] = [];
@@ -848,16 +791,12 @@ export class ChangesFlows {
           problems.push(`${unitLabel(row.unit, () => noteName(row.change.path))}: ${sent.message}`);
           continue;
         }
-
         if (sent.attachments) attachmentNotes.push(sent.attachments);
-
         if (sent.unchanged && !row.group) {
           unchanged.push(noteName(row.change.path));
           continue;
         }
-
         const result = await this.backs.submit(row.doc, reviewers.length ? await this.deps.review.requestReview(row.doc, reviewers) : await this.deps.review.share(row.doc));
-
         if (!result.ok && result.code === "reviewer_rejected" && reviewers.length) {
           const each = await this.askEach(row, reviewers);
           if (each) {
@@ -869,7 +808,6 @@ export class ChangesFlows {
         if (!result.ok) problems.push(`${unitLabel(row.unit, () => noteName(row.change.path))}: ${failure(result, reviewers.length ? ASK_REVIEW_FAILED : SUBMIT_FAILED)}`);
         else this.learnFrom(row, result.body);
       }
-
       const partial = refused.length ? partialReview([...new Set(wereAsked)], [...new Set(refused)]) : null;
       const unchangedWords = noChangeWords(unchanged, unchanged.length === rows.length);
       if (problems.length) {
@@ -878,7 +816,6 @@ export class ChangesFlows {
       }
       if (partial) await this.alert({ title: partial.title, description: [partial.description, ...attachmentNotes].join(" ") });
       if (held) return false;
-
       if (rows.length > 0 && unchanged.length === rows.length) {
         await this.alert({ title: NO_CHANGE_TITLE, description: unchangedWords! });
         return false;
@@ -900,7 +837,6 @@ export class ChangesFlows {
       } else if (one.code === "reviewer_rejected") refused.push(login);
       else return null;
     }
-
     if (asked.length === 0) {
       const shared = await this.deps.review.share(row.doc);
       if (!shared.ok) return null;
@@ -911,10 +847,8 @@ export class ChangesFlows {
 
   private learnFrom(row: ChangeRow, body: Record<string, unknown>): void {
     const pr = body.pr as (PrInfo & { headRef?: unknown }) | undefined;
-
     if (!pr || typeof pr.number !== "number" || typeof pr.state !== "string" || pr.isDraft !== false) return;
     this.model.learn(row.change.path, { reviewBranch: typeof pr.headRef === "string" ? pr.headRef : (row.review?.reviewBranch ?? null), pr });
-
     if (row.group) this.model.change({ kind: "draft", paths: [], groupIds: [row.group.id], isDraft: false });
   }
 
@@ -982,7 +916,6 @@ export class ChangesFlows {
   }
 
   async publish(asked: readonly ChangeRow[], options: { document?: boolean; asked?: true; knownPerFile?: true; countedRenames?: true } = {}): Promise<void> {
-
     const { rows: ready, held, expectOf } = await this.busy(() => this.readToPublish(asked), { words: CHECKING_WORDS, paths: asked.map((row) => row.change.path) });
     let rows = ready;
     if (rows.length === 0) return;
@@ -996,12 +929,10 @@ export class ChangesFlows {
     }
     const toDelete = rows.filter((row) => row.change.kind === "deleted" && !row.group);
     const others = rows.filter((row) => !toDelete.includes(row));
-
     let knownPerFile = options.knownPerFile === true;
     let countedRenames = options.countedRenames === true;
     if (!options.asked) {
       let sets = this.moving.renamesFor(others, toDelete);
-
       let countRenames = false;
       if (sets.length > 0) {
         const known = await this.moving.knownNeedsReview(sets);
@@ -1020,7 +951,6 @@ export class ChangesFlows {
         return this.publish([grouped, ...rows.filter((row) => !fresh.includes(row) || row.change.kind === "renamed")], { ...options, asked: true, ...(knownPerFile ? { knownPerFile: true as const } : {}), ...(countedRenames ? { countedRenames: true as const } : {}) });
       }
     }
-
     const group = rows.length === 1 ? rows[0]!.unit.group : undefined;
     const words = group
       ? { ...groupPublishWords(group), confirm: "Publish" }
@@ -1028,19 +958,15 @@ export class ChangesFlows {
         ? publishConfirm("note")
         : setPublishConfirm(
             others.map((row) => unitLabel(row.unit, () => noteName(row.change.path))),
-
             others.reduce((n, row) => n + documentsIn(row.unit), 0),
             false,
             this.model.publishQuota(),
             0,
             others.length,
           );
-
     if (others.length > 0 && !(await this.deps.dialogs.confirm({ title: words.title, description: words.description, confirmLabel: words.confirm }))) return;
     if (toDelete.length && !(await this.confirmDeletes(toDelete))) return;
-
     if (others.length === 1 && toDelete.length === 0) return this.publishSingle(others[0]!);
-
     const moves = knownPerFile ? [] : this.moving.renamesFor(others, toDelete);
     await this.publishSet(others.filter((row) => !moves.includes(row)), toDelete, expectOf, rows, moves, countedRenames);
   }
@@ -1050,13 +976,11 @@ export class ChangesFlows {
       const done: ChangeRow[] = [];
       const unchanged: string[] = [];
       try {
-
         const went = await this.publishing.single(row);
         if (went === "unchanged") unchanged.push(noteName(row.change.path));
         else if (!went) return;
         else {
           done.push(...this.filesOf(row));
-
           if (row.group) this.model.change({ kind: "gone", prNumbers: [row.group.overview.prNumber], paths: [] });
         }
       } finally {
@@ -1072,7 +996,6 @@ export class ChangesFlows {
       const done: ChangeRow[] = [];
       const unchanged: string[] = [];
       const outcomes: Array<ItemOutcome> = [];
-
       const deleteToasts: Array<{ title: string; description: string }> = [];
       const linksKept: string[] = [];
       const nameOf = (path: string): string => {
@@ -1080,7 +1003,6 @@ export class ChangesFlows {
         return row ? unitLabel(row.unit, () => noteName(path)) : noteName(path);
       };
       try {
-
         let unsettled = false;
         const runOne = async (row: ChangeRow): Promise<void> => {
           const went = await this.publishing.forSet(row);
@@ -1098,9 +1020,7 @@ export class ChangesFlows {
           if (row.group) this.model.change({ kind: "gone", prNumbers: [row.group.overview.prNumber], paths: [] });
         };
         for (const row of others) await runOne(row);
-
         let through = !unsettled && !outcomes.some((one) => one.status !== "done");
-
         let together = moves.length > 0 || toDelete.length >= 2;
         if (together && (moves.length > 0 || through)) {
           const sent = await this.moving.publish(moves, through ? toDelete : [], expectOf);
@@ -1108,10 +1028,8 @@ export class ChangesFlows {
           done.push(...sent.done);
           deleteToasts.push(...sent.deleteToasts);
           linksKept.push(...sent.linksKept);
-
           if (sent.perFile) {
             together = false;
-
             const choice = countedRenames ? "separate" : await this.askSeparate(this.freshOf(moves), sent.learned);
             if (countedRenames && sent.learned) this.deps.dialogs.toast("Renaming one by one", SEPARATE_ASK.reason);
             if (choice === "cancel") unsettled = true;
@@ -1126,7 +1044,6 @@ export class ChangesFlows {
             continue;
           }
           let removed = await this.deps.review.remove(row.doc, expectOf.get(row) ?? null);
-
           if (!removed.ok && removed.code === MAIN_MOVED && (await this.deps.gitFile(row.doc)).kind === "absent") removed = { ok: true, body: {} };
           if (!removed.ok) {
             const reason = removed.code === MAIN_MOVED ? `${noteName(row.change.path)} was changed on GitHub just now, so it was not deleted. Nothing was removed.` : failure(removed, COULD_NOT_PUBLISH);
@@ -1143,12 +1060,10 @@ export class ChangesFlows {
       }
       const complete = !outcomes.some((one) => one.status !== "done");
       if (!complete) {
-
         const lone = outcomes.length === 1 && outcomes[0]!.status === "failed" && toDelete.length === 1;
         if (lone) await this.alert({ title: couldntDeleteTitle(/\.canvas$/i.test(toDelete[0]!.change.path) ? "board" : "note"), description: (outcomes[0] as { reason: string }).reason });
         else await this.alert({ title: NOT_EVERYTHING_WENT_THROUGH, description: outcomes.map((one) => outcomeLine(one, nameOf)).join("\n") });
       } else {
-
         for (const deleted of deleteToasts) this.deps.dialogs.toast(deleted.title, deleted.description);
         if (linksKept.length > 0) {
           const kept = linksKeptWords(linksKept.map((path) => noteName(path)));
@@ -1252,12 +1167,10 @@ export class ChangesFlows {
   async closeReviews(rows: readonly ChangeRow[], step?: string, expectPr?: number | null): Promise<{ closed: ChangeRow[]; failed: { row: ChangeRow; result: Extract<StepResult, { ok: false }> } | null }> {
     const closed: ChangeRow[] = [];
     for (const row of rows) {
-
       const shown = row.entry?.prNumber;
       const expected = expectPr === null ? undefined : (expectPr ?? (row.review?.pr?.group === undefined && shown !== undefined && shown > 0 ? shown : undefined));
       const result = await this.deps.review.abandon(row.doc, step, expected);
       if (!result.ok) return { closed, failed: { row, result } };
-
       this.uploaded.clear();
       this.memory.forget(row.change.path);
       this.model.learnSent(row.change.path, null);

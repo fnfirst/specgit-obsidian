@@ -1,26 +1,17 @@
 export type AuthErrorCode =
-
   | "signed_out"
-
   | "network"
-
   | "rejected"
-
   | "declined"
-
   | "plugin_outdated"
-
   | "room_ended"
-
   | "document_deleted"
-
   | "unexpected";
 
 export class AuthError extends Error {
   constructor(
     readonly code: AuthErrorCode,
     message: string,
-
     readonly status?: number,
   ) {
     super(message);

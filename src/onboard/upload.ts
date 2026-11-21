@@ -12,22 +12,16 @@ export type UploadProgress =
   | { kind: "failed"; why: "changed" | "gone" | "not_empty" | "failed" };
 
 export interface UploadDeps {
-
   call(action: string, body: Record<string, unknown>): Promise<ApiAnswer>;
-
   listed(): Array<{ path: string; size: number }>;
-
   config(): Promise<Array<{ path: string; size: number }>>;
-
   ownGitignore(): Promise<string | null>;
   read(path: string): Promise<Uint8Array>;
   blobSha(bytes: Uint8Array): Promise<string>;
   wait(ms: number): Promise<void>;
   now(): number;
-
   isCurrent(): boolean;
   progress(state: UploadProgress): void;
-
   configDir: string;
 }
 
@@ -35,7 +29,6 @@ const OFFLINE_WAITS_MS = [5_000, 15_000, 30_000, 60_000];
 const OFFLINE_GIVE_UP_MS = 30 * 60_000;
 const SLOW_MIN_MS = 5_000;
 const SLOW_MAX_MS = 900_000;
-
 const MAX_ROUNDS = 3;
 
 interface Entry {
@@ -61,7 +54,6 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 export class VaultUpload {
-
   private readonly entries = new Map<string, Entry>();
   private offlineSince: number | null = null;
   private offlineCount = 0;

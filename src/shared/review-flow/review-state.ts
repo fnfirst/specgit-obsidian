@@ -8,13 +8,10 @@ export type ReviewIcon = "alert-triangle" | "check" | "circle-dashed" | "git-pul
 
 export interface ReviewState {
   kind: ReviewStage | "published" | "none";
-
   label: string;
-
   short: string;
   icon: ReviewIcon;
   tone: ReviewTone;
-
   title: string;
 }
 
@@ -31,7 +28,6 @@ function stageState(
   stage: ReviewStage,
   { block, yourReview, requested, pr, savesAsYouType = true }: { block: PublishBlock | null; yourReview: boolean; requested: readonly string[]; pr: number; savesAsYouType?: boolean },
 ): ReviewState {
-
   const said = (text: string) => `${text.replace(/\.$/, "")} (pull request #${pr}).`;
   if (yourReview) return { kind: stage, label: "Your review", short: "Your review", icon: "user-check", tone: "info", title: said("Waiting on your review") };
   switch (stage) {
@@ -103,7 +99,6 @@ export function changeSetReviewState(set: ChangeSet, viewerLogin: string): Revie
   const pick =
     set.entries.find((e) => e.stage === "conflicts") ??
     set.entries.find((e) => waitsOnViewer(e, viewerLogin)) ??
-
     set.entries.find((e) => e.stage === set.stage)!;
   return { ...entryReviewState(pick, viewerLogin), title: `${scope}: ${changeSetCounts(set)}.` };
 }
@@ -112,13 +107,9 @@ export interface StatusBadge {
   label: string;
   tone: ReviewTone;
   icon: ReviewIcon;
-
   title: string;
-
   count?: number;
-
   done: boolean;
-
   idle: boolean;
 }
 

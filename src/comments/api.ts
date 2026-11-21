@@ -28,10 +28,8 @@ export function isReviewNotOpen(error: unknown): boolean {
 }
 
 export interface CommentsPort {
-
   io(doc: DocumentRef, opener: { run<T>(write: () => Promise<T>, onPr?: (pr: PrInfo) => void): Promise<T> }): ThreadsIo;
   startReview(doc: DocumentRef): Promise<ReviewStart<PrInfo>>;
-
   savedSource(doc: DocumentRef): Promise<string>;
 }
 
@@ -98,7 +96,6 @@ export class CommentsApi implements CommentsPort {
       { method: "POST", body: { ...extra, ...(prNumber ? { prNumber } : {}) } },
       COMMENT_WORDS.saveFailed,
     );
-
     const isObject = (value: unknown): boolean => typeof value === "object" && value !== null;
     return {
       ...(isObject(body.thread) ? { thread: body.thread as AnchoredThreadView } : {}),

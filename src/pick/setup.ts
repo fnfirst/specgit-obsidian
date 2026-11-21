@@ -24,15 +24,10 @@ export interface PickDeps {
   signedIn: () => boolean;
   signIn: () => Promise<void>;
   settings: () => { repo: string; folder: string };
-
   apply: (mapping: { repo: string; folder: string }) => Promise<void>;
-
   unsent: () => Promise<number | null>;
-
   copyIn: (files: readonly CopyInFile[], skipped?: readonly string[]) => Promise<void>;
-
   listing?: (repo: string) => Promise<{ commit: string | null; files: ReadonlyMap<string, string> } | null>;
-
   onboard?: () => void;
 }
 
@@ -50,7 +45,6 @@ async function repoFiles(api: SpecgitApi, repo: string): Promise<string[] | null
 }
 
 function obsidianUi(app: App, deps: PickDeps): PickerUi {
-
   let shown: Modal | null = null;
   const show = <T>(make: (answer: (value: T) => void) => Modal): Promise<T> =>
     new Promise<T>((resolve) => {
@@ -61,7 +55,6 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
       shown = modal;
       modal.open();
     });
-
   const ask = (question: () => Promise<boolean>): Promise<boolean> => {
     const before = new Set(openDialogs());
     const answered = question();
@@ -75,7 +68,6 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
     show<string | null>((answer) => {
       const { onboard } = deps;
       return new RepoSuggestModal(app, {
-
         ...(onboard && !isRepoName(deps.settings().repo)
           ? {
               onboard: () => {
@@ -87,7 +79,6 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
         load: () => readRepoList(deps.api, deps.signedIn),
         choose: (name) => answer(name),
         giveAccess: (repo) => window.open(giveAccessUrl(deps.server(), repo.fullName, repo.ownerInstallationId)),
-
         retry: () => void pickRepository().then(answer),
         dismissed: () => answer(null),
       });
@@ -96,7 +87,6 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
     pickRepository,
     confirmFolder: (question) => show((answer) => new FolderConfirmModal(app, question, answer)),
     pickFolder: () => show<string | null>((answer) => new FolderSuggestModal(app, app.vault.getAllFolders(false).map((folder) => folder.path), answer)),
-
     bringForward: () => (shown === null ? false : bringForward(shown)),
     confirmSetup: (repo) => ask(() => deps.dialogs.confirm({ title: SETUP_TITLE, description: setupQuestion(repo), confirmLabel: SETUP_CONFIRM, cancelLabel: SETUP_CANCEL })),
     confirmCopyIn: ({ repo, count, hidden, leftOut }) =>

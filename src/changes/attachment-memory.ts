@@ -5,19 +5,14 @@ import { ATTACHMENT_WORDS } from "../shared/review-flow";
 export type Attachment =
   | {
       repoPath: string;
-
       base64: string | (() => Promise<string>);
-
       sha?: string;
-
       expectSha?: string | null;
     }
   | { repoPath: string; skipped: "tooLarge" | "outsideFolder" };
 
 export const ATTACHMENT_LATER = "it could not be sent just now, and specgit will try again shortly";
-
 export const ATTACHMENT_NOT_SENT = "It could not be sent.";
-
 export const ATTACHMENT_HELD = "it could not be sent after a few tries, and will be tried again when this note is next saved";
 
 export const attachmentName = (repoPath: string): string => repoPath.split("/").pop() ?? repoPath;
@@ -27,7 +22,6 @@ export const ATTACHMENTS_KEPT = 500;
 export class AttachmentMemory {
   private readonly key: string;
   private base: Record<string, string>;
-
   private readonly hashes = new Map<string, { mtime: number; size: number; sha: string }>();
 
   constructor(
@@ -47,7 +41,6 @@ export class AttachmentMemory {
 
   agreedOf(repoPath: string): string | undefined {
     const sha = this.base[repoPath];
-
     if (sha !== undefined) {
       delete this.base[repoPath];
       this.base[repoPath] = sha;
@@ -67,7 +60,9 @@ export class AttachmentMemory {
     if (keys.length > ATTACHMENTS_KEPT) for (const old of keys.slice(0, keys.length - ATTACHMENTS_KEPT)) delete this.base[old];
     try {
       this.state.save(this.key, this.base);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   async hash(path: string, stat: { mtime: number; size: number }, read: () => Promise<string>): Promise<string> {
@@ -103,7 +98,6 @@ export async function withBytes(attachments: readonly Attachment[]): Promise<{ a
 
 export const ATTACHMENTS_SAID = (problems: ReadonlyArray<{ name: string; why: string; server?: true }>): string => {
   const sentence = (why: string): string => (/[.!?]$/.test(why) ? why : `${why}.`);
-
   const one = (problem: { name: string; why: string; server?: true }): string => (problem.server === true ? `${problem.name}. ${sentence(problem.why)}` : `${problem.name}: ${sentence(problem.why)}`);
   return problems.length === 1 ? `specgit saved this note, but not its file ${one(problems[0]!)}` : `specgit saved this note, but not its files. ${problems.map(one).join(" ")}`;
 };

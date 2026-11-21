@@ -14,9 +14,7 @@ export interface StopReviewHost {
   readonly model: ChangesModel;
   busy<T>(work: () => Promise<T>, doing: Doing): Promise<T>;
   alert(options: Parameters<Dialogs["alert"]>[0]): Promise<void>;
-
   readReviews(files: readonly ChangeRow[]): Promise<ChangeRow[]>;
-
   forget(path: string): void;
   closeReviews(rows: readonly ChangeRow[], step?: string): Promise<{ closed: ChangeRow[]; failed: { row: ChangeRow; result: Extract<StepResult, { ok: false }> } | null }>;
 }
@@ -26,14 +24,11 @@ export class StopReview {
 
   async run(asked: readonly ChangeRow[]): Promise<void> {
     const { deps, model } = this.host;
-
     const files = asked.filter((row) => !row.group && !model.groupOf(row.change.path));
     if (files.length === 0) return;
     const rows = await this.host.readReviews(files);
-
     const unchecked = rows.filter((row) => row.unchecked === true);
     if (unchecked.length > 0) return this.host.alert({ title: REVIEW_UNCHECKED_TITLE, description: REVIEW_UNCHECKED(unchecked.map((row) => noteName(row.change.path))) });
-
     const shown = new Map(files.map((row) => [row.change.path, row.entry?.prNumber ?? null]));
     const moved = rows.filter((row) => row.entry === null || row.entry.prNumber !== shown.get(row.change.path));
     if (moved.length > 0) return this.host.alert({ title: STOP_REVIEW.moved.title, description: moved.length === 1 ? STOP_REVIEW.moved.one(noteName(moved[0]!.change.path)) : STOP_REVIEW.moved.many });
@@ -47,7 +42,6 @@ export class StopReview {
     if (!ok) return;
     await this.host.busy(
       async () => {
-
         const bases = new Map<string, string>();
         for (const row of rows) {
           const base = await this.baseOf(row);
@@ -83,7 +77,6 @@ export class StopReview {
         }
         const taken = members.map((row) => {
           const key = docKey(row.doc);
-
           const roomed = isRoomed(deps, row.change.path);
           const step = deps.ownRestarts.expect(key, bases.get(row.change.path)!);
           return { row, key, step, putBack: roomed ? deps.keepBase(row.change.path, row.doc, bases.get(row.change.path)!) : null };
@@ -109,7 +102,6 @@ export class StopReview {
           }
         }
         if (failed) return this.host.alert({ title: STOP_REVIEW.failed, description: failure(failed, STOP_REVIEW.failed) });
-
         model.leftGroup(files.map((file) => file.path), wasChecked);
         for (const { row } of taken) {
           this.host.forget(row.change.path);
@@ -134,11 +126,9 @@ export class StopReview {
   private async close(row: ChangeRow, base: string): Promise<Extract<StepResult, { ok: false }> | null> {
     const { deps } = this.host;
     const key = docKey(row.doc);
-
     const roomed = isRoomed(deps, row.change.path);
     const step = deps.ownRestarts.expect(key, base);
     const putBack = roomed ? deps.keepBase(row.change.path, row.doc, base) : null;
-
     let how: "ok" | "unsure" | "refused" = "unsure";
     try {
       const { failed } = await this.host.closeReviews([row], step);
@@ -148,11 +138,9 @@ export class StopReview {
     } finally {
       if (how === "refused") {
         putBack?.();
-
         deps.ownRestarts.done(key, [step]);
       } else {
         deps.ownRestarts.sent(key, step, how);
-
         deps.stopped?.(row.change.path);
       }
     }

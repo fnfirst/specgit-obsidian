@@ -6,7 +6,6 @@ import type { DocumentRef } from "./mapping";
 export interface ApiAnswer {
   status: number;
   body: Record<string, unknown> | null;
-
   message: string | null;
   code: string | null;
 }
@@ -51,7 +50,6 @@ export class SpecgitApi {
       status: response.status,
       body,
       message: typeof error?.message === "string" ? error.message : null,
-
       code: typeof error?.code === "string" ? error.code : typeof body?.code === "string" ? body.code : null,
     };
   }

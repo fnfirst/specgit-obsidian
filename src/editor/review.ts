@@ -4,13 +4,9 @@ import type { Outcome, Snapshot } from "./join";
 import type { EditorServices, Settle } from "./services";
 
 export interface ReviewHost {
-
   name(): string;
-
   room(): Room | null;
-
   text(): string;
-
   meet(text: string, room: Room): Outcome;
 }
 
@@ -20,7 +16,6 @@ const NOT_READY = "specgit is catching this note up. Try again in a moment.";
 
 export class Review {
   private asked: AbortController | null = null;
-
   private snapshot: Snapshot = { mine: "", theirs: "" };
 
   constructor(

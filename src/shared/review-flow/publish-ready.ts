@@ -5,7 +5,6 @@ import type { PrMergeableState, PrReviewPolicy, PrState } from "./pr-info";
 export interface PublishablePr {
   state: PrState;
   isDraft: boolean;
-
   mergeable: boolean | null;
   mergeableState: PrMergeableState | null;
   autoMergeEnabled: boolean;

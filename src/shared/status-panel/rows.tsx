@@ -21,11 +21,9 @@ const ROW_MENU_ORDER: readonly StatusRowMenuItem[] = ["open", "show-changes", "s
 const VIEW_ONLY_MENU: readonly StatusRowMenuItem[] = ["open", "show-changes", "see-github", "see-difference", "view-on-github"];
 
 function menuFor(doc: StatusDoc): readonly StatusRowMenuItem[] {
-
   const withReview: readonly StatusRowMenuItem[] = doc.hasReview ? ["stop-review", "view-on-github"] : [];
   if (doc.teammate) return ["open", ...(doc.bringIn ? (["bring-in"] as const) : []), ...(doc.hasReview ? (["view-on-github"] as const) : [])];
   if (doc.asksYou) return ["open", "show-changes", "view-on-github"];
-
   return [...COMPARISONS, ...ownMenu(doc, withReview), ...(doc.bringIn ? (["bring-in"] as const) : [])];
 }
 
@@ -41,7 +39,6 @@ function ownMenu(doc: StatusDoc, withReview: readonly StatusRowMenuItem[]): read
       return ["open", "show-changes", "publish-only", "add-reviewer", "move-back", "discard", "stop-review", "view-on-github"];
     case "draft":
     case "edited":
-
       return ["open", "show-changes", ...(doc.check === "submit" ? (["submit-only"] as const) : []), "discard", ...withReview];
     case "changed-in-both":
       return ["open", "show-changes", "discard", ...withReview];
@@ -92,7 +89,6 @@ export function groupMenuItems(group: Pick<StatusGroup, "state" | "hasReview">, 
   }
   return (Object.keys(STATUS_GROUP_MENU) as StatusGroupMenuItem[]).filter((item) => wanted.includes(item));
 }
-
 export const memberMenuId = (member: string): string => `member:${member}`;
 export const groupMenuLabel = (item: StatusGroupMenuItem): string => STATUS_GROUP_MENU[item];
 
@@ -111,7 +107,6 @@ export function RowButton({ button, id, ctx, group, ending }: { button: StatusRo
 const flashClass = (id: string, ctx: Ctx): string | false => ctx.flash.has(id) && (ctx.flashHeld ? "sp-flash sp-flash-hold" : "sp-flash");
 
 function Name({ doc, ctx }: { doc: StatusDoc; ctx: Ctx }) {
-
   const was = doc.renamedFrom ? ctx.tips.bind(`${doc.id}:name`, { picture: "changes", name: doc.name, line: STATUS_TIPS.wasNamed(doc.renamedFrom) }) : {};
   return (
     <button type="button" className="sp-name sp-name-link" title={doc.renamedFrom ? undefined : doc.folder ? `${doc.folder}/${doc.name}` : doc.name} {...was} onClick={() => ctx.act({ type: "row", id: doc.id, action: "open" })}>
@@ -160,7 +155,6 @@ export function Row({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }
         {entry.live ? <LiveWho people={doc.here ?? []} id={doc.id} ctx={ctx} /> : doc.reason ? <span className="sp-reason">{statusClipReason(doc.reason)}</span> : <Faces people={doc.people} id={doc.id} kind={doc.asksYou ? "asked" : "worked"} ctx={ctx} />}
         {pill ? <span className="sp-pill-slot">{pill}</span> : null}
         {button}
-        { }
         {doc.when || more ? edge : null}
       </div>
     </li>
@@ -170,7 +164,6 @@ export function Row({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }
 export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }) {
   const group = entry.item as StatusGroup;
   const [open, setOpen] = useState(ctx.openGroups.has(group.id));
-
   const [all, setAll] = useState(false);
   const shown = all ? group.members.length : DRAW_LIMIT;
   const rest = group.members.length - shown;
@@ -180,7 +173,6 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
   const listId = `${group.id}-members`;
   const count = statusGroupCount(group.members.length, ctx.noun);
   const groupMore = groupMenuItems(group, ctx).length > 0 ? <MoreButton id={group.id} name={group.name} ctx={ctx} /> : null;
-
   return (
     <li className={cx("sp-group", entry.open && "sp-row-open", flashClass(group.id, ctx))} data-row-id={group.id}>
       <div className={cx("sp-row sp-group-row", button && "sp-row-two")}>
@@ -209,7 +201,6 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
               <span className="sp-name" title={group.name}>
                 {group.name}
               </span>
-              { }
               <span className="sp-group-count">{group.members.length}</span>
             </>
           )}

@@ -4,16 +4,11 @@ import { keptWords, ungroupedWords, type KeptBranch } from "./status-list";
 
 export interface UngroupAnswer {
   id?: string;
-
   files?: Extract<InFlightChange, { kind: "released" }>["files"];
   ended?: boolean;
-
   ending?: EndingProgress;
-
   kept?: KeptBranch;
-
   lost?: number;
-
   unsent?: string[];
 }
 

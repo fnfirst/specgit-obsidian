@@ -2,26 +2,17 @@ import { EmptyState } from "../brand/parts";
 import { GIVE_ACCESS_LABEL, notInstalledWords } from "../changes/words";
 
 export interface ChangesActions {
-
   openNote(path: string, event?: MouseEvent | KeyboardEvent): void;
   openUrl(url: string): void;
   openInSpecgit(path: string): void;
-
   isLive(path: string): boolean;
-
   repo(): string;
-
   owner(): string;
-
   folder(): string;
-
   giveAccess(): void;
-
   copyIn?(): Promise<void>;
-
   join?(path: string): void;
   addToMyNote?(path: string): void;
-
   offered?(): readonly string[];
   addOffered?(): void;
 }

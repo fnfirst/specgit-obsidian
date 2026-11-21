@@ -52,7 +52,6 @@ class Reader {
 }
 
 export function readSync(data: unknown): SyncRead {
-
   if (Object.prototype.toString.call(data) !== "[object ArrayBuffer]") return { kind: "other" };
   try {
     const message = new Reader(new Uint8Array(data as ArrayBuffer));
@@ -68,7 +67,6 @@ export function readSync(data: unknown): SyncRead {
 export class GuardedProvider extends HocuspocusProvider {
   private lineage: ((roomVector: Map<number, number>) => boolean) | null = null;
   private held: MessageEvent[] = [];
-
   private checked = false;
 
   guardReconnects(check: (roomVector: Map<number, number>) => boolean): void {

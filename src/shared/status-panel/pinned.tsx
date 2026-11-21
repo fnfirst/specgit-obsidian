@@ -8,10 +8,8 @@ export type CardButton = "propose" | "submit" | "approve" | "ask-changes" | "pub
 export const PINNED_MENU_LABEL: Record<PinnedMenuItem, string> = { "open-in-specgit": STATUS_CARD.openInSpecgit, "copy-link": STATUS_CARD.copyLink, "view-on-github": STATUS_CARD.viewOnGitHub };
 
 export function cardButtons(pinned: Pick<StatusPinned, "state" | "asksYou" | "canApprove" | "publishable" | "propose" | "approveInSpecgit" | "local" | "nothingToSend">): CardButton[] {
-
   if (pinned.local) return [];
   const reviewer: CardButton[] | null = pinned.state === "in-review" && (pinned.asksYou || pinned.canApprove) ? (pinned.approveInSpecgit ? ["approve"] : ["approve", "ask-changes"]) : null;
-
   if (pinned.nothingToSend) return reviewer ?? [];
   const unsent = pinned.state === "draft" || pinned.state === "edited";
   if (pinned.propose && unsent) return ["propose"];
@@ -116,7 +114,6 @@ export function PinnedCard({ pinned, ctx, quiet, hasMore, onButton, onMore }: { 
         {ctx.readOnly ? (
           <p className="sp-view-only">{STATUS_VIEW_ONLY}</p>
         ) : (
-
           <>
             {pinned.state === "out-of-date" && !pinned.fixBelow ? (
               <div className="sp-card-actions">

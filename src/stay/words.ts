@@ -1,11 +1,9 @@
 export const STAY = {
   name: "Stay connected",
-
   what: "Saves your edits for review as you go, and brings in other people's.",
   whileOpen: "It works while Obsidian is open, and catches up when you come back.",
   on: "On",
   off: "Off",
-
   standing: (on: boolean): string => (on ? "On for this vault." : "Off. Your edits stay on this device."),
 } as const;
 
@@ -17,42 +15,28 @@ export const OFFER = {
 } as const;
 
 export const CHOICE_WORDS = {
-
   draft: "This note and its unpublished changes both changed it.",
-
   main: "This note and GitHub both changed it.",
-
   review: "This note is in review, and GitHub changed it too.",
   choose: "Choose what to keep",
   catchUp: "Catch up",
-
   show: "Show it",
 } as const;
 
 export const DRAFT_SAID = {
-
   conflict: (name: string): string => `${name} was changed here and somewhere else, in the same place. Nothing was overwritten.`,
-
   discarded: (name: string): string => `The unpublished changes to ${name} were dropped, so it shows the published version again.`,
-
   offer: (by: string, name: string): string => `${by} has unpublished changes to ${name}.`,
   offerButton: "Add to my note",
-
   offerTogether: (count: number): string => `${count === 1 ? "1 note has" : `${count} notes have`} changes you can add.`,
-
   offerTogetherButton: "Show them",
-
   offerTogetherPlain: (count: number): string => `Other people have unpublished changes to ${count} ${count === 1 ? "note" : "notes"}.`,
   offerTogetherPlainButton: "Add them to my notes",
-
   renameKept: (name: string, newName: string): string => `${name} was renamed to ${newName} elsewhere, and you changed it here. Both are in Changes.`,
-
   away: (count: number): string => `specgit added changes to ${count === 1 ? "1 note" : `${count} notes`} while this window was hidden.`,
-
   theirsDraft: (by: string, name: string): string => `${by} has unpublished changes to ${name}.`,
   theirsInReview: (by: string): string => `${by} has this file in review. It may publish soon.`,
   chooseButton: "Choose what to keep",
-
   closedElsewhere: (names: readonly string[], byWhom: "someone else" | "unknown" = "someone else"): string => {
     const by = byWhom === "someone else" ? " by someone else" : "";
     return names.length === 1
@@ -60,7 +44,6 @@ export const DRAFT_SAID = {
       : `${names.length} reviews were closed on GitHub${by}. Your notes keep the changes.`;
   },
   closedElsewhereButton: "Show them",
-
   deletedKept: (name: string): string => `${name} was deleted on GitHub. Your note keeps your changes. Submit it to bring it back.`,
 } as const;
 

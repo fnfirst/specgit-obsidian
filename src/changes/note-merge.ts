@@ -8,7 +8,6 @@ import { matchedBase } from "./merge-base";
 import type { ChangeRow } from "./model";
 
 export async function mergedWith(deps: FlowDeps, row: ChangeRow, mine: string, theirs: string, given?: string | null, other: ReviewSide = "github"): Promise<string | null> {
-
   const base = given !== undefined ? given : await matchedBase(row.change.base, (sha) => deps.gitBlob(row.doc, sha), () => deps.baseText(row.change.path));
   const joined = reconcile({ editor: toLf(mine), room: toLf(theirs), base, baseIsGit: false, emptied: false, git: theirs, readOnly: false }, deps.budget?.() ?? new Budget(400));
   if (joined.kind === "text") return joined.text;

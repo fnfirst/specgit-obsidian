@@ -16,9 +16,7 @@ import type { BroughtDraft } from "../changes/bring-in";
 import { isViewersBranch, TRY_AGAIN } from "../shared/review-flow";
 
 export const FACTS_PER_REQUEST = 50;
-
 export const FACTS_FRESH_MS = 30_000;
-
 export const FACTS_RETRY_MS = 15_000;
 export const FACTS_RETRY_MAX_MS = 120_000;
 
@@ -28,46 +26,32 @@ export interface StatusEnv {
   review: Pick<ReviewApi, "details">;
   dialogs: Pick<Dialogs, "confirm" | "toast">;
   viewer: () => string;
-
   repo: () => string;
   folder: () => string;
   place: () => string;
-
   activePath: () => string | null;
-
   storage: { load: (key: string) => unknown; save: (key: string, value: unknown) => void };
-
   note: { open: (path: string) => void; openInSpecgit: (path: string) => void; openUrl: (url: string) => void; join?: (path: string) => void };
   copyIn: () => Promise<void>;
   bringInNewer: () => Promise<unknown>;
   bringInDraft: (path: string) => Promise<BroughtDraft>;
-
   isLive: (path: string) => boolean;
   openComments: (path: string) => number;
-
   offered?: () => readonly string[];
   addOffered?: () => void;
-
   inVault: (path: string) => boolean;
-
   documentFor: (path: string) => DocumentRef | null;
-
   ask: PanelHost["confirm"];
   openMenu: PanelHost["openMenu"];
-
   touch?: boolean;
-
   since: SinceView;
-
   plansUrl: () => string;
   now?: () => number;
-
   timers?: { set: (run: () => void, ms: number) => unknown; clear: (handle: unknown) => void };
 }
 
 export class SinceView {
   private open: { path: string; close: () => void } | null = null;
-
   private pending: string | null = null;
   private readonly listeners = new Set<() => void>();
 
@@ -126,10 +110,8 @@ export function catchUpQuestion(row: ChangeRow, preview: CatchUpPreview | null):
 export class StatusController {
   private readonly listeners = new Set<() => void>();
   private facts = new Map<number, ReviewFacts>();
-
   private asked = "";
   private readAt = 0;
-
   private retry: unknown = null;
   private retryMs = FACTS_RETRY_MS;
   private wasBusy = false;
@@ -140,7 +122,6 @@ export class StatusController {
   private reviewers: readonly StatusReviewer[] = [];
   private notice: StatusNotice | null = null;
   private editing: string | null = null;
-
   private behind: { path: string; blob: string; behind: boolean } | null = null;
   private previewing = "";
   private version = 0;
@@ -153,7 +134,6 @@ export class StatusController {
 
   constructor(private readonly env: StatusEnv) {
     this.now = env.now ?? Date.now;
-
     this.stops.push(env.model.onLooked(() => this.look()));
     this.stops.push(env.model.subscribe(() => this.modelChanged()));
     this.stops.push(env.since.subscribe(() => this.changed()));
@@ -217,10 +197,8 @@ export class StatusController {
   private modelChanged(): void {
     if (this.disposed) return;
     const { busy } = this.env.model.state();
-
     const ended = this.wasBusy && !busy;
     this.wasBusy = busy;
-
     if (ended || this.numbers().join(",") !== this.asked) void this.read();
     this.preview();
     this.changed();
@@ -241,12 +219,10 @@ export class StatusController {
       this.again = true;
       return this.reading;
     }
-
     this.cancelRetry();
     const numbers = this.ordered();
     this.asked = this.numbers().join(",");
     this.readAt = this.now();
-
     const wanted = retrying ? numbers.filter((number) => !this.facts.has(number)) : numbers;
     this.reading = (async () => {
       const next = new Map<number, ReviewFacts>();
@@ -254,7 +230,6 @@ export class StatusController {
       let refused = false;
       for (let at = 0; at < wanted.length; at += FACTS_PER_REQUEST) {
         const answer = await this.env.review.details(this.env.repo(), wanted.slice(at, at + FACTS_PER_REQUEST));
-
         if (answer === null || answer === "failed") {
           complete = false;
           refused = answer === "failed";
@@ -266,7 +241,6 @@ export class StatusController {
       if (complete) this.retryMs = FACTS_RETRY_MS;
       else if (refused) this.retryLater();
       if (complete || next.size > 0) {
-
         const kept = new Map<number, ReviewFacts>();
         for (const number of numbers) {
           const fresh = next.get(number) ?? this.facts.get(number);
@@ -332,7 +306,6 @@ export class StatusController {
     const state = model.state();
     const path = view ? (view.state.note?.path ?? null) : this.env.activePath();
     const status = view?.state.status ?? null;
-
     const behind = path !== null && this.behind?.path === path && this.behind.behind;
     const key: unknown[] = [state, this.facts, this.version, view?.state ?? null, path, behind, status, model.vault()];
     if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) return this.built.value;
@@ -343,9 +316,7 @@ export class StatusController {
       for (const file of vault.files.values()) {
         const compared = comparedOf(file.state);
         if (compared?.kind !== "both") continue;
-
         if (!compared.baseUnknown && !model.row(file.path)?.entry) both.add(file.path);
-
         views.set(file.path, viewsOf(compared).flatMap((view) => (view === "github" || view === "difference" ? [view] : [])));
       }
     }
@@ -455,7 +426,6 @@ export class StatusController {
       toast: (title, description) => env.dialogs.toast(title, description),
       notBrought: TRY_AGAIN,
     };
-
     if (action.type === "submit" || action.type === "approve" || action.type === "publish") {
       this.notice = null;
       this.changed();

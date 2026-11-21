@@ -13,11 +13,9 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 export function heldWords(
   group: Pick<GroupOverview, "hold" | "mergeableState"> & { holdUnread?: boolean; holdOthers?: number; conflictPaths?: readonly string[]; ending?: GroupOverview["ending"]; holdPaths?: readonly string[]; paths?: readonly string[] },
 ): string | null {
-
   if (group.ending && !endingWaitsForPick(group)) return endingWords(group.ending);
   if (group.hold === "overlap") return "Changed on GitHub and here. Pick which to keep.";
   if (group.hold === "outside") {
-
     const named = group.holdPaths ?? [];
     const members = named.filter((path) => group.paths?.includes(path)).length;
     const about = classifyOutside({ unread: group.holdUnread, members, others: named.length - members + (group.holdOthers ?? 0) });
@@ -29,7 +27,6 @@ export function heldWords(
   if (group.hold === "behind") return "The published version of a file here changed. Catch it up to publish.";
   if (group.mergeableState !== "dirty") return null;
   const named = group.conflictPaths ?? [];
-
   if (named.length > 0) return `The published version of ${named.length === 1 ? "this file" : `${named.length} of these files`} changed too (${named.slice(0, 3).map((p) => p.split("/").pop()).join(", ")}${named.length > 3 ? ", and more" : ""}). Take ${named.length === 1 ? "it" : "them"} out, catch up with the published version, and add ${named.length === 1 ? "it" : "them"} back.`;
   return "Resolve the conflict to publish.";
 }
@@ -126,16 +123,13 @@ export interface GroupFile {
 
 export interface StatusGroup {
   overview: GroupOverview;
-
   entry: ChangeSetEntry;
   files: GroupFile[];
-
   held: GroupHeld | null;
 }
 
 export interface StatusUnits {
   groups: StatusGroup[];
-
   loose: ChangeSetEntry[];
 }
 
@@ -167,11 +161,8 @@ export function unitsWords(entries: readonly ChangeSetEntry[]): string {
 }
 
 export const GROUP_PRO_ONLY = {
-
   reason: "Group together is on the Pro and Pro Plus plans.",
-
   upgrade: "See the plans",
-
   upgradePath: "/pricing",
 } as const;
 
@@ -206,7 +197,6 @@ export function groupPlan(
     const target = groups[0]!.group!;
     return { kind: "add", label: `Add ${loose.length} to ${target.name}` };
   }
-
   if (groups.length === 1) return none(`Check ${noun}s to add to ${groups[0]!.group!.name}.`);
   return none(`Check two or more ${noun}s first.`);
 }

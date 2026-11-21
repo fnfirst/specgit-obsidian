@@ -2,13 +2,9 @@ import type { App, EventRef, TAbstractFile } from "obsidian";
 import { BaseStore, type LocalState } from "./bases";
 
 export interface VaultPort {
-
   read(path: string): Promise<string | null>;
-
   onModify(listener: (path: string) => void): () => void;
-
   onRename(listener: (from: string, to: string) => void): () => void;
-
   onDelete(listener: (path: string) => void): () => void;
 }
 

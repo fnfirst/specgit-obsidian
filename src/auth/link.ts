@@ -10,17 +10,13 @@ export function authorizeUrl(server: string, params: { challenge: string; state:
   url.searchParams.set("state", params.state);
   url.searchParams.set("vault", params.vaultName);
   if (params.installId) url.searchParams.set("install", params.installId);
-
   if (params.github) url.searchParams.set("github", params.github);
   return url.toString();
 }
 
 export type AuthLink =
-
   | { kind: "session"; session: string; state: string }
-
   | { kind: "declined"; state: string }
-
   | { kind: "invalid" };
 
 export function parseAuthLink(params: Readonly<Record<string, string>>): AuthLink {

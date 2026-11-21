@@ -12,7 +12,6 @@ export const foldOpenId = (fold: StatusFold["id"]): string => `fold:${fold}`;
 export function FoldRow({ fold, ctx }: { fold: StatusFold; ctx: Ctx }) {
   const words = FOLD_WORDS[fold.id];
   const [open, setOpen] = useState(ctx.openGroups.has(foldOpenId(fold.id)));
-
   const [all, setAll] = useState(false);
   const heading = statusFoldRow(words.label, fold.count);
   const items = fold.items && fold.items.length > 0 ? fold.items : null;

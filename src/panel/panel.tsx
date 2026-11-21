@@ -23,21 +23,16 @@ export interface OnboardingWatch {
 const IDLE: OnboardState = { kind: "idle" };
 
 export interface PanelActions extends OnboardActions {
-
   onboarding?: OnboardingWatch;
   connect: (path: string) => void;
   disconnect: (path: string) => void;
   signIn: () => void;
-
   chooseRepository: () => void;
   openInSpecgit: (path: string) => void;
   copyLink: (path: string) => void;
   seeChanges: (path: string) => void;
-
   setStayConnected: (on: boolean) => void;
-
   repo?: () => string;
-
   tryNow?: () => void;
 }
 
@@ -65,13 +60,11 @@ function useModel(model: PanelModel): PanelState {
 
 export interface PanelComments {
   env: CommentsTabEnv;
-
   tabs?: PanelTabs;
 }
 
 export type TabContents = Partial<Record<TabId, ComponentChildren>>;
 export interface PanelTabs {
-
   contents: (view?: StatusView) => TabContents;
   badges: () => TabBadges;
   subscribe: (listener: () => void) => () => void;
@@ -82,13 +75,11 @@ export function Panel({ model, actions, badges = NO_BADGES, comments }: { model:
   const { note, cameIn } = state;
   const tab = useWatch(model.subscribe, model.tab);
   const ids = useId();
-
   const open = useWatch(comments.env.hub.subscribe, () => comments.env.hub.openCount(note?.path ?? null));
   const mine = comments.tabs;
   const own = useWatch(mine?.subscribe ?? NEVER, () => mine?.badges() ?? badges);
   const shown: TabBadges = { ...own, comments: { open } };
   const onboarding = useWatch(actions.onboarding?.subscribe ?? NEVER, () => actions.onboarding?.state() ?? IDLE);
-
   if (!state.signedIn || !state.mapped) {
     return (
       <div class="specgit-panel">
@@ -111,7 +102,6 @@ export function Panel({ model, actions, badges = NO_BADGES, comments }: { model:
       <Header state={state} actions={actions} />
       <Tabs ids={ids} tab={tab} tabs={ALL_TABS} select={model.selectTab} badges={shown} />
       <div class={`specgit-panel-body${statusTab ? " specgit-panel-body-status" : ""}`} role="tabpanel" id={`${ids}-panel`} aria-labelledby={`${ids}-tab-${tab}`}>
-        { }
         {tab === "status" && note !== null && cameIn !== null && (
           <p class="specgit-said" role="status">
             {cameInWords(cameIn)}
@@ -153,7 +143,6 @@ function NotLiveWhy({ status, actions }: { status: PanelState["status"]; actions
         </>
       );
     case "deleted":
-
       return <p class="specgit-hint" data-testid="not-live-why">{NOT_LIVE.deleted}</p>;
     default:
       return <p class="specgit-hint">Disconnect, then Connect Live to try again.</p>;
@@ -277,12 +266,10 @@ function Tabs({ ids, tab, tabs, select, badges }: { ids: string; tab: TabId; tab
     const next = tabs[(tabs.findIndex((candidate) => candidate.id === tab) + step + tabs.length) % tabs.length];
     if (!next) return;
     select(next.id);
-
     const tablist = event.currentTarget as HTMLElement;
     tablist.win.requestAnimationFrame(() => tablist.doc.getElementById(`${ids}-tab-${next.id}`)?.focus());
   };
   return (
-
     <div class="specgit-tabs is-two" role="tablist" aria-label="specgit panels" onKeyDown={move}>
       {tabs.map(({ id, label, icon }) => (
         <TabButton key={id} ids={ids} id={id} icon={icon} label={label} selected={tab === id} aria={labelFor(id, label, badges)} tip={tipOf(id)} select={select}>

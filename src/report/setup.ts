@@ -5,25 +5,19 @@ import { alertReportText, buildDetails, platformWords, type ReportApi, ReportFor
 
 export interface ReportSetupDeps {
   api: ReportApi;
-
   server: () => string;
   version: string;
-
   repository: () => string;
   signedIn: () => boolean;
-
   noteState: () => NoteWord | null;
 }
 
 export interface ReportHandle {
-
   open(message?: string): void;
-
   openForAlert(title: string, description?: string): void;
 }
 
 export function setUpReport(plugin: Plugin, deps: ReportSetupDeps): ReportHandle {
-
   let draft: { form: ReportForm; fromAlert: boolean } | null = null;
   const open = (message = ""): void => {
     const reuse = message === "" && draft !== null && draft.form.message !== "";
@@ -46,7 +40,6 @@ export function setUpReport(plugin: Plugin, deps: ReportSetupDeps): ReportHandle
       },
       reuse ? draft!.form.message : message,
     );
-
     const fromAlert = reuse ? draft!.fromAlert : message !== "";
     draft = { form, fromAlert };
     new ReportModal(plugin.app, form, fromAlert, () => (draft = null)).open();

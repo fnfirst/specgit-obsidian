@@ -72,7 +72,6 @@ export function joinedWords(split: { unpublished: number | null; published: numb
   const own = kept ? " Your own edits were kept." : "";
   if (unpublished === 0) return cameInNow(published, kept);
   const head = by === null ? "Unpublished changes" : `Unpublished changes from ${by}'s draft`;
-
   if (unpublished === null) return `${head} came in.${own}`;
   const also = published > 0 ? ` ${published} published ${published === 1 ? "change" : "changes"} came in too.` : "";
   return `${head} came in (${places(unpublished)}).${also}${own}`;

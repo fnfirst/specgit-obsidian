@@ -3,18 +3,12 @@ import { sameLogin } from "../shared/review-flow";
 export type StayDrafts = "everyone" | "mine";
 
 export interface Draft {
-
   branch: string;
-
   blob: string | null;
-
   by: string | null;
   prNumber: number | null;
-
   inGroup?: true;
-
   viaGroup?: true;
-
   removes?: ReadonlyMap<string, string | null>;
 }
 
@@ -29,22 +23,14 @@ export function follows(draft: Pick<Draft, "by" | "prNumber" | "inGroup">, login
 export type LeftAlone = "live" | "unsaved" | "disconnected" | "recent" | "tool";
 
 export interface FileFacts {
-
   present: boolean;
-
   sha?: string;
-
   sent?: string;
   sentTo?: string;
-
   agreed?: string;
-
   unchanged: boolean;
-
   deletedHere: boolean;
-
   published: boolean;
-
   publishedMoved: boolean;
 }
 
@@ -52,15 +38,11 @@ export type Ended = "published" | "discarded";
 
 export interface CaseInput {
   file: FileFacts;
-
   draft: Draft | null;
   login: string;
   policy: StayDrafts;
-
   leftAlone: LeftAlone | null;
-
   ended: Ended | null;
-
   unreadable?: boolean;
 }
 
@@ -75,7 +57,6 @@ export const isClean = (file: Pick<FileFacts, "sha" | "agreed" | "unchanged">): 
 export function draftCase({ file, draft, login, policy, leftAlone, ended, unreadable }: CaseInput): Case {
   if (leftAlone !== null) return { kind: "leave", why: leftAlone };
   if (!file.present) {
-
     if (file.deletedHere || !draft || file.published) return { kind: "none" };
     if (!follows(draft, login, undefined, policy)) return { kind: "offer" };
     return unreadable ? { kind: "wait" } : { kind: "create" };
@@ -84,7 +65,6 @@ export function draftCase({ file, draft, login, policy, leftAlone, ended, unread
   if (draft) {
     if (!follows(draft, login, file.sentTo, policy)) return { kind: "offer" };
     if (unreadable) return { kind: "wait" };
-
     const unmoved = draft.blob === null ? file.sent !== undefined : draft.blob === file.sent;
     if (clean) return unmoved || draft.blob === null ? { kind: "settled" } : { kind: "take" };
     if (file.sent === undefined) return { kind: "meet" };
@@ -94,7 +74,6 @@ export function draftCase({ file, draft, login, policy, leftAlone, ended, unread
     if (clean) return { kind: "none" };
     return file.publishedMoved ? { kind: "catch-up" } : { kind: "start" };
   }
-
   if (ended === null) return unreadable ? { kind: "wait" } : { kind: "none" };
   if (clean) return { kind: ended === "published" ? "settle" : "restore" };
   return { kind: "end-own" };

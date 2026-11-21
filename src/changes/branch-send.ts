@@ -28,7 +28,6 @@ export function sameAsVault(path: string, branch: string, vault: string): boolea
 }
 
 async function forkText(deps: FlowDeps, row: ChangeRow, known: string | undefined): Promise<string | null> {
-
   const branch = known ?? (await deps.review.status(row.doc))?.reviewBranch;
   if (!branch) return null;
   const seen = await deps.review.mergePreview(row.doc, branch, deps.publishedBranch);
@@ -37,11 +36,8 @@ async function forkText(deps: FlowDeps, row: ChangeRow, known: string | undefine
 }
 
 export interface Meeting {
-
   there: string;
-
   held?: string;
-
   sent: { text: string } | "never";
 }
 
@@ -86,7 +82,6 @@ export async function sendThroughBranch(
       if (sent === "unreadable") return { ok: false, unreadable: true, message: UNREADABLE(name) };
       const plan = planMeeting({ there: there.text, held: from.held, sent });
       if (plan.how !== "as-is") {
-
         const other = row.theirs ? { teammate: row.theirs.by, ...(row.theirs.draft ? {} : { submitted: true as const }) } : "github";
         let mine: Levelled = { text };
         if (plan.how === "from-fork" && from.level !== "level") mine = await from.level(text);

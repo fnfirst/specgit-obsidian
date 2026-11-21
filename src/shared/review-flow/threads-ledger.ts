@@ -1,11 +1,8 @@
 export const CONFIRMED_CAP_MS = 10 * 60_000;
 
 export class Ledger {
-
   private readonly unlisted = new Map<string, number>();
-
   private readonly heard = new Map<string, number>();
-
   private readonly taken = new Map<string, { at: number; order: number }>();
 
   brought(ids: Iterable<string>, now: number): void {

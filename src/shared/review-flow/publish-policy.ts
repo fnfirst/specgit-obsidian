@@ -2,11 +2,8 @@ import type { PrMergeableState, PrReviewPolicy } from "./pr-info";
 
 export interface PublishBlock {
   kind: "reviews" | "changes_requested" | "checks" | "unknown";
-
   label: string;
-
   title: string;
-
   detail: string;
 }
 
@@ -55,7 +52,6 @@ export function describePublishBlock(
       };
     case "approved":
     case null:
-
       return {
         kind: "checks",
         label: PUBLISH_BLOCK_LABEL.checks,
@@ -63,7 +59,6 @@ export function describePublishBlock(
         detail: CHECKS_WAIT,
       };
     default:
-
       return {
         kind: "unknown",
         label: PUBLISH_BLOCK_LABEL.unknown,

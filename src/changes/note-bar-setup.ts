@@ -6,9 +6,7 @@ import { barLines, noteBar, showBar } from "./note-bar";
 
 export interface NoteBarSetup {
   model: ChangesModel;
-
   isLive: (path: string) => boolean;
-
   onStatus: (listener: () => void) => () => void;
   join: (path: string) => void;
   addToMyNote: (path: string) => void;
@@ -19,7 +17,6 @@ export function setUpNoteBar(plugin: Plugin, deps: NoteBarSetup): void {
   plugin.registerEditorExtension(noteBar);
   const refresh = (): void => {
     const { aware, choices } = deps.model.state();
-
     const panelShown = workspace.getLeavesOfType(PANEL_TYPE).some((leaf) => leaf.view.containerEl.isShown());
     workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
@@ -35,7 +32,6 @@ export function setUpNoteBar(plugin: Plugin, deps: NoteBarSetup): void {
   plugin.register(deps.onStatus(refresh));
   plugin.registerEvent(workspace.on("active-leaf-change", refresh));
   plugin.registerEvent(workspace.on("layout-change", refresh));
-
   plugin.registerEvent(workspace.on("resize", refresh));
   plugin.registerEvent(workspace.on("file-open", refresh));
 }

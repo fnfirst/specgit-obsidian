@@ -6,7 +6,6 @@ export const NAMES_SHOWN = 3;
 const same = sameLogin;
 
 function listed(names: readonly string[]): string {
-
   if (names.length <= NAMES_SHOWN) return joinList(names);
   return `${names.slice(0, NAMES_SHOWN - 1).join(", ")} and ${names.length - (NAMES_SHOWN - 1)} more`;
 }

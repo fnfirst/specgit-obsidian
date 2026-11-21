@@ -4,7 +4,6 @@ export const REVIEW_EVENT_MEMORY_MS = 30_000;
 
 export class ReviewEvents {
   private heard_: Array<{ at: number; used: boolean; branch?: string; pr?: number }> = [];
-
   private lost = false;
 
   heard(event: LiveEvent, now: number): void {

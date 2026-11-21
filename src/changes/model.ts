@@ -24,21 +24,13 @@ const PRESENCE_RETRY_MS = 2_000;
 const PRESENCE_RETRY_MOST_MS = 30_000;
 
 const ASK_AT_ONCE = 4;
-
 const DETAILS_PER_REQUEST = 50;
-
 export const LOOK_BUDGET = 40;
-
 export const STATUS_TTL_MS = 30_000;
-
 export const DETAIL_TTL_MS = 10 * 60_000;
-
 const LEARN_GRACE_MS = 30_000;
-
 const FILL_IN_MS = 1_000;
-
 export const RETRY_AFTER_FAILED_MS: readonly number[] = [2_000, 4_000, 8_000, 15_000, 30_000];
-
 const RETRY_MS = 10_000;
 
 interface Watched {
@@ -62,7 +54,6 @@ function flightOf(groups: GroupsRead): { paths: NonNullable<GroupsRead["paths"]>
 const nameOf =(path: string) => path.split("/").pop() ?? path;
 
 const uncheckedUntilSent = (change: LocalChange): boolean => change.kind === "new" || (change.kind === "edited" && change.baseUnknown);
-
 const startsUnsent = (row: ChangeRow): boolean => row.entry === null && uncheckedUntilSent(row.change);
 
 export function entryFor(change: LocalChange, review: ReviewStatus | null, openComments = 0): ChangeSetEntry | null {
@@ -118,74 +109,45 @@ export class ChangesModel {
     choices: new Map(),
     heldDeletes: null,
   };
-
   private readonly awareness = new Awareness(() => this.now());
-
   private presenceRetry: number | null = null;
   private presenceFailures = 0;
-
   private theirs: ReadonlyMap<string, TheirReview> | undefined;
-
   private notHere: CopyInFile[] = [];
-
   private notHereSkipped: string[] = [];
-
   private commit: string | null = null;
-
   private otherFiles: string[] = [];
   private otherAttachments = new Map<string, string>();
-
   private readonly unsure = new Map<string, number>();
-
   private readonly notBase = new Set<string>();
   private readonly listeners = new Set<() => void>();
-
-  private readonly overlay = new Map<string, { sha: string | null; before: string | null;   sent: string | null }>();
-
+  private readonly overlay = new Map<string, { sha: string | null; before: string | null;  sent: string | null }>();
   private readonly statuses = new Map<string, { key: string; at: number; review: ReviewStatus | null; light?: boolean }>();
-
   private pending: PendingChange[] = [];
-
   private denied = false;
-
   catchUpOff(repo: string, hasReview: boolean): string | null {
     return writesOffWords(this.offline(), this.denied && hasReview, repo);
   }
 
   private quota: PublishQuota | null = null;
-
   private flight: { paths: NonNullable<GroupsRead["paths"]>; stale: boolean; overviews: ReadonlyMap<string, GroupOverview>; saves?: SavesTo; asOf?: number } | null = null;
-
   private levelAt: number | null = null;
-
   private attachmentShas: ReadonlyMap<string, string> | null = null;
-
   private readonly learnedAt = new Map<string, number>();
-
   private memory: SelectionMemory = freshSelectionMemory();
-
   private readonly fromCheckedGroup = new Map<string, LocalChangeKind>();
-
   private groupsRead: { on: boolean; locked: boolean; overviews: Record<string, GroupOverview> } = { on: false, locked: false, overviews: {} };
   private place: string | null = null;
-
   private watched: Watched | null = null;
-
   private timer: number | null = null;
-
   private readonly asking = new AskAgain();
-
   private readonly unreadAsking = new AskAgain();
   private disposed = false;
-
   private failedLooks = 0;
   private refreshing: Promise<void> | null = null;
-
   private again: { scheduled: boolean } | null = null;
   private readonly lookListeners = new Set<(looked: Looked | null) => void>();
-
   private looked: { rows: ChangeRow[]; groups: ChangeRow[]; maps: Lookups } | null = null;
-
   private states: VaultStates | null = null;
 
   constructor(private readonly deps: ChangesDeps) {}
@@ -236,7 +198,6 @@ export class ChangesModel {
     const files = group.files.map((file) => ({ path: file.path, row: byPath.get(file.path) ?? null }));
     const members = files.flatMap((file) => (file.row ? [file.row] : []));
     const ask = members.find((row) => row.change.kind !== "deleted") ?? members[0];
-
     const path = group.overview.paths[0];
     const doc = ask?.doc ?? (path === undefined ? null : this.deps.documentFor(path));
     if (!doc || path === undefined) return null;
@@ -246,31 +207,25 @@ export class ChangesModel {
 
   private set(patch: Partial<ChangesState>): void {
     const next = { ...this.current, ...patch };
-
     const byPath = new Map(next.rows.map((row) => [row.change.path, row]));
     const allUnits = statusUnits(next.rows.map((row) => row.unit), this.vaultOverviews());
     const groups = allUnits.groups.flatMap((group) => this.groupRow(group, byPath) ?? []);
     const loose = allUnits.loose.flatMap((entry) => byPath.get(entry.path) ?? []);
-
     const viewer = this.deps.viewerLogin?.() ?? null;
-
     const aware = this.awareness.state({ viewer, flight: this.flight, vaultPath: (path) => this.deps.vaultPath?.(path) ?? path, documentFor: (path) => this.deps.documentFor(path) }, next.aware);
     const layout = awareLayout({ aware, loose, units: allUnits, line: next.line, live: (path) => this.deps.isLive?.(path) === true });
     const { units } = layout;
     this.settleLeftGroup(units.loose, byPath);
     this.memory = keepSelection(
       withSelection(this.memory, next.selection),
-
       selectionUnits(units, (entry) => {
         const row = byPath.get(entry.path);
-
         return row !== undefined && (row.change.kind === "deleted" || (startsUnsent(row) && !this.fromCheckedGroup.has(row.change.path)));
       }),
       viewer,
       Date.now(),
     );
     next.selection = this.memory.selection;
-
     const byKey = new Map([...loose, ...groups].map((row) => [unitKey(row.unit), row]));
     next.selected = selectableUnits(units)
       .filter((unit) => isSelected(next.selection, unitKey(unit)))
@@ -302,10 +257,8 @@ export class ChangesModel {
     if (!this.deps.presence || this.disposed || !this.deps.signedIn()) return;
     if (again) this.awareness.forgetOff();
     const place = this.deps.place?.() ?? "";
-
     const read = await this.awareness.read(this.askPresence(), true);
     if (this.disposed || (this.deps.place?.() ?? "") !== place) return;
-
     if (read.kind === "unknown") return this.retryPresence();
     this.presenceFailures = 0;
     if (this.presenceRetry !== null) window.clearTimeout(this.presenceRetry);
@@ -330,7 +283,6 @@ export class ChangesModel {
     if (this.disposed || (this.deps.place?.() ?? "") !== place) return;
     this.awareness.heard(presence);
     const flight = flightOf(groups);
-
     if (flight) this.flight = flight;
     if (!flight || !this.awareness.hasFiles()) return;
     const viewer = this.deps.viewerLogin?.() ?? null;
@@ -376,23 +328,19 @@ export class ChangesModel {
   private readonly learned = new Set<string>();
 
   setBusy(busy: false): void;
-
   setBusy(busy: true, doing: NonNullable<ChangesState["doing"]>): void;
   setBusy(busy: boolean, doing: ChangesState["doing"] = null): void {
-
     if (!busy) {
       for (const [path, known] of this.statuses) if (!this.learned.has(path)) known.at = 0;
       this.learned.clear();
     }
     this.set({ busy, doing: busy ? doing : null });
-
     if (!busy && this.watched && !this.watched.read) void this.readWatched(true);
   }
 
   learn(path: string, review: ReviewStatus): void {
     const row = this.row(path);
     if (!row) {
-
       const watched = this.watched;
       if (watched?.path === path) {
         watched.review = review;
@@ -438,7 +386,6 @@ export class ChangesModel {
 
   leftGroup(paths: readonly string[], groupWasChecked: boolean): void {
     if (!groupWasChecked) return;
-
     for (const path of paths) {
       const row = this.row(path);
       if (row) this.fromCheckedGroup.set(path, row.change.kind);
@@ -495,7 +442,6 @@ export class ChangesModel {
   remember(rows: readonly ChangeRow[]): void {
     for (const row of rows) {
       this.overlay.set(row.change.path, { sha: row.change.kind === "deleted" ? null : row.change.sha, before: row.change.repoSha, sent: this.deps.cache.get(row.change.path)?.sent ?? null });
-
       if (row.change.from) this.overlay.set(row.change.from, { sha: null, before: row.change.sha, sent: null });
     }
     const paths = new Set(rows.map((row) => row.change.path));
@@ -503,7 +449,6 @@ export class ChangesModel {
   }
 
   expireReviews(only?: { branches: ReadonlySet<string>; prs: ReadonlySet<number> }): void {
-
     for (const known of this.statuses.values()) {
       if (only === undefined || (known.review?.reviewBranch != null && only.branches.has(known.review.reviewBranch)) || (known.review?.pr != null && only.prs.has(known.review.pr.number))) known.at = 0;
     }
@@ -535,7 +480,6 @@ export class ChangesModel {
       this.unreadAsking.reset();
     }
     if (this.place !== null && this.place !== place) {
-
       this.overlay.clear();
       this.statuses.clear();
       this.learnedAt.clear();
@@ -551,7 +495,6 @@ export class ChangesModel {
       this.notHereSkipped = [];
       this.states = null;
       this.theirs = undefined;
-
       this.awareness.reset();
       this.watched = null;
       this.commit = null;
@@ -567,23 +510,18 @@ export class ChangesModel {
     }
     const everyFile = this.deps.listFiles();
     const listed = everyFile.filter((file) => this.deps.documentFor(file.path) !== null);
-
     if (this.current.phase !== "ready" && this.current.phase !== "offline") this.set({ phase: "loading" });
     const [scanned, repo, groups, presence] = await Promise.all([this.deps.cache.scan(listed, (path) => this.deps.readBytes(path)), this.deps.mirror.read(), this.deps.groups?.() ?? Promise.resolve<GroupsRead>({ kind: "off" }), this.awareness.read(this.askPresence())]);
-
     if (this.movedFrom(place)) return;
-
     this.awareness.heard(presence);
     if (presence.kind === "unknown" && this.deps.presence) this.retryPresence();
     this.awareness.scanned(scanned.files);
-
     if (groups.kind !== "unknown") {
       this.denied = groups.canPush === false;
       this.quota = groups.publishQuota ?? null;
     }
     this.flight = flightOf(groups);
     if (this.flight && (!this.flight.stale || this.levelAt === null)) this.levelAt = this.now();
-
     if (groups.kind !== "unknown") {
       this.groupsRead = groups.kind === "groups" ? { on: true, locked: groups.locked, overviews: groups.overviews } : { on: false, locked: false, overviews: {} };
       this.memory = settleArrivals(withSelection(this.memory, this.current.selection));
@@ -594,7 +532,6 @@ export class ChangesModel {
       return;
     }
     if (repo.kind === "not_installed") {
-
       this.lookListeners.forEach((listener) => listener(null));
       return this.set({ phase: "not-installed" });
     }
@@ -607,17 +544,14 @@ export class ChangesModel {
     }
     this.failedLooks = 0;
     const hidden = [...repo.files.keys()].filter((path) => LISTED_FILE.test(path) && isHiddenPath(path)).length;
-
     const inVault = new Set(everyFile.map((file) => file.path.toLowerCase()));
     const others = [...repo.files.keys()].filter((path) => isLeftOutKind(path) && !inVault.has(path.toLowerCase()));
-
     this.deps.mirror.settle?.(inVault);
     this.commit = repo.headSha;
     this.otherFiles = others;
     this.attachmentShas = new Map([...repo.files].filter(([path]) => isAttachmentPath(path)));
     this.otherAttachments = new Map(others.flatMap((path) => (isAttachmentPath(path) ? [[path, this.deps.mirror.repoPath(path)] as const] : [])));
     const repoFiles = new Map([...repo.files].filter(([path]) => LISTED_FILE.test(path) && !isHiddenPath(path)));
-
     for (const [path, { sha, before, sent }] of this.overlay) {
       const actual = repoFiles.get(path) ?? null;
       this.learnOwnPublish(path, sha, sent, actual);
@@ -625,7 +559,6 @@ export class ChangesModel {
       else if (sha === null) repoFiles.delete(path);
       else repoFiles.set(path, sha);
     }
-
     let unread = 0;
     if (this.deps.sameAsRepo) {
       unread = await settleSameness({ files: scanned.files, repo: repoFiles, cache: this.deps.cache, ask: this.deps.sameAsRepo, prefetch: this.deps.prefetchBlobs, documentFor: (path) => this.deps.documentFor(path), unsure: this.unsure, notBase: this.notBase, now: () => this.now(), alive: () => !this.disposed && (this.deps.place?.() ?? "") === place });
@@ -634,19 +567,14 @@ export class ChangesModel {
     for (const [path, entry] of scanned.files) {
       const repoSha = repoFiles.get(path);
       if (repoSha === entry.sha) this.deps.cache.matched(path, entry.sha);
-
       else if (repoSha !== undefined && entry.same === repoSha) this.deps.cache.rebased(path, repoSha);
     }
-
     const cache = this.deps.cache;
     cache.clearForeign([...cache.foreignFiles()].filter(([path, sha]) => scanned.files.get(path)?.sha !== sha).map(([path]) => path));
     cache.save();
-
     const theirs = this.theirReviews();
-
     if (theirs) this.theirs = theirs;
     const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: cache.deleted(), foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs });
-
     this.notHere = states.missing.copy.flatMap((path) => {
       const doc = this.deps.documentFor(path);
       return doc ? [{ path, doc, sha: repoFiles.get(path) ?? null }] : [];
@@ -656,7 +584,6 @@ export class ChangesModel {
     if (this.movedFrom(place)) return;
     this.states = states;
     this.set({ phase: "ready", rows, missing: this.notHere.length, hidden, leftOut: leftOutKinds(others) });
-
     if (unread > 0) {
       const again = this.unreadAsking.after({ unread: true });
       if (again !== null) this.lookLater(again);
@@ -751,7 +678,6 @@ export class ChangesModel {
   private movedFrom(place: string): boolean {
     if (this.disposed) return true;
     if ((this.deps.place?.() ?? "") === place) return false;
-
     this.again = { scheduled: false };
     return true;
   }
@@ -770,7 +696,6 @@ export class ChangesModel {
   }
 
   private async ask(changes: readonly LocalChange[], mode: "look" | "step" = "look"): Promise<Set<string>> {
-
     const failedReads = new Set<string>();
     const place = this.deps.place?.() ?? "";
     const numbered = this.deps.review.details
@@ -786,9 +711,7 @@ export class ChangesModel {
       const run = numbered.slice(at, at + DETAILS_PER_REQUEST);
       const details = await this.deps.review.details!(run[0]!.repo, run.map((one) => one.light.number));
       if ((this.deps.place?.() ?? "") !== place || this.disposed) return failedReads;
-
       if (details === null) break;
-
       if (details === "failed") {
         if (mode === "look") for (const { change } of numbered) given.add(change.path);
         break;
@@ -796,7 +719,6 @@ export class ChangesModel {
       for (const { change, known, light } of run) {
         const detail = details.get(light.number);
         if (!detail) continue;
-
         const pr: PrInfo = { ...detail, url: light.url || detail.url, authorLogin: light.authorLogin ?? detail.authorLogin ?? null, ...(light.group ? { group: light.group } : {}) };
         this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr } });
         given.add(change.path);
@@ -804,7 +726,6 @@ export class ChangesModel {
     }
     changes = changes.filter((change) => !given.has(change.path));
     let next = 0;
-
     let halted = false;
     const worker = async (): Promise<void> => {
       for (let at = next++; at < changes.length; at = next++) {
@@ -816,9 +737,7 @@ export class ChangesModel {
           continue;
         }
         const review = await this.deps.review.status(doc);
-
         if ((this.deps.place?.() ?? "") !== place || this.disposed) return;
-
         if (review === null) {
           failedReads.add(change.path);
           if (mode === "step") halted = true;
@@ -849,26 +768,21 @@ export class ChangesModel {
     const now = this.now();
     for (const change of changes) {
       const known = this.statuses.get(change.path);
-
       const there = flight.paths[this.deps.documentFor(change.path)?.path ?? change.path];
       const batch: BatchReview = reviewFromInFlight(there, login, flight.overviews, flight.saves);
       const listed = there !== undefined;
-
       if (flight.stale && !listed && known && this.levelAt !== null && now - this.levelAt < DETAIL_TTL_MS) {
         this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
         continue;
       }
       const light = batch.review?.pr ?? null;
       const was = known?.review?.pr ?? null;
-
       const learned = this.learnedAt.get(change.path);
       if (known && learned !== undefined && now - learned < LEARN_GRACE_MS && (light?.number !== was?.number || light?.isDraft !== was?.isDraft)) continue;
-
       if (known && known.light !== true && !was && !light && !known.review?.reviewBranch && !batch.review && now - known.at < DETAIL_TTL_MS) {
         this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
         continue;
       }
-
       if (known && known.light !== true && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
         this.statuses.set(change.path, { ...known, key: this.keyOf(change), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) } } });
         continue;
@@ -884,7 +798,6 @@ export class ChangesModel {
     for (const path of [...this.statuses.keys()]) if (!listed.has(path)) this.statuses.delete(path);
     for (const path of [...this.learnedAt.keys()]) if (!this.statuses.has(path)) this.learnedAt.delete(path);
     const active = this.deps.activePath?.() ?? null;
-
     const place = this.deps.place?.() ?? "";
     let wanted = this.flight ? this.applyFlight(changes) : [];
     wanted = [...wanted].sort((a, b) => Number(b.path === active) - Number(a.path === active));
@@ -894,10 +807,8 @@ export class ChangesModel {
       this.learnedAt.clear();
     }
     const rows = changes.flatMap((change) => this.rowOf(change) ?? []);
-
     if (wanted.length > LOOK_BUDGET) this.lookLater(FILL_IN_MS);
     else if (this.flight) {
-
       const wait = this.asking.after({ stale: this.flight.stale });
       if (wait !== null) this.lookLater(wait);
     } else if (changes.some((change) => !this.statuses.has(change.path))) this.lookLater(RETRY_MS);
@@ -949,7 +860,6 @@ export class ChangesModel {
     const review = watched.review;
     const pull = review?.pr;
     if (!review || !pull || (pull.state !== "open" && pull.state !== "draft")) return undefined;
-
     if (pull.group || this.groupOf(path)) return undefined;
     const viewer = this.deps.viewerLogin?.();
     if (viewer === undefined || isAnotherAuthor(pull.authorLogin, viewer)) return undefined;
@@ -977,9 +887,7 @@ export class ChangesModel {
     const asks = this.ask(rows.filter((row) => !row.unchanged).map((row) => row.change).filter((change) => !this.fresh(change)), "step");
     const unchanged = new Map((await Promise.all(rows.filter((row) => row.unchanged).map((row) => this.readUnchanged(row)))).map((row) => [row.change.path, row]));
     const failed = await asks;
-
     const fresh = rows.map((row) => (row.unchanged ? (unchanged.get(row.change.path) ?? row) : failed.has(row.change.path) ? { ...(this.rowOf(row.change) ?? row), unchecked: true } : (this.rowOf(row.change) ?? row)));
-
     const by = new Map(fresh.filter((row) => !row.unchanged).map((row) => [row.change.path, row]));
     this.set({ rows: this.current.rows.map((row) => by.get(row.change.path) ?? row) });
     return fresh;
@@ -997,7 +905,6 @@ export class ChangesModel {
         if (!asked.stale) this.levelAt = this.now();
       }
     }
-
     if (!mapFresh()) return this.read(rows);
     const changes = rows.filter((row) => !row.unchanged).map((row) => row.change);
     this.applyFlight(changes);
@@ -1011,7 +918,6 @@ export class ChangesModel {
   rebased(path: string, sha: string): void {
     this.deps.cache.rebased(path, sha);
     this.deps.cache.save();
-
     const file = this.states?.files.get(path);
     const now = file && rebasedOnto(file, sha);
     if (!this.states || !now || now === file) return;

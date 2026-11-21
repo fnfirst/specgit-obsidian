@@ -1,14 +1,12 @@
 body {
   --specgit-accent: #2563eb;
   --specgit-on-accent: #fff;
-
   --specgit-space-1: var(--size-4-1);
   --specgit-space-2: var(--size-4-2);
   --specgit-space-3: var(--size-4-3);
   --specgit-space-4: var(--size-4-4);
   --specgit-radius: var(--radius-m);
   --specgit-speed: 120ms;
-
   --specgit-gutter: var(--size-4-3);
 }
 
@@ -36,7 +34,6 @@ body.theme-dark {
   line-height: 1.4;
   text-shadow: 0 0 2px rgb(0 0 0 / 55%);
   white-space: nowrap;
-
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -237,7 +234,6 @@ button.specgit-button[aria-disabled="true"] {
 }
 body:not(.is-mobile) .notice.specgit-notice-lasting-host {
   position: fixed;
-
   inset: auto auto calc(var(--size-4-10) + var(--specgit-notice-lift, 0px)) var(--size-4-4);
 }
 
@@ -622,7 +618,6 @@ button.specgit-retry-now:hover {
 .specgit-tabs {
   display: flex;
   flex: none;
-
   padding-inline: var(--size-4-2);
   border-bottom: 1px solid var(--background-modifier-border);
   container-type: inline-size;
@@ -631,7 +626,6 @@ button.specgit-retry-now:hover {
 
 button.specgit-tab {
   display: inline-flex;
-
   flex: 1 1 auto;
   min-width: 0;
   align-items: center;
@@ -982,7 +976,6 @@ body:not(.is-mobile) .specgit-panel-body.specgit-panel-body-status > .specgit-we
   display: inline-flex;
   flex: none;
   align-items: center;
-
   height: calc(1em * var(--line-height-tight));
   color: var(--text-muted);
 }
@@ -1486,7 +1479,6 @@ button.specgit-filter.is-selected {
 .specgit-note-bar-action {
   flex: none;
 }
-
 .is-mobile .specgit-note-bar-action {
   min-height: var(--size-4-10);
   padding-inline: var(--size-4-4);
@@ -1725,9 +1717,7 @@ button.specgit-icon-button {
 }
 
 .specgit-changes {
-
   flex: 1;
-
   container-type: inline-size;
   container-name: specgit-changes;
 }
@@ -1737,16 +1727,13 @@ body:not(.is-mobile) .specgit-panel-body {
 }
 
 .specgit-tip {
-
   position: fixed;
   z-index: var(--layer-popover, 40);
   display: flex;
   flex-direction: column;
   gap: var(--size-2-2);
   width: min(16rem, 80vw);
-
   pointer-events: none;
-
   overflow-y: auto;
   padding: var(--size-4-2);
   border: 1px solid var(--background-modifier-border);
@@ -2139,7 +2126,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   box-shadow: none;
   height: auto;
 }
-
 .sp-theme-obsidian .sp-tip {
   position: absolute;
   z-index: 30;
@@ -2149,7 +2135,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   background: var(--sp-bg-raised);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
   pointer-events: none;
-
   overflow-y: auto;
 }
 .sp-theme-obsidian .sp-tip-art {
@@ -2176,7 +2161,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-tip-reason {
   color: var(--sp-warning);
 }
-
 .sp-theme-obsidian .sp-tip-link {
   display: inline-flex;
   align-items: center;
@@ -2285,7 +2269,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   flex-direction: column;
   min-height: 0;
   height: 100%;
-
   overflow: visible;
   background: var(--sp-surface, var(--sp-bg));
   color: var(--sp-fg);
@@ -2353,7 +2336,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   opacity: 0.5;
   cursor: default;
 }
-
 .sp-theme-obsidian .sp-root[aria-busy="true"] .sp-btn:disabled {
   opacity: 1;
   cursor: progress;
@@ -2367,6 +2349,10 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   border-inline-end-color: transparent;
   border-radius: 50%;
   animation: sp-turn 0.8s linear infinite;
+}
+.sp-theme-obsidian .sp-check-wait,
+.sp-theme-obsidian .sp-check-wait .sp-check {
+  cursor: progress;
 }
 @keyframes sp-turn {
   to {
@@ -2404,7 +2390,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   flex: none;
   accent-color: var(--sp-accent);
 }
-
 .sp-theme-obsidian .sp-check-dim .sp-check {
   opacity: 0.35;
   cursor: default;
@@ -2429,7 +2414,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   width: 28px;
   height: 28px;
 }
-
 .sp-theme-obsidian .sp-more {
   position: relative;
 }
@@ -2474,7 +2458,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   min-width: 0;
   min-height: 24px;
 }
-
 .sp-theme-obsidian .sp-line-2 {
   gap: 6px;
   flex-wrap: wrap;
@@ -2489,7 +2472,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-group-row .sp-line-2.sp-line-flush {
   padding-inline-start: 24px;
 }
-
 .sp-theme-obsidian .sp-name {
   flex: 0 1 auto;
   min-width: 3rem;
@@ -2510,7 +2492,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-name-link:hover {
   text-decoration: underline;
 }
-
 .sp-theme-obsidian .sp-row.sp-row-open .sp-name,
 .sp-theme-obsidian .sp-group.sp-row-open > .sp-group-row .sp-name {
   color: var(--sp-fg);
@@ -2565,7 +2546,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   flex: 0 100 auto;
   min-width: 0;
 }
-
 .sp-theme-obsidian .sp-who {
   min-width: 2.75em;
 }
@@ -2602,7 +2582,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
 .sp-theme-obsidian .sp-edge {
   position: relative;
   display: inline-flex;
@@ -2631,7 +2610,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   flex: none;
   min-width: 5.5rem;
 }
-
 .sp-theme-obsidian .sp-line > :is(.sp-pill-slot, .sp-row-button, .sp-edge) {
   margin-inline-start: auto;
 }
@@ -2645,7 +2623,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   border-radius: 50%;
   background: var(--sp-live);
 }
-
 .sp-theme-obsidian .sp-line-2 > .sp-reason {
   order: 5;
   flex: 1 1 100%;
@@ -2655,7 +2632,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   min-height: 26px;
   padding: 2px 8px;
 }
-
 .sp-theme-obsidian .sp-root .sp-members {
   margin: 0 0 6px 31px;
   padding-inline-start: 16px;
@@ -2672,7 +2648,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   line-height: inherit;
   overflow: hidden;
   white-space: nowrap;
-
   content-visibility: auto;
   contain-intrinsic-size: auto 28px;
 }
@@ -2684,11 +2659,9 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-member .sp-more {
   margin-inline-start: auto;
 }
-
 .sp-theme-obsidian .sp-root:not(.sp-coarse) .sp-group .sp-member:not(:hover):not(:focus-within) .sp-more:not([aria-expanded="true"]) {
   opacity: 0;
 }
-
 .sp-theme-obsidian .sp-flash {
   animation: sp-flash 1s ease-out;
 }
@@ -2709,7 +2682,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
     animation: none;
   }
 }
-
 .sp-theme-obsidian .sp-row-needs {
   box-shadow: inset 2px 0 0 var(--sp-warning);
 }
@@ -2770,7 +2742,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   margin-top: 6px;
   padding: 4px 0;
 }
-
 .sp-theme-obsidian .sp-bar > .sp-check-hit {
   flex: 1 1 auto;
   align-items: center;
@@ -2927,7 +2898,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   gap: 6px;
   color: var(--sp-muted);
 }
-
 .sp-theme-obsidian .sp-link.sp-live-connect {
   color: var(--sp-fg);
   text-decoration: underline;
@@ -2993,7 +2963,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   color: var(--sp-muted);
   font-size: 0.9em;
 }
-
 .sp-theme-obsidian .sp-chip .sp-icon-button {
   width: 18px;
   height: 18px;
@@ -3013,7 +2982,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   padding: 0 12px 2px;
   overflow-x: auto;
   scrollbar-width: none;
-
   mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 .sp-theme-obsidian .sp-chip-row::-webkit-scrollbar {
@@ -3149,12 +3117,10 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-coarse .sp-icon-button {
   min-height: 44px;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-name-input {
   min-height: 44px;
   font-size: 16px;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-row-one,
 .sp-theme-obsidian .sp-coarse .sp-group-row {
   min-height: 52px;
@@ -3163,7 +3129,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-coarse .sp-member {
   min-height: 52px;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-row-one .sp-name,
 .sp-theme-obsidian .sp-coarse .sp-group-row .sp-name,
 .sp-theme-obsidian .sp-coarse .sp-member .sp-name-link {
@@ -3174,7 +3139,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-pinned-head {
   gap: 16px;
 }
@@ -3191,7 +3155,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   opacity: 1;
   color: var(--sp-muted);
 }
-
 .sp-theme-obsidian .sp-coarse .sp-row-button::after,
 .sp-theme-obsidian .sp-coarse .sp-more::after,
 .sp-theme-obsidian .sp-coarse .sp-pill::after,
@@ -3225,7 +3188,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-coarse .sp-chip-btn::after {
   inset: -4px -3px;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-more::after {
   inset: -8px;
 }
@@ -3238,7 +3200,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-coarse .sp-chip::after {
   inset: -6px -3px;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-chip .sp-icon-button {
   width: 24px;
   height: 24px;
@@ -3265,7 +3226,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   inset: auto;
   transform: none;
 }
-
 .sp-theme-obsidian .sp-coarse .sp-edge.sp-edge-no-more {
   padding-inline-end: 30px;
 }
@@ -3320,7 +3280,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   --sp-btn-border: transparent;
   --sp-btn-shadow: var(--input-shadow);
   --sp-btn-height: var(--input-height);
-
   --sp-safe-bottom: var(--size-4-10);
 }
 .is-mobile .sp-theme-obsidian {

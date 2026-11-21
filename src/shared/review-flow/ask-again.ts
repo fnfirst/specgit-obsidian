@@ -1,16 +1,12 @@
 export const ASK_AGAIN_MAX = 6;
 export const ASK_AGAIN_MS = 1_200;
-
 export const UNSCANNED_AGAIN_MS = 5_000;
 
 export interface AnswerLevel {
   stale?: boolean;
   unscanned?: number;
-
   pending?: boolean;
-
   failed?: boolean;
-
   unread?: boolean;
 }
 
@@ -26,7 +22,6 @@ export class AskAgain {
     }
     this.asked += 1;
     const wait = ASK_AGAIN_MS * this.asked;
-
     return answer.stale || answer.pending || answer.failed || answer.unread ? wait : Math.max(UNSCANNED_AGAIN_MS, wait);
   }
 

@@ -17,19 +17,13 @@ export interface GroupOverview {
   prNumber: number;
   prUrl: string;
   isDraft: boolean;
-
   mergeableState: "clean" | "dirty" | "blocked" | "unknown" | null;
   hold: GroupHold | null;
-
   holdPaths: string[];
-
   holdUnread?: boolean;
-
   holdOthers?: number;
   paths: string[];
-
   conflictPaths?: string[];
-
   ending?: EndingProgress;
 }
 
@@ -39,6 +33,5 @@ export function classifyOutside(hold: { unread?: boolean; members: number; other
   if (hold.unread) return { kind: "unread" };
   if (hold.members > 0 && hold.others > 0) return { kind: "both", members: hold.members, others: hold.others };
   if (hold.members > 0) return { kind: "members", members: hold.members };
-
   return { kind: "others", others: Math.max(1, hold.others) };
 }

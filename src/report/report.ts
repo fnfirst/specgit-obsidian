@@ -49,13 +49,10 @@ export function platformWords(flags: PlatformFlags): string {
 
 export interface DetailsInput {
   pluginVersion: string;
-
   obsidianVersion: string;
   platform: string;
-
   repository: string;
   signedIn: boolean;
-
   noteState: NoteWord | null;
 }
 
@@ -83,13 +80,9 @@ export function reportText(message: string, details: ReportDetails | null): stri
 
 export type SendOutcome =
   | { kind: "sent" }
-
   | { kind: "signed_out" }
-
   | { kind: "refused"; message: string }
-
   | { kind: "rate_limited"; message: string }
-
   | { kind: "unavailable"; message: string };
 
 export interface ReportBody {
@@ -126,9 +119,7 @@ export interface ReportDeps {
   api: ReportApi;
   signedIn(): boolean;
   server(): string;
-
   details(): ReportDetails;
-
   copy(text: string): Promise<void>;
   openUrl(url: string): void;
 }
@@ -137,13 +128,11 @@ export type SubmitResult = { kind: "closed"; notice: string } | { kind: "stay" }
 
 export interface Problem {
   words: string;
-
   offerCopy: boolean;
 }
 
 export const NOTHING_WRITTEN = "Write what happened first.";
 export const COPY_FAILED = "We couldn't copy the report. Select the text above, copy it, and paste it into the support page.";
-
 export const SIGNED_OUT_WORDS = "You're signed out. Choose Copy and open support to send it from the support page.";
 
 export const thanksWords = (email: string): string =>
@@ -188,7 +177,6 @@ export class ReportForm {
     this.sending = true;
     this.problem = null;
     try {
-
       if (!this.signedOut && !this.deps.signedIn()) this.signedOut = true;
       return this.signedOut ? await this.copyAndOpen() : await this.send();
     } finally {
@@ -214,7 +202,6 @@ export class ReportForm {
       case "sent":
         return { kind: "closed", notice: thanksWords(email) };
       case "signed_out":
-
         this.signedOut = true;
         return { kind: "stay" };
       case "refused":

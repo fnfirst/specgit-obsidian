@@ -5,7 +5,6 @@ export function hasSuggestionBody(body: string): boolean {
 export function extractSuggestionReplacement(body: string): string | null {
   const match = /```suggestion\r?\n([\s\S]*?)```/.exec(body);
   if (!match) return null;
-
   return match[1]!.replace(/\r?\n$/, "");
 }
 

@@ -2,7 +2,6 @@ import { useState } from "preact/hooks";
 import { drawableAvatar, faceInitials, pictureFailed, rememberPicture } from "../shared/review-flow";
 
 export function Face({ src, name, initials }: { src: string | null | undefined; name: string; initials?: string }) {
-
   const [failed, setFailed] = useState<string | null>(null);
   const photo = drawableAvatar(src);
   const shown = photo !== null && photo !== failed && !pictureFailed(photo) ? photo : null;

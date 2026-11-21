@@ -15,19 +15,12 @@ const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 const isPublishedBytes = (entry: Pick<CacheEntry, "base">, blob: string | null): boolean => blob !== null && blob !== EMPTY_BLOB && entry.base === blob;
 
 export interface RenameHost {
-
   ready(path: string, spend: boolean, pairing: boolean): boolean;
-
   wait(path: string): void;
-
   leftAlone(looked: Looked, path: string): Promise<LeftAlone | null>;
-
   reads(): number;
-
   spendRead(): void;
-
   cutPass(): void;
-
   readonly awaiting: Map<string, { sent: string; to: string | null; agreed: string }>;
 }
 
@@ -39,9 +32,7 @@ const removesPath = (draft: Draft, from: string, to: string): boolean => {
 const onlyInDrafts = (looked: Looked, byPath: ReadonlyMap<string, Draft>, from: string, entry: Pick<CacheEntry, "sent">): boolean => entry.sent !== undefined && !looked.repo.has(from) && !byPath.has(from);
 
 export class DraftRenames {
-
   private readonly since = new Map<string, number>();
-
   private readonly told = new Set<string>();
 
   constructor(
@@ -56,14 +47,12 @@ export class DraftRenames {
   async pair(looked: Looked, byPath: ReadonlyMap<string, Draft>): Promise<{ changed: number; paths: Set<string> }> {
     const { ports, activity, state } = this.ctx;
     const out = { changed: 0, paths: new Set<string>() };
-
     let byBytes: Map<string, Array<[string, CacheEntry]>> | null = null;
     for (const [to, draft] of byPath) {
       if (!this.ctx.current()) break;
       if (looked.files.has(to)) {
         if (byBytes === null) {
           byBytes = new Map();
-
           for (const [path, entry] of looked.files) {
             const key = entry.sent !== undefined ? entry.sha : isPublishedBytes(entry, entry.base) ? entry.base : null;
             if (key !== null) byBytes.set(key, [...(byBytes.get(key) ?? []), [path, entry]]);
@@ -73,7 +62,6 @@ export class DraftRenames {
         continue;
       }
       if (looked.repo.has(to) || looked.deleted.some((gone) => gone.path === to) || ports.inGroup(to)) continue;
-
       const possible = this.mayBeRename(looked, byPath, to, draft);
       const hold = (): void => {
         if (possible && this.holding(to)) out.paths.add(to);
@@ -82,14 +70,12 @@ export class DraftRenames {
         hold();
         continue;
       }
-
       const found = [...looked.files].find(([from, entry]) => (entry.sent === draft.blob || isPublishedBytes(entry, draft.blob)) && from !== to && !out.paths.has(from) && ports.documentFor(from) !== null && !ports.inGroup(from));
       if (!found) {
         hold();
         continue;
       }
       const [from, entry] = found;
-
       if (!removesPath(draft, from, to) && !onlyInDrafts(looked, byPath, from, entry)) {
         hold();
         continue;
@@ -101,21 +87,17 @@ export class DraftRenames {
         hold();
         continue;
       }
-
       this.host.spendRead();
       const old = await ports.draftFile(fromDoc, draft.branch);
       if (!this.ctx.current()) break;
       if (old.kind !== "absent") {
-
         if (old.kind !== "file") hold();
         continue;
       }
-
       if ((await this.host.leftAlone(looked, from)) !== null) {
         out.paths.add(to);
         continue;
       }
-
       const agreed = agreedOf(entry);
       const clean = entry.sent === draft.blob ? isClean({ sha: entry.sha, ...(agreed !== undefined ? { agreed } : {}), unchanged: unchangedHere(entry) }) : unchangedHere(entry);
       if (!clean) {
@@ -133,7 +115,6 @@ export class DraftRenames {
         out.paths.add(to);
         continue;
       }
-
       state.data.committed.push(changeKey({ kind: "new", path: to }), changeKey({ kind: "renamed", path: to, from }));
       ports.agreed(from, null);
       this.host.awaiting.set(to, { sent: draft.blob, to: draftKey(draft), agreed: entry.sha });
@@ -148,7 +129,6 @@ export class DraftRenames {
     const { ports } = this.ctx;
     return [...looked.files].some(([from, entry]) => {
       if (from === to || ports.inGroup(from) || ports.documentFor(from) === null) return false;
-
       if (entry.sent !== undefined && !byPath.has(from)) return true;
       return (draft.blob !== null && entry.sent === draft.blob) || isPublishedBytes(entry, draft.blob);
     });
@@ -173,13 +153,10 @@ export class DraftRenames {
   private async repairPair(looked: Looked, byPath: ReadonlyMap<string, Draft>, byBytes: ReadonlyMap<string, Array<[string, CacheEntry]>>, to: string, draft: Draft, paths: Set<string>): Promise<number> {
     const { ports, activity } = this.ctx;
     const at = looked.files.get(to);
-
     if (!at || ports.inGroup(to) || looked.repo.has(to)) return 0;
     for (const [from, entry] of byBytes.get(at.sha) ?? []) {
-
       if (from === to || (byPath.has(from) && !removesPath(draft, from, to)) || paths.has(from) || ports.inGroup(from)) continue;
       if (!removesPath(draft, from, to) && !onlyInDrafts(looked, byPath, from, entry)) continue;
-
       if (entry.sent === undefined && at.sha !== draft.blob) continue;
       const fromDoc = ports.documentFor(from);
       const agreed = agreedOf(entry);

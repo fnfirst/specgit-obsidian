@@ -16,15 +16,10 @@ export interface PointerAt {
 }
 
 export interface CaretEditor<Caret> {
-
   chips(): readonly { box: Box; caret: Caret }[];
-
   listen(on: { moved(at: PointerAt): void; pressed(at: PointerAt): void; left(): void }): () => void;
-
   nextFrame(run: () => void): () => void;
-
   hover(caret: Caret | null, was: Caret | null): void;
-
   show(caret: Caret): void;
 }
 
@@ -44,18 +39,15 @@ export function watchChips<Caret>(editor: CaretEditor<Caret>): { stop(): void; r
     hovered = caret;
     editor.hover(caret, was);
   };
-
   const lookSoon = (): void => {
     cancelFrame ??= editor.nextFrame(() => {
       cancelFrame = null;
       mark(under(last.x, last.y));
     });
   };
-
   const movedUnder = (): void => {
     if (inside) lookSoon();
   };
-
   const settle = (): void => {
     inside = false;
     cancelFrame?.();
@@ -141,15 +133,12 @@ export function forgetCaretName(caret: CaretElement): void {
 }
 
 export function watchCaretChips(root: CaretRoot, marks: { chip: string; caret: string }): { stop(): void; redrawn(): void } {
-
   const at = (event: unknown): PointerAt => {
     const { clientX, clientY, pointerType } = event as PointerShape;
     return { x: clientX, y: clientY, touch: pointerType === "touch" };
   };
   let scrollIn: CaretWindow | null = null;
-
   const scrolled = (): void => names.scrolled();
-
   const follow = (): void => {
     const now = root.ownerDocument.defaultView;
     if (now === null || now === scrollIn) return;

@@ -4,13 +4,10 @@ export type PartKind = "cell" | "title" | "body";
 
 export interface Part {
   kind: PartKind;
-
   row: number;
   col: number;
-
   from: number;
   to: number;
-
   text: string;
 }
 

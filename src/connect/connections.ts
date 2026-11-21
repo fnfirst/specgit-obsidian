@@ -7,7 +7,6 @@ export interface DisconnectedStore {
 
 export class Connections {
   private readonly chosen = new Map<string, boolean>();
-
   private readonly off: Set<string>;
   private readonly listeners = new Set<() => void>();
 

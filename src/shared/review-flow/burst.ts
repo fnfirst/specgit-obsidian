@@ -9,7 +9,6 @@ export type BurstLeftWhy = "review" | "main" | "grouped" | "same";
 export interface BurstLeftOut {
   path: string;
   why: BurstLeftWhy;
-
   sha?: string;
 }
 
@@ -23,7 +22,6 @@ export interface BurstFile {
   path: string;
   content: string;
   from?: string;
-
   base?: string | null;
 }
 

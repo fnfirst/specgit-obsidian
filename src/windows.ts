@@ -38,7 +38,6 @@ export function watchWindows(plugin: Plugin, attach: (win: Window, on: OnWindow)
     removers.delete(win);
   };
   add(window);
-
   workspace.iterateAllLeaves((leaf) => add(leaf.view.containerEl.win));
   const refs = [workspace.on("window-open", (_window, win) => add(win)), workspace.on("window-close", (_window, win) => drop(win))];
   const stop = (): void => {

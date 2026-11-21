@@ -369,7 +369,6 @@ export class Alignment {
     let current = 0;
     let cursor = this.bodyStart;
     let missed = 0;
-
     for (let r = 0; r < runs.length; r++) {
       const run = runs[r]!;
       if (run.value === "" && !isAtom(run)) continue;
@@ -453,7 +452,6 @@ export class Alignment {
 
   toTree(offset: number): TreePoint | null {
     if (this.placed.length === 0 || offset < this.bodyStart) return null;
-
     let [low, high] = [0, this.placed.length];
     while (low < high) {
       const mid = (low + high) >> 1;
@@ -464,17 +462,14 @@ export class Alignment {
     if (!placement) return this.point(this.placed[0]!, 0, 0);
     const length = placement.run.value.length;
     if (offset > placement.to) {
-
       const next = this.placed[low];
       return next && !this.lineBreakBetween(offset, next.from) ? this.point(next, 0, 0) : this.point(placement, length, -1);
     }
-
     if (isAtom(placement.run)) return this.point(placement, 0, 0, offset - placement.from > placement.to - offset);
     if (placement.partial) {
       const hit = partialToTreeIndex(length, placement.partial, offset);
       return this.point(placement, hit.value, hit.assoc);
     }
-
     let at = placement.from;
     for (let i = 0; i < length; i++) {
       if (at >= offset) return this.point(placement, i, at === offset ? 0 : -1);
@@ -486,7 +481,6 @@ export class Alignment {
   private point(placement: Placement, value: number, assoc: number, after = false): TreePoint {
     const run = placement.run;
     if (!isAtom(run)) return { node: run.node, index: nodeIndex(run, value), assoc };
-
     const siblings = run.parent.toArray();
     const at = siblings.indexOf(run.atom);
     const neighbour = siblings[after ? at + 1 : at - 1];

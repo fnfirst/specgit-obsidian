@@ -40,30 +40,18 @@ import { COMMENT_BUTTON, commentEmptyWords, NO_NOTE_OPEN, NOT_A_NOTE, PLUGIN_COM
 
 export interface CommentsTabEnv {
   hub: CommentsHub;
-
   renderBody(element: HTMLElement, markdown: string): () => void;
-
   canApply(path: string): boolean;
-
   mobile: boolean;
-
   toolbar: ToolbarOffer | null;
-
   told(message: string): void;
-
   canComment(path: string): boolean;
-
   startComment(path: string): Promise<void>;
-
   onSelection(listener: () => void): () => void;
-
   onEditorSelection: (listener: () => void) => () => void;
-
   openInSpecgit(path: string): void;
   openUrl(url: string): void;
-
   error(title: string, description: string): void;
-
   offline: { is: () => boolean; subscribe: (listener: () => void) => () => void };
   now(): number;
 }
@@ -75,7 +63,6 @@ const FILTERS: readonly ThreadFilter[] = ["open", "resolved", "all"];
 export function CommentsTab({ env, path, file }: { env: CommentsTabEnv; path: string | null; file?: FileKind }) {
   const elsewhere = file && NOT_A_NOTE[file];
   if (elsewhere) return <EmptyState icon="message-square">{elsewhere}</EmptyState>;
-
   if (path === null) return <EmptyState icon="message-square">{NO_NOTE_OPEN}</EmptyState>;
   const note = env.hub.forNote(path);
   return note ? <NoteThreads key={path} env={env} note={note} /> : null;
@@ -222,10 +209,8 @@ function Composer({
   onEditorSelection: CommentsTabEnv["onEditorSelection"];
 }) {
   const field = useRef<HTMLTextAreaElement>(null);
-
   useEffect(() => {
     if (!note.claimFocus(focusRequests)) return;
-
     const doc = field.current?.doc ?? activeDocument;
     const take = (): void => {
       const now = doc.activeElement;
@@ -284,7 +269,6 @@ interface CardProps {
   filter: ThreadFilter;
   selected: boolean;
   applying: boolean;
-
   offline: boolean;
   revisions: readonly RevisionView[];
 }
@@ -292,22 +276,18 @@ interface CardProps {
 function Card({ env, note, thread, filter, selected, applying, offline, revisions }: CardProps) {
   const [reply, setReply] = useState("");
   const [replying, setReplying] = useState(false);
-
   const [confirming, setConfirming] = useState<null | "resolve" | "reopen">(null);
   const [leaving, setLeaving] = useState(false);
-
   const pause = useRef<ResolvePause | null>(null);
   pause.current ??= new ResolvePause((run, ms) => {
     const timer = window.setTimeout(run, ms);
     return () => window.clearTimeout(timer);
   });
   const sending = useRef(false);
-
   useEffect(() => () => pause.current?.flush(), []);
 
   const quote = anchorWords(thread.anchor);
   const carried = carriedChip(thread);
-
   const suggests = extractSuggestionFromComments(thread.displayComments) !== null;
   const toggle = (): void => {
     if (confirming || offline) return;
@@ -332,7 +312,6 @@ function Card({ env, note, thread, filter, selected, applying, offline, revision
     const body = reply;
     if (body.trim() === "") return;
     sending.current = true;
-
     setReply("");
     setReplying(true);
     try {
@@ -425,7 +404,6 @@ function Card({ env, note, thread, filter, selected, applying, offline, revision
             placeholder={replying ? COMMENT_WORDS.replySending : COMMENT_WORDS.replyPlaceholder}
             disabled={replying}
             onInput={(event) => setReply((event.target as HTMLTextAreaElement).value)}
-
             onClick={() => note.select(thread.id, "field")}
             onFocus={() => note.select(thread.id, "field")}
           />

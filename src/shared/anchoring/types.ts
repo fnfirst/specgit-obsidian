@@ -6,9 +6,7 @@ export interface Anchor {
   prefix: string;
   suffix: string;
   commitSha: string;
-
   exactText?: string;
-
   outdated?: boolean;
 }
 
@@ -18,7 +16,6 @@ export interface ReanchorResult {
   status: ReanchorStatus;
   lineStart: number;
   lineEnd: number;
-
   confidence: number;
 }
 

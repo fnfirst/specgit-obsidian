@@ -3,9 +3,7 @@ import type { GitLogEntry, GitPorts } from "./git-watch";
 export interface FsView {
   isDirectory(path: string): boolean;
   isFile(path: string): boolean;
-
   read(path: string): string | null;
-
   mtime(path: string): number | null;
 }
 export interface PathView {

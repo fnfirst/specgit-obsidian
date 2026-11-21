@@ -1,34 +1,22 @@
 import type { AttachmentFile } from "../auth/git-copy";
 import { ATTACHMENT_WORDS, MAX_ATTACHMENT_BYTES } from "../shared/review-flow";
-import { attachmentLinks } from "./attachment-links";
+import { fileAttachmentLinks } from "./attachment-links";
 import { ATTACHMENT_RECHECK_MS, ATTACHMENT_RETRY_MS, type AttachmentMemory, attachmentMove, attachmentName } from "./attachment-memory";
 import { ATTACHMENT_BOTH } from "../stay/words";
 
 export interface BringPorts {
   now(): number;
-
   resolve(link: string, notePath: string): { path: string; mtime: number; size: number } | null;
-
   repoPathOf(vaultPath: string): string | null;
-
   vaultPathOf(repoPath: string): string | null;
-
   findAttachment(link: string, notePath: string): Promise<AttachmentFile>;
-
   told(notePath: string, words: readonly string[]): void;
-
   draftAttachment(repoPath: string): Promise<AttachmentFile>;
-
   vaultSha(file: { path: string; mtime: number; size: number }): Promise<string>;
-
   shaOf(bytes: ArrayBuffer): Promise<string>;
-
   notWritten(path: string): void;
-
   during<T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T>;
-
   replace(path: string, bytes: ArrayBuffer, expectedSha: string): Promise<boolean>;
-
   create(path: string, bytes: ArrayBuffer): Promise<"created" | "exists" | "failed">;
 }
 
@@ -37,7 +25,7 @@ export class AttachmentLooks {
   private readonly looked = new Map<string, { at: number; embeds: string }>();
 
   async bring(ports: BringPorts, memory: AttachmentMemory | undefined, branch: string, notePath: string, text: string, said: (words: string | null) => void, options: { replace?: boolean } = {}): Promise<void> {
-    const links = attachmentLinks(text);
+    const links = fileAttachmentLinks(notePath, text);
     const now = ports.now();
     const embeds = links.join("\n");
     const before = this.looked.get(notePath);
@@ -48,7 +36,6 @@ export class AttachmentLooks {
     for (const link of links) {
       const here = ports.resolve(link, notePath);
       if (here !== null) {
-
         if (options.replace !== true) continue;
         const repoPath = recheck && memory ? ports.repoPathOf(here.path) : null;
         const agreed = repoPath === null ? undefined : memory!.agreedOf(repoPath);
@@ -60,7 +47,6 @@ export class AttachmentLooks {
         const vaultSha = await ports.vaultSha(here);
         const move = attachmentMove(vaultSha, agreed, draftSha);
         if (move === "take") {
-
           if (await ports.during([here.path], () => ports.replace(here.path, read.bytes, vaultSha))) memory!.agree(repoPath, draftSha);
           else ports.notWritten(here.path);
         } else if (move === "same") {
@@ -71,7 +57,6 @@ export class AttachmentLooks {
       const missKey = `${branch}\n${notePath}\n${link}`;
       if (now - (this.misses.get(missKey) ?? Number.NEGATIVE_INFINITY) < ATTACHMENT_RETRY_MS) continue;
       let found = false;
-
       const read = await ports.findAttachment(link, notePath);
       if (read.kind === "unreadable" && read.outage === true) return;
       if (read.kind === "bytes" && read.path !== undefined && read.bytes.byteLength <= MAX_ATTACHMENT_BYTES) {

@@ -14,24 +14,16 @@ import { SpecgitTokenSource } from "./token-source";
 
 export interface AuthSetup {
   auth: SpecgitAuth;
-
   tokens: SpecgitTokenSource;
-
   gitCopy: SpecgitGitCopy;
-
   roomPeople: SpecgitRoomPeople;
-
   signIn: (options?: { install?: boolean }) => Promise<void>;
 }
 
 export interface AuthSetupOptions {
-
   server?: string;
-
   notify?: (message: string) => void;
-
   notifyUntilDismissed?: (message: string) => void;
-
   pendingSteps?: (doc: DocumentRef) => readonly AskedStep[];
 }
 
@@ -104,7 +96,6 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
         notify("Sign-in cancelled. Choose Sign in to try again.");
         break;
       case "failed":
-
         if (!auth.isWaiting()) modal?.didntFinish();
         notify(event.error.message);
         break;
@@ -116,7 +107,6 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
     }
   };
   plugin.register(auth.onChange(heard));
-
   plugin.register(() => void auth.endUnkept());
 
   plugin.registerObsidianProtocolHandler(AUTH_ACTION, (params) => auth.handleLink(params));

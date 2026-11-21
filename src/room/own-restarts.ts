@@ -2,22 +2,15 @@ import type { LocalState } from "../disk/bases";
 import type { AskedStep, RoomSteps, StepSent } from "../token-source";
 
 interface Step {
-
   base: string;
-
   id: string;
-
   sent: StepSent;
-
   at: number;
 }
 
 const STORE_KEY = "specgit-own-steps";
-
 const KEPT_MS = 7 * 24 * 60 * 60 * 1000;
-
 export const STEP_LIMITS = { note: 250_000, chars: 500_000 };
-
 const STEP_ID = /^[A-Za-z0-9_-]{16,64}$/;
 
 type Word = "silent" | "before" | "after" | "none";
@@ -57,10 +50,8 @@ export class OwnRestarts {
 
   own(key: string, leaving: RoomSteps | null, next: RoomSteps | null): string | null {
     const theirs = (this.steps.get(key) ?? []).filter((step) => {
-
       if (wordOf(step.id, leaving)[0] === "after") return false;
       const [word, asked] = wordOf(step.id, next);
-
       return !(word === "none" && asked === "unsure");
     });
     return theirs.at(-1)?.base ?? null;
@@ -114,7 +105,9 @@ export class OwnRestarts {
     }
     try {
       this.store.save(STORE_KEY, kept.size === 0 ? null : Object.fromEntries(kept));
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }
 

@@ -1,9 +1,7 @@
 import { isHiddenPath, LISTED_FILE } from "../mapping";
 
 export interface MissingNotes {
-
   copy: string[];
-
   skipped: string[];
 }
 
@@ -15,7 +13,6 @@ export function missingNotes(repoPaths: Iterable<string>, vaultPaths: Iterable<s
     if (!LISTED_FILE.test(path) || isHiddenPath(path)) continue;
     const place = (folder === "" ? path : `${folder}/${path}`).toLowerCase();
     if (taken.has(place)) {
-
       if (copied.has(place)) found.skipped.push(path);
       continue;
     }

@@ -9,9 +9,7 @@ interface RelativeSelection {
 
 export class RoomUndo {
   private readonly manager: Y.UndoManager;
-
   private view: EditorView | null = null;
-
   private before: RelativeSelection | null = null;
 
   constructor(

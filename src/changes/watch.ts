@@ -9,13 +9,9 @@ export function restingSignals(signals: PollSignals, stayOn: () => boolean): Pol
 
 export interface WatchDeps {
   signals: PollSignals;
-
   moved(): Promise<boolean>;
-
   live(): boolean;
-
   look(): void;
-
   stay?(): boolean;
 }
 
@@ -46,14 +42,12 @@ export class Watch {
 
   async tick(): Promise<void> {
     if (!this.inUse()) {
-
       if (this.deps.stay?.() === true && !this.deps.signals.hidden() && this.deps.signals.now() >= this.nextAt) this.deps.look();
       return;
     }
     if (this.checking) return;
     this.checking = true;
     try {
-
       const moved = await this.deps.moved();
       if (moved) this.unquiet();
       if (moved || this.deps.signals.now() >= this.nextAt) this.deps.look();

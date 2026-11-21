@@ -11,9 +11,7 @@ export interface Box {
 export interface Placement {
   left: number;
   top: number;
-
   width: number;
-
   height: number | null;
   side: "below" | "above";
 }
@@ -40,7 +38,6 @@ export function placeCard(input: { control: Box; card: { width: number; height: 
   if (fitsAbove && clear(above)) return { left, top: above.top, width, height: null, side: "above" };
   if (fitsBelow) return { left, top: below.top, width, height: null, side: "below" };
   if (fitsAbove) return { left, top: above.top, width, height: null, side: "above" };
-
   if (roomBelow >= roomAbove) return { left, top: below.top, width, height: Math.max(0, roomBelow), side: "below" };
   const cut = Math.max(0, roomAbove);
   return { left, top: control.top - gap - cut, width, height: cut, side: "above" };
@@ -68,7 +65,6 @@ export function positionCard(card: HTMLElement, anchor: HTMLElement, pane: Eleme
     const style = view.getComputedStyle(el);
     if (style.overflowY !== "visible") clip = { ...clip, top: Math.max(clip.top, rectOf(el).top), bottom: Math.min(clip.bottom, rectOf(el).bottom) };
   }
-
   card.style.removeProperty("max-height");
   card.style.maxWidth = `${Math.max(0, clip.right - clip.left - 2 * CARD_EDGE)}px`;
   const size = { width: card.offsetWidth, height: card.offsetHeight };
@@ -77,7 +73,6 @@ export function positionCard(card: HTMLElement, anchor: HTMLElement, pane: Eleme
     if (el === anchor || el.contains(anchor) || anchor.contains(el) || card.contains(el)) return false;
     const box = rectOf(el);
     if (box.right <= box.left || box.bottom <= box.top) return false;
-
     const shared = intersect(box, control);
     return !(shared.right > shared.left && shared.bottom > shared.top && (shared.right - shared.left) * (shared.bottom - shared.top) > 0.5 * (box.right - box.left) * (box.bottom - box.top));
   }).map(rectOf);

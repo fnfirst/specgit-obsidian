@@ -21,9 +21,7 @@ import type { ChangeRow, Doing } from "./model";
 
 export interface ApproveHost {
   readonly deps: FlowDeps;
-
   readUnits(asked: readonly ChangeRow[]): Promise<ChangeRow[]>;
-
   filesOf(unit: ChangeRow): ChangeRow[];
   busy<T>(work: () => Promise<T>, doing: Doing): Promise<T>;
   alert(options: Parameters<Dialogs["alert"]>[0]): Promise<void>;
@@ -87,12 +85,10 @@ export class ApproveFlows {
     const failed = outcomes.filter((one) => one.status !== "done");
     const nameOf = (path: string): string => noteName(path);
     if (failed.length > 0) {
-
       if (rows.length === 1) await this.host.alert({ title: failedTitle, description: (failed[0] as { reason: string }).reason });
       else await this.host.alert({ title: NOT_EVERYTHING_WENT_THROUGH, description: outcomes.map((one) => outcomeLine(one, nameOf)).join("\n") });
     }
     if (failed.length < outcomes.length) {
-
       const done = verdict === "request_changes" ? ASK_CHANGES_SENT : approved(rows.length === 1 && this.autoMerges(rows[0]!));
       this.host.deps.dialogs.toast(done.title, done.description);
     }

@@ -25,14 +25,18 @@ export class UploadRecords {
       if (typeof value.repo === "string" && isRepoName(value.repo) && typeof value.at === "number" && this.now() - value.at <= KEPT_MS && (value.uploaded === undefined || value.uploaded === true))
         return { repo: value.repo, at: value.at, ...(value.uploaded === true ? { uploaded: true as const } : {}) };
       this.state.save(KEY, null);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
     return null;
   }
 
   write(repo: string): void {
     try {
       this.state.save(KEY, { repo, at: this.now() });
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   markUploaded(): void {
@@ -40,12 +44,16 @@ export class UploadRecords {
     if (kept === null) return;
     try {
       this.state.save(KEY, { ...kept, uploaded: true });
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   clear(): void {
     try {
       this.state.save(KEY, null);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }

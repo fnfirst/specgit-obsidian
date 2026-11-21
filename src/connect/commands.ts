@@ -8,9 +8,7 @@ const OPEN_ITEM = "Open in specgit";
 const COPY_LINK_ITEM = "Copy specgit link";
 
 export interface CommandHost {
-
   openNote(): string | null;
-
   placeOf(path: string): Place;
   status: StatusBoard;
   flows: NoteFlows;
@@ -20,7 +18,6 @@ export function addNoteCommands(plugin: Plugin, host: CommandHost): void {
   const { flows, status } = host;
   const isNote = (path: string): boolean => host.placeOf(path).kind === "note";
   const hasAddress = (path: string): boolean => isRepoFile(host.placeOf(path));
-
   const forActiveFile = (id: string, name: string, is: (path: string) => boolean, applies: (phase: NotePhase) => boolean, run: (path: string) => void): void => {
     plugin.addCommand({
       id,

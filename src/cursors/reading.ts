@@ -16,30 +16,24 @@ export interface SectionContext {
 }
 
 export interface PeerBoard {
-
   publish(path: string, peers: readonly ReadingPeer[] | null, version?: number): void;
 }
 
 interface Section {
   path: string;
-
   place: (el: HTMLElement) => { lineStart: number; lineEnd: number } | null;
-
   lines: { start: number; end: number } | null;
   read: number;
-
   bars: Map<number, { peer: PeerCaret; dom: HTMLElement }>;
 }
 
 const GAP = 6;
 const STEP = 4;
-
 const MOST = 5_000;
 
 export class ReadingBars implements PeerBoard {
   private readonly peers = new Map<string, readonly ReadingPeer[]>();
   private readonly versions = new Map<string, number>();
-
   private readonly sections = new Map<string, Set<WeakRef<HTMLElement>>>();
   private readonly byElement = new WeakMap<HTMLElement, Section>();
   private readonly gone = new FinalizationRegistry<{ path: string; ref: WeakRef<HTMLElement> }>(({ path, ref }) => {
@@ -71,7 +65,6 @@ export class ReadingBars implements PeerBoard {
       const mine = this.sections.get(path) ?? new Set<WeakRef<HTMLElement>>();
       this.sections.set(path, mine);
       mine.add(ref);
-
       if (mine.size > this.most) {
         for (const old of mine) if (!old.deref()) mine.delete(old);
         for (const old of mine) {
@@ -133,7 +126,6 @@ export class ReadingBars implements PeerBoard {
   private paint(section: Section, el: HTMLElement): void {
     const version = this.versions.get(section.path) ?? 0;
     if (section.read !== version) {
-
       let info: ReturnType<Section["place"]> = null;
       try {
         info = section.place(el);

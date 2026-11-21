@@ -9,7 +9,6 @@ export function commenterName(author: { login: string; name?: string | null } | 
 
 export function subjectChip(thread: { subjectType: "line" | "file" | "issue"; anchor: { quotedText: string; exactText?: string } | null }): string | null {
   if (thread.subjectType === "line") return null;
-
   return anchorWords(thread.anchor).trim() === "" ? COMMENT_WORDS.wholeNote : null;
 }
 

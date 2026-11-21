@@ -7,9 +7,7 @@ import { CONTINUE, FREE, ONBOARD, ONBOARD_TIP, SHOW, STOPPED, underWay } from ".
 import { NO_REPOSITORY_WORDS } from "../pick/words";
 
 export interface OnboardActions {
-
   onboard: () => void;
-
   continueUpload: () => void;
 }
 

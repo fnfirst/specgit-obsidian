@@ -45,23 +45,17 @@ const DISCONNECTED_KEY = "specgit-disconnected";
 
 export default class SpecgitPlugin extends Plugin implements SettingsHost {
   config: Settings = DEFAULT_SETTINGS;
-
   private stay: StayHandle | null = null;
-
   private account: SpecgitAccount | null = null;
-
   private device = new DeviceSettings({ load: () => null, save: () => undefined });
-
   private readonly settingsSaved = new Signal();
 
   override async onload(): Promise<void> {
-
     this.device = new DeviceSettings({ load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) });
     this.config = { ...readSettings(await this.loadData()), ...this.device.read() };
     registerMark();
 
     const ownRestarts = new OwnRestarts(undefined, { load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) });
-
     const { auth, tokens, gitCopy, roomPeople, signIn } = setUpAuth(this, { server: this.config.server, pendingSteps: (doc) => ownRestarts.asking(docKey(doc)) });
     addAuthCommands(this, { auth, signIn });
     const account = new SpecgitAccount(auth, signIn, this);
@@ -72,12 +66,10 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       hocuspocusTransport(sockets, tokens),
       () => identityFrom(this.config),
       (note) => tokens.leave(note),
-
       tokens,
     );
     const board = new StatusBoard();
     const cameIn = new Board<Shown[]>();
-
     const connections = new Connections(
       () => this.config.stayConnected,
       {
@@ -89,14 +81,12 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       },
     );
     const disk = diskPath(this.app);
-
     const gitBases = new GitBases({
       bases: disk.bases,
       vault: disk.vault,
       documentFor: (path) => documentFor(this.config, path),
       gitCopy: (doc) => gitCopy.read(doc),
       signedIn: () => auth.isSignedIn(),
-
       repoSha: (path) => repoShaOf(path),
     });
     this.register(gitBases.watch());
@@ -106,17 +96,12 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     });
 
     let repoShaOf = (_path: string): string | null => null;
-
     let mainMoved = (_path: string): boolean => false;
     let draftBy = (_path: string): Promise<string | null> => Promise.resolve(null);
-
     let liveJoined = (_path: string): void => undefined;
     let deletedOnMain = (_path: string): boolean => false;
-
     let checkConnected = (): Promise<void> => Promise.resolve();
-
     let unsent = (): Promise<number | null> => Promise.resolve(null);
-
     const reading = new ReadingBars();
     this.registerMarkdownPostProcessor((el, ctx) => reading.process(el, ctx));
     this.register(() => reading.destroy());
@@ -152,10 +137,8 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       }),
     );
     const api = new SpecgitApi({ server: this.config.server, version: this.manifest.version, auth, transport: obsidianTransport });
-
     const events = setUpEvents(this, { api, repo: () => this.config.repo, signedIn: () => auth.isSignedIn() });
     this.register(this.settingsSaved.subscribe(() => events.settingsChanged()));
-
     const report = setUpReport(this, {
       api,
       server: () => this.config.server,
@@ -169,19 +152,14 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         return status ? wordFor(status) : "Local";
       },
     });
-
     const listing = (repo: string) => listRepository(api, repo, (ms) => new Promise((resume) => window.setTimeout(resume, ms)));
     const dialogs = obsidianDialogs(this.app, (title, description) => report.openForAlert(title, description));
-
     const apply = async (mapping: { repo: string; folder: string }): Promise<void> => {
       const before = this.config.repo;
       await this.applyMapping(mapping);
-
       if (mapping.repo !== before) void checkConnected();
     };
-
     const onboarding = setUpOnboard(this, { api, signedIn: () => auth.isSignedIn(), signIn, onAuth: (listener) => auth.onChange(listener), apply, repoChosen: () => isRepoName(this.config.repo) });
-
     const picker = setUpPick(this, {
       api,
       dialogs,
@@ -191,7 +169,6 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       settings: () => this.config,
       apply,
       onboard: () => onboarding.start(),
-
       unsent: () => unsent(),
       listing,
       copyIn: async (files, skipped) => void (await this.stay?.copyIn(files, skipped)),
@@ -219,12 +196,9 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       dialogs,
       live: () => events.connected(),
     });
-
     this.register(() => comments.hub.setActive(null));
-
     this.register(
       auth.onChange((event) => {
-
         if (event.kind === "signed_in" && !event.over) comments.hub.refresh();
         else if (event.kind === "signed_in" || event.kind === "signed_out") comments.hub.reset();
         events.settingsChanged();
@@ -261,7 +235,6 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       deletedAt: (path) => this.stay?.deletedAt(path) ?? null,
       restored: (path) => this.stay?.restored(path),
       heldWhy: (path) => this.stay?.heldWhy(path) ?? null,
-
       join: (path) => void joinNote(path),
       addToMyNote: (path) => this.stay?.addToMyNote(path),
       offered: () => this.stay?.offered() ?? [],
@@ -270,24 +243,17 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       attachmentProblems: (path, problems) => this.stay?.attachmentProblems(path, problems),
       bringFor: (path, text) => this.stay?.bringFor(path, text) ?? Promise.resolve(),
       copyIn: (files, skipped) => this.stay?.copyIn(files, skipped) ?? Promise.resolve(),
-
       bringInNewer: () => this.stay?.bringInNewer() ?? Promise.resolve({ brought: 0, skipped: 0 }),
       bringInDraft: (path) => this.stay?.bringInDraft(path) ?? Promise.resolve({ kind: "none" as const }),
     });
-
     comments.env.offline = { is: () => changes.model.offline(), subscribe: (listener) => changes.model.subscribe(listener) };
-
     events.onEvent((event) => {
       if (event.kind === "threads") comments.hub.heard(event);
-
       else if (event.kind !== "main" || event.branch === NOTE_BRANCH) changes.live.heard(event);
-
       if (event.kind === "review" && event.path !== undefined) this.stay?.heardDraft(event.path, event.sha);
-
       if (event.kind === "review" && event.branch !== undefined && event.push !== true) this.stay?.heardReview(event.branch);
     });
     events.onConnect((reconnected) => {
-
       comments.hub.catchUp(!reconnected);
       changes.live.catchUp(!reconnected);
     });
@@ -308,7 +274,6 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       gitBlobs: (repo, commit, files) => gitCopy.readBlobs(repo, commit, files),
       gitAttachment: (repo, at, path) => gitCopy.readAttachment(repo, at, path),
       gitFindAttachment: (repo, branch, notePath, embed) => gitCopy.findAttachment(repo, branch, notePath, embed),
-
       listing,
       gitBlob: (doc, sha) => gitCopy.readBlob(doc, sha),
       gitBlobsByOid: (repo, files) => gitCopy.readBlobs(repo, null, files, true),
@@ -326,24 +291,19 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     mainMoved = (path) => changes.model.row(path)?.change.mainMoved === true;
     draftBy = (path) => changes.model.draftAuthor(path);
     liveJoined = (path) => changes.liveFiles.joined(path);
-
     setUpNoteBar(this, { model: changes.model, isLive: (path) => board.phaseOf(path) === "live", onStatus: (listener) => board.subscribe(listener), join: (path) => void joinNote(path), addToMyNote: (path) => this.stay?.addToMyNote(path) });
-
     this.register(changes.model.subscribe(() => setAwareNotices(changes.model.state().aware !== null)));
     checkConnected = async () => {
       await changes.model.refresh();
       await changes.model.checkNow();
     };
-
     const joinNote = async (path: string): Promise<void> => {
       const doc = documentFor(this.config, path);
       if (!doc || !auth.isSignedIn()) return;
       await ensureOpen(this, path);
       connections.choose(doc, true);
     };
-
     unsent = async () => {
-
       if (changes.model.state().phase !== "ready") await changes.model.refresh();
       const { phase, rows } = changes.model.state();
       return phase === "ready" ? rows.filter((row) => row.change.kind !== "new" || row.entry !== null).length : null;
@@ -372,22 +332,18 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       comments: { env: comments.env, tabs: changes },
       disconnected: () => changes.live.catchUp(),
       tryNow: () => {
-
         lifecycle.online();
         rooms.retryFailed(0);
         void changes.model.refresh();
       },
       dialogs,
-
       hasUnsentEdits: (path) => changes.model.row(path)?.change.kind !== undefined,
     });
     this.register(this.settingsSaved.subscribe(() => panel?.model.update()));
-
     this.register(() => {
       closeDialogs();
       closeMenus();
     });
-
     const opened = panel;
     this.app.workspace.onLayoutReady(() => openOnFirstRun({ load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) }, () => opened.reveal()));
   }
@@ -421,37 +377,29 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
   }
 
   private followSignIn(auth: SpecgitAuth, account: SpecgitAccount, rooms: RoomPool, connections: Connections, gitBases: GitBases): void {
-
     account.onWho(() => rooms.identityChanged());
     this.register(
       auth.onChange((event) => {
         if (event.kind === "signed_in") {
-
           void account.beginSignIn().catch(() => undefined);
-
           if (event.over) {
             connections.reset();
             rooms.reset();
           }
-
           rooms.retryFailed(0);
-
           gitBases.resume();
         } else if (event.kind === "signed_out") {
           connections.reset();
           rooms.reset();
-
           void account.forgetLogin().catch(() => undefined);
         }
       }),
     );
-
     void account.learnWhoIfOwed();
   }
 
   private watchConnection(lifecycle: ConnectionLifecycle, account: SpecgitAccount): void {
     const askIfOwed = (): void => void account.learnWhoIfOwed();
-
     watchWindows(this, (win, on) => {
       on(win.document, "visibilitychange", () => {
         if (!appHidden()) {
@@ -481,10 +429,8 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       const words = statusText(status);
       item.empty();
       if (words === "") return;
-
       setIcon(item.createSpan({ cls: "specgit-status-mark" }), MARK_ICON);
       item.createSpan({ text: words, cls: "specgit-status-words" });
-
       setTooltip(item, statusTip(status ?? { phase: "local" }), { placement: "top" });
       item.toggleClass("is-live", status !== undefined && wordFor(status) === "Live" && !status.readOnly);
     };

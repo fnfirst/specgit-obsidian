@@ -31,21 +31,17 @@ export const STATUS_CHIPS = {
   drafts: "Drafts",
   others: "With others",
 } as const;
-
 export const STATUS_CHIP_TIPS = {
   approve: "Reviews in this repository that ask you.",
   publish: "Your approved reviews in this repository.",
   drafts: "Your unsubmitted changes in this repository.",
 } as const;
 export type StatusChipKey = "all" | "live" | "approve" | "publish" | "drafts";
-
 type StatusStep = "submit" | "approve" | "publish";
 const STEP_VERB: Record<StatusStep, string> = { submit: "submit", approve: "approve", publish: "publish" };
-
 export const STATUS_OTHER_STEP = "One step at a time";
 export const statusOtherStepLine = (row: StatusStep, chosen: StatusStep, checked: number): string =>
   `You checked ${checked === 1 ? "one" : checked} to ${STEP_VERB[chosen]}. To ${STEP_VERB[row]} this, uncheck ${checked === 1 ? "it" : "them"} first.`;
-
 export const STATUS_NO_STEP = {
   teammate: { name: "Someone else's", line: (who: string, step: "submit" | "publish"): string => `Only ${who || "the person who wrote it"} can ${step} it.` },
   notInVault: { name: "Not in this vault", line: "Open the ⋯ menu and choose Bring into this vault to submit it here." },
@@ -63,7 +59,6 @@ export const statusHere = (logins: readonly string[]): string => `${statusWho(lo
 
 export const STATUS_CARD = {
   connect: "Connect Live",
-
   connecting: "Connecting…",
   disconnect: "Disconnect",
   openInSpecgit: "Open in specgit",
@@ -77,12 +72,9 @@ export const statusFoldRow = (heading: string, count: number): string => `${head
 export const STATUS_FOLDS = {
   notHere: { label: "Not in this vault", button: "Copy in" },
   newer: { label: "Newer on GitHub", button: "Bring in" },
-
   deleted: { label: "Deleted on GitHub", button: "Move to trash" },
-
   offered: { label: "Changes you can add", button: "Add" },
 } as const;
-
 export const statusFoldProgress = (done: number, total: number): string => `Copying ${done} of ${total}…`;
 export const statusShowMore = (count: number): string => `Show ${count} more`;
 export const statusGroupCount = (count: number, noun: StatusNoun): string => counted(count, noun);
@@ -107,7 +99,6 @@ export type StatusRowButton = keyof typeof STATUS_ROW_BUTTONS;
 export const STATUS_ROW_MENU = {
   open: "Open",
   "show-changes": "Show changes",
-
   "see-github": "See GitHub's changes",
   "see-difference": "See how it differs from GitHub",
   "submit-only": SUBMIT_ONLY_THIS,
@@ -143,18 +134,14 @@ export const STATUS_BAR = {
   addTo: (count: number, name: string): string => `Add ${count} to ${name}`,
   addToMenu: (count: number): string => `Add ${count} to…`,
   newGroup: "New group",
-
   groupReason: (noun: StatusNoun): string => `Check two ${statusPlural(noun, 2)} that are drafts to group them.`,
-
   groupCount: (count: number): string => `Group ${count} together`,
 } as const;
 
 export const statusSubmitLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? "Submit for review…" : `Submit ${counted(count, noun)}…`);
 export const statusPublishLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? "Publish…" : `Publish ${counted(count, noun)}…`);
 export const statusApproveLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? "Approve" : `Approve ${counted(count, noun)}…`);
-
 export const statusProposeLabel = (upstream: string): string => `Propose to ${upstream}`;
-
 export type StatusRunning = "submit" | "approve" | "publish" | "propose";
 export const STATUS_RUNNING: Record<StatusRunning, string> = { submit: BUSY_WORDS.submit, approve: BUSY_WORDS.approve, publish: BUSY_WORDS.publish, propose: "Proposing…" };
 export const STATUS_VIEW_ONLY = "View only";
@@ -170,12 +157,10 @@ export const STATUS_SUBMIT_STEP = {
   title: (count: number, noun: StatusNoun): string => `Submit ${counted(count, noun)}`,
   reviewers: "Reviewers",
   add: "+ Add",
-
   remove: (login: string): string => `Don't ask ${login}`,
   back: "Back",
   submit: "Submit",
 } as const;
-
 export const statusOpenComments = (comments: number, documents: number, noun: StatusNoun): string | null =>
   comments === 0 ? null : documents === 1 ? openCommentsWarning(comments, noun) : `${comments} open ${comments === 1 ? "comment" : "comments"} on these ${statusPlural(noun, 2)}.`;
 
@@ -192,7 +177,6 @@ export const STATUS_EMPTY = "Everything is published.";
 export const STATUS_FAILED = "Couldn't load.";
 export const STATUS_RETRY = "Try again";
 export const STATUS_OFFLINE = "Offline. Your changes are kept.";
-
 export const STATUS_SLOW = "Still waiting for GitHub. It's slower than usual.";
 
 export const statusBulkResult = (done: number, did: "published" | "submitted" | "approved", needs: number): string =>
@@ -223,7 +207,6 @@ export const STATUS_TIPS = {
   join: "Open it and write with them.",
   groupTogether: (noun: StatusNoun): string => `One review for the checked ${statusPlural(noun, 2)}.`,
   showChanges: "Highlights what's new since it was published.",
-
   autoPublish: "Publishes by itself once it's approved.",
 } as const;
 

@@ -1,14 +1,11 @@
 import { EditorView } from "@codemirror/view";
 
 export interface CellFocus {
-
   table: number;
   row: number;
   cell: number;
-
   anchor: number;
   head: number;
-
   element: Element;
 }
 
@@ -46,10 +43,8 @@ function press(cell: Element): void {
   const { left, top, width, height } = cell.getBoundingClientRect();
   const init = { pointerId: 1, isPrimary: true, button: 0, pointerType: "mouse", clientX: left + width / 2, clientY: top + height / 2 };
   const Pointer = win.PointerEvent ?? win.MouseEvent;
-
   const event = (type: string, extra: EventInit): Event => Object.defineProperty(new Pointer(type, { ...init, ...extra }), "view", { value: win });
   cell.dispatchEvent(event("pointerdown", { bubbles: true, cancelable: true }));
-
   cell.dispatchEvent(event("click", { bubbles: true, cancelable: true }));
   win.dispatchEvent(event("pointerup", {}));
 }
@@ -81,7 +76,6 @@ function settle(view: EditorView, focus: CellFocus, pressed: { done: boolean }):
   if (!editor && !pressed.done) {
     pressed.done = true;
     press(cell);
-
     editor = inner(cell);
   }
   if (!editor) return false;

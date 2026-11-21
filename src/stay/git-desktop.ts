@@ -6,7 +6,6 @@ import type { GitPorts } from "./git-watch";
 export async function locateGit(app: App): Promise<GitPorts | null> {
   const { adapter } = app.vault;
   if (Platform.isDesktop && Platform.isDesktopApp && adapter instanceof FileSystemAdapter) {
-
     const load = (window as unknown as { require: (name: string) => unknown }).require;
     const fs = load("fs") as typeof import("node:fs");
     const path = load("path") as typeof import("node:path");

@@ -4,7 +4,6 @@ import type { ConfirmQuestion, PanelMenuItem } from "./types";
 export interface OpenMenu {
   items: readonly PanelMenuItem[];
   anchor: HTMLElement;
-
   right: number;
   top?: number;
   bottom?: number;
@@ -17,7 +16,6 @@ export function placeMenu(root: HTMLElement | null, anchor: HTMLElement, count: 
   const rect = anchor.getBoundingClientRect();
   const right = Math.max(4, box.width - (rect.right - box.left));
   const below = rect.bottom - box.top + 2;
-
   const view = anchor.ownerDocument.defaultView?.innerHeight ?? box.top + box.height;
   if (rect.bottom + 2 + count * ITEM_HEIGHT + 8 > view && rect.top > count * ITEM_HEIGHT) return { right, bottom: box.height - (rect.top - box.top) + 2 };
   return { right, top: below };

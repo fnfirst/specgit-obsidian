@@ -8,33 +8,25 @@ export interface RefusalRange {
 export interface Landed {
   client: number;
   clock: number;
-
   since?: number;
 }
 
 const KEEP_MS = 2 * 60_000;
-
 const KEEP_BYTES = 256 * 1024;
 const ENTRY_BYTES = 24;
-
 const CONTEXT = 3;
-
 const WORDS_KEPT = 400;
-
 const WAIT_MS = 30_000;
 
 interface Written {
-
   clock: number;
   length: number;
   words: string;
-
   left: string;
   right: string;
   ackedAt: number | null;
 }
 interface Deleted {
-
   pos: Uint8Array;
   words: string;
   left: string;
@@ -51,14 +43,12 @@ interface Waiting {
 
 export interface OwnChangesOptions {
   now?: () => number;
-
   acknowledged?: () => boolean;
 }
 
 export class OwnChanges {
   private readonly written: Written[] = [];
   private readonly deleted: Deleted[] = [];
-
   private readonly selfDeleted: Array<[number, number]> = [];
   private readonly waiting: Waiting[] = [];
   private shadow: string;
@@ -99,7 +89,6 @@ export class OwnChanges {
     if (!doc) return;
     if (transaction.local) {
       this.noteOwn(event, transaction, doc);
-
       this.forget(false);
     }
     this.shadow = this.text.toJSON();
@@ -114,7 +103,6 @@ export class OwnChanges {
         newIndex += step.retain;
       } else if (step.insert !== undefined) {
         const length = typeof step.insert === "string" ? step.insert.length : 1;
-
         const first = Y.createRelativePositionFromTypeIndex(this.text, newIndex, 0).item;
         if (first && first.client === doc.clientID) this.written.push({ clock: first.clock, length, words: typeof step.insert === "string" ? step.insert.slice(0, WORDS_KEPT) : "", left: this.shadow.slice(Math.max(0, oldIndex - CONTEXT), oldIndex), right: this.shadow.slice(oldIndex, oldIndex + CONTEXT), ackedAt: null });
         newIndex += length;
@@ -194,7 +182,6 @@ export class OwnChanges {
       if (start !== undefined && start <= high && start + item.length >= low) pieces.push({ start, words: item.content.str });
     }
     pieces.sort((a, b) => a.start - b.start);
-
     const runs: string[] = [];
     let end = -1;
     for (const piece of pieces) {
@@ -231,7 +218,6 @@ function standsIn(runs: readonly string[], left: string, words: string, right: s
   if (words === "") return false;
   const trimmed = words.trim();
   if (trimmed === "") {
-
     if (runs.includes(words)) return true;
     const forms = [left + words + right, left + words, words + right];
     return runs.some((text) => forms.some((form) => form.length > words.length && text.includes(form)));

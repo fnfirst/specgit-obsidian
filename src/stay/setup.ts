@@ -14,7 +14,7 @@ import { bringInDraft, bringInNewer, type BroughtDraft, type BroughtNewer } from
 import { copiedWords, copyIn, FILES_PER_BATCH, type CopyInFile, type CopyInOptions, type CopyInPorts, type CopyInResult } from "../changes/copy-in";
 
 import { type End, endOf } from "./ends";
-import { attachmentLinks } from "../changes/attachment-links";
+import { fileAttachmentLinks } from "../changes/attachment-links";
 import { type BringPorts, AttachmentLooks, draftElseMain } from "../changes/bring-attachments";
 import { isAttachmentPath } from "../shared/review-flow";
 import type { AttachmentMemory } from "../changes/attachment-memory";
@@ -45,7 +45,6 @@ import { appHidden, watchWindows } from "../windows";
 
 export interface StayDeps {
   settings: () => Settings;
-
   setStayConnected: (on: boolean) => Promise<void>;
   model: ChangesModel;
   flows: ChangesFlows;
@@ -54,76 +53,44 @@ export interface StayDeps {
   connections: Connections;
   bases: BaseStore;
   gitFile: (doc: DocumentRef, at?: string) => Promise<MainFile>;
-
   wasDeleted: (doc: DocumentRef) => Promise<{ deletedAt: number } | null | "unknown">;
-
   gitBlobs?: (repo: string, commit: string, files: ReadonlyArray<{ sha: string; path: string }>) => Promise<BlobsAnswer>;
-
   gitExist?: (repo: string, paths: ReadonlyArray<string>) => Promise<{ kind: "answered"; files: Map<string, boolean> } | { kind: "missing" } | { kind: "outage" }>;
-
   gitBlobsByOid?: (repo: string, files: ReadonlyArray<{ sha: string; path: string }>) => Promise<BlobsAnswer>;
-
   gitAttachment?: (repo: string, at: string, path: string) => Promise<AttachmentFile>;
-
   gitFindAttachment?: (repo: string, branch: string, notePath: string, embed: string) => Promise<AttachmentFile>;
-
   listing?: (repo: string) => Promise<{ commit: string | null; files: ReadonlyMap<string, string> } | null>;
-
   gitBlob: (doc: DocumentRef, sha: string) => Promise<string | null>;
-
   attachmentMemory?: () => AttachmentMemory;
-
   openStatus?: () => void;
-
   vaultPath: (path: string) => string;
-
   branchFile: (doc: DocumentRef, branch: string) => Promise<BranchFile>;
   signedIn: () => boolean;
-
   login: () => string;
   chooseWhatToKeep: (request: ReviewRequest) => Promise<string | null>;
   dialogs: Dialogs;
 }
 
 export interface StayHandle {
-
   settingsChanged(): void;
-
   offer(): Promise<void>;
-
   groupHeld(): Promise<void>;
-
   isKept(path: string): boolean;
-
   stopped(path: string): void;
-
   deletedOnGithub(path: string, at: number): void;
-
   deletedAt(path: string): number | null;
-
   restored(path: string): void;
-
   heldWhy(path: string): string | null;
-
   attachmentProblems(path: string, problems: ReadonlyArray<{ name: string; why: string }>): void;
-
   touched(path: string): void;
-
   heardDraft(repoPath: string, sha?: string): void;
-
   addToMyNote(path: string): void;
-
   offered(): readonly string[];
   addOffered(): void;
-
   heardReview(branch: string): void;
-
   bringFor(path: string, text: string): Promise<void>;
-
   bringInNewer(): Promise<BroughtNewer>;
-
   bringInDraft(path: string): Promise<BroughtDraft>;
-
   copyIn(files: readonly CopyInFile[], skipped?: readonly string[]): Promise<CopyInResult>;
 }
 
@@ -135,7 +102,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   const activity = new Activity();
   const vault = guardedVault(app);
   const place = (): string => `${deps.settings().repo}\n${normalizeFolder(deps.settings().folder)}`;
-
   const identity = (): string => `${place()}\n${deps.login()}`;
   const mapped = (path: string): DocumentRef | null => fileFor(deps.settings(), path);
   let lookTimer: number | undefined;
@@ -153,7 +119,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     const first = files[0];
     const listed = first ? await deps.listing?.(first.doc.repo).catch(() => null) : null;
     if (!first || !listed) return { files: [...files], options: {} };
-
     const prefix = first.path.slice(0, first.path.length - first.doc.path.length);
     const vaultPaths = new Set(app.vault.getFiles().map((file) => file.path.toLowerCase()));
     const others = [...listed.files.keys()].filter((path) => isLeftOutKind(path) && !vaultPaths.has(`${prefix}${path}`.toLowerCase())).map((path) => `${prefix}${path}`);
@@ -165,7 +130,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
 
   interface CopyJob {
     repo: string;
-
     wanted: Array<() => boolean>;
     result: Promise<CopyInResult>;
   }
@@ -194,15 +158,12 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
           ...(deps.gitAttachment ? { gitAttachment: (from, at, path) => deps.gitAttachment!(from, at ?? NOTE_BRANCH, path) } : {}),
           create: (path, text) => vault.create(path, text),
           createBinary: guardedBinaryCreate(app),
-
           agreed: (repoPath, sha) => deps.attachmentMemory?.().agree(repoPath, sha),
-
           recordBase: (file, _text, sha) => deps.model.copiedFrom(file.path, sha),
           checkpoint: () => deps.model.checkpoint(),
           vaultPaths: () => app.vault.getFiles().map((file) => file.path),
           notWritten: (path) => activity.notWritten(path),
           during: (paths, run, left) => activity.during(paths, run, left),
-
           blockedFor: () => WriteBudget.open(localState, deps.login()).waitFor(0),
           pause: (ms) => new Promise((resume) => window.setTimeout(resume, ms)),
           clock: () => performance.now(),
@@ -218,12 +179,12 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         return result;
       } finally {
         shown.hide();
-
         try {
           await deps.model.refresh();
-
           if (copiedNow > 0) await deps.model.checkNow();
-        } catch { /* empty */ } finally {
+        } catch {
+          void 0;
+        } finally {
           job = null;
           deps.model.copying(null);
         }
@@ -290,10 +251,8 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       },
       repoPathOf: (vaultPath) => underFolder(folder, vaultPath),
       vaultPathOf: (repoPath) => (repoPath.split("/").includes("..") ? null : folder === "" ? repoPath : `${folder}/${repoPath}`),
-
       findAttachment: (link) => deps.gitFindAttachment!(doc.repo, branch, doc.path, link),
       told: (path, words) => deps.model.attachmentTold(path, words, "bring"),
-
       draftAttachment: branch === NOTE_BRANCH ? (repoPath) => deps.gitAttachment!(doc.repo, NOTE_BRANCH, repoPath) : draftElseMain((repoPath) => deps.gitAttachment!(doc.repo, branch, repoPath), (repoPath) => deps.gitAttachment!(doc.repo, NOTE_BRANCH, repoPath)),
       vaultSha: (file) => {
         const target = app.vault.getFileByPath(file.path);
@@ -310,16 +269,16 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     };
     await attachmentLooks.bring(ports, memory, branch, notePath, text, said, options);
   };
-
   const bringFor = async (path: string, text: string): Promise<void> => {
     const doc = mapped(path);
     if (!doc || !deps.gitAttachment || !deps.gitFindAttachment) return;
-
-    if (attachmentLinks(text).every((link) => app.metadataCache.getFirstLinkpathDest(link, path) !== null)) return;
+    if (fileAttachmentLinks(path, text).every((link) => app.metadataCache.getFirstLinkpathDest(link, path) !== null)) return;
     try {
       const status = await deps.review.status(doc);
       await bringAttachments(doc, status?.reviewBranch ?? NOTE_BRANCH, path, text, (words) => engine?.attachmentRow(path, words));
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   };
 
   const ports: StayPorts = {
@@ -347,10 +306,8 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     baseText: (path, sha) => {
       const read = deps.bases.read(path);
       if (sha === null || read.status !== "found") return null;
-
       return gitBlobShaOfText(withEol(read.base.text, read.base.eol)) === sha ? read.base.text : null;
     },
-
     recordBase: (path, doc, _text, raw) => recordMainBase(deps.bases, path, doc, raw),
     rebase: (path, sha) => deps.model.rebased(path, sha),
     chooseWhatToKeep: deps.chooseWhatToKeep,
@@ -365,7 +322,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       const read = await deps.review.status(doc);
       if (read === null) return "unknown";
       if (reviewIsOpen(read)) return "open";
-
       if (read.pr?.state === "closed") {
         const got = await deps.review.details?.(doc.repo, [read.pr.number]);
         const detail = got instanceof Map ? got.get(read.pr.number) : undefined;
@@ -374,7 +330,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       return endOf(read.pr, deps.login(), group);
     },
     reviewEnds: async (files) => {
-
       const ended = new Map<number, End | "unknown">();
       const byRepo = new Map<string, number[]>();
       const groups = new Set(files.filter((one) => one.group === true).map((one) => one.number));
@@ -383,7 +338,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         for (let at = 0; at < numbers.length; at += FILES_PER_BATCH) {
           const details = await deps.review.details?.(repo, numbers.slice(at, at + FILES_PER_BATCH));
           if (details === undefined || details === null) return null;
-
           if (details === "failed") continue;
           for (const [number, pr] of details) ended.set(number, reviewIsOpen({ reviewBranch: null, pr }) ? "open" : endOf(pr, deps.login(), groups.has(pr.number)));
         }
@@ -391,7 +345,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       return ended;
     },
     agreed: (path, agreement) => {
-
       deps.flows.forgetSent(path);
       if (agreement === null) deps.model.learnSent(path, null);
       else deps.model.learnSent(path, agreement.sent, agreement.to as ReviewKey | null, { ...(agreement.agreed === undefined ? {} : { agreed: agreement.agreed }), ...(agreement.commit === undefined ? {} : { commit: agreement.commit }) });
@@ -427,17 +380,14 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
 
   let engine: StayConnected | null = null;
   let engineIdentity = "";
-
   let lastLooked: Looked | null = null;
   const stop = deps.model.onLooked((looked) => {
     lastLooked = looked;
-
     if (engine && engineIdentity !== identity()) settingsChanged();
     engine?.lookedAt(looked);
   });
   plugin.register(stop);
   plugin.register(() => engine?.stop());
-
   let notLocal = new Set<string>();
   plugin.register(
     deps.status.subscribe(() => {
@@ -450,20 +400,16 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   );
 
   const fresh = (always = false): StayConnected => {
-
     const allowed: StayPorts = always ? { ...ports, enabled: () => true } : ports;
     engineIdentity = identity();
-
     const settings = { repo: deps.settings().repo, folder: deps.settings().folder };
     const tied = tiedTo(allowed, engineIdentity, identity, (path) => fileFor(settings, path), activity);
     const state = new StayState(place(), localState);
-
     const serverTakes = (): number => (deps.model.state().groups.some((row) => row.group?.overview.ending !== undefined && row.group.overview.ending.stopped === undefined) ? ENDING_WRITES_PER_HOUR : 0);
     return new StayConnected(tied, state, activity, WriteBudget.open(localState, deps.login(), Date.now, serverTakes));
   };
 
   const touched = (path: string): void => activity.touched(path);
-
   app.workspace.onLayoutReady(() => {
     plugin.registerEvent(app.vault.on("create", (file) => touched(file.path)));
     plugin.registerEvent(app.vault.on("modify", (file) => touched(file.path)));
@@ -481,7 +427,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     on(win.document, "visibilitychange", () => {
       if (appHidden()) {
         wasHidden = true;
-
         engine?.flush();
       } else if (wasHidden) {
         wasHidden = false;
@@ -507,7 +452,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       engine.disable();
       engine = null;
     }
-
     deps.connections.defaultsChanged();
   };
   sync();
@@ -527,7 +471,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   const settingsChanged = (): void => {
     window.clearTimeout(settling);
     const wanted = deps.settings().stayConnected;
-
     if (engine !== null && engineIdentity !== identity()) {
       moving = true;
       if (wanted) engine.stop();
@@ -553,7 +496,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     addOffered: () => engine?.addOffered(),
     addToMyNote: (path) => {
       if (engine) return engine.addToMyNote(path);
-
       const once = fresh(true);
       once.lookedAt(lastLooked);
       once.addToMyNote(path, true);
@@ -564,7 +506,6 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         files: () => deps.model.vault()?.files ?? null,
         read: (path) => vault.read(path),
         bringIn: async (path) => {
-
           const once = engine ?? fresh(true);
           if (once !== engine) once.lookedAt(lastLooked);
           return once.bringIn(path);

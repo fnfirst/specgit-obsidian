@@ -15,12 +15,9 @@ const JITTER = 0.25;
 export class BridgeRequests {
   private timer: number | null = null;
   private asking = false;
-
   private wanted = false;
-
   private tries = 0;
   private stopped = false;
-
   private told = 0;
 
   constructor(
@@ -56,7 +53,6 @@ export class BridgeRequests {
   private wait(): void {
     if (this.stopped || !this.wanted || this.timer !== null || this.asking) return;
     const base = BRIDGE_ASK_WAITS_MS[Math.min(this.tries, BRIDGE_ASK_WAITS_MS.length - 1)] ?? 0;
-
     this.timer = window.setTimeout(() => void this.run(), Math.max(base * (1 - JITTER + 2 * JITTER * this.random()), this.told));
   }
 
@@ -67,7 +63,9 @@ export class BridgeRequests {
     this.told = 0;
     try {
       this.told = waitFrom(await this.ask());
-    } catch { /* empty */ } finally {
+    } catch {
+      void 0;
+    } finally {
       this.asking = false;
     }
     this.wait();

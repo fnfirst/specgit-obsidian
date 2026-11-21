@@ -30,23 +30,18 @@ export const useRepository = (name: string): string => `Use ${name}`;
 export const FOLDER_TITLE = "Choose the vault folder";
 export const USE_IT = "Use it";
 export const CHOOSE_ANOTHER_FOLDER = "Choose another folder";
-
 export const LOADING_FOLDER = "Looking at this repository's files…";
 export const STILL_WORKING = "specgit is still finishing the last step.";
 export const FOLDER_PLACEHOLDER = "Search your folders";
 export const FOLDER_UNREAD = "specgit couldn't read this repository's files just now, so it can't tell which folder holds them. Use the whole vault, or choose a folder.";
 const notes = (count: number): string => (count === 1 ? "1 note" : `${count} notes`);
-
 export const noFilesInVault = (repo: string, total: number): string =>
   total === 0 ? `${repo} has no notes yet. Use the whole vault, or choose a folder for the ones you add.` : `${repo} has ${notes(total)}, none in this vault yet. Choose a folder for ${total === 1 ? "it" : "them"}.`;
 export const mirrorsRepository = (repo: string): string => `Your vault holds ${repo}'s files at the top level.`;
 export const holdsFiles = (folder: string): string => `Your '${folder}' folder holds this repository's files.`;
 export const matchCount = (matched: number, total: number): string => `${matched} of ${total} files are there.`;
-
 export const outsideStays = (folder: string): string => `Notes outside '${folder}' stay in this vault only.`;
-
 export const THING_WORDS: Record<PathKind, string> = { note: "note", board: "board", base: "Bases file", other: "file" };
-
 export const outsideFolderWords = (folder: string, repo: string, file: PathKind): string =>
   `This ${THING_WORDS[file]} is outside ${folder}, so it stays in this vault only.`;
 
@@ -73,7 +68,6 @@ export const copyInTitle = (repo: string): string => `Copy notes in from ${repo}
 export const copyInQuestion = (repo: string, count: number): string => `${repo} has ${count === 1 ? "1 note that isn't" : `${count} notes that aren't`} in this vault yet. specgit can copy ${count === 1 ? "it" : "them"} in now. Your other notes stay as they are.`;
 export const copyInLabel = (count: number): string => (count === 1 ? "Copy it in" : "Copy them in");
 export const NOT_NOW = "Not now";
-
 export const hiddenWords = (count: number): string => (count === 1 ? "1 file in a hidden folder (like .github) stays on GitHub." : `${count} files in hidden folders (like .github) stay on GitHub.`);
 
 export function leftOutWords(left: LeftOut): string {
@@ -82,7 +76,6 @@ export function leftOutWords(left: LeftOut): string {
   const list = named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : (named[0] ?? "");
   const total = leftOutTotal(left);
   const said = total === 1 ? `1 file stays on GitHub because it isn't a note: ${list}.` : `${total.toLocaleString("en-US")} files stay on GitHub because they aren't notes: ${list}.`;
-
   return left.image > 0 ? `${said} A file a note uses comes in with the note when the note is copied.` : said;
 }
 

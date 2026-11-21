@@ -5,7 +5,6 @@ export type RefusalKind = "method" | "restricted" | "retry" | "checks" | "other"
 export function classifyRefusal(err: { message?: string; code?: string }, pr?: { mergeableState?: string | null; mergeable?: boolean | null }): RefusalKind {
   const message = (err.message ?? "").toLowerCase();
   if (/squash|merge method|rebase merge|merge commits? (are|is) not allowed|merging is not allowed/.test(message)) return "method";
-
   if (/required (status )?checks?|status checks? (is|are) (expected|required|pending|failing)|checks? (is|are) (expected|required|pending|failing)/.test(message)) return "checks";
   if (err.code === "forbidden" || /restrict|not authorized|permission|may not push|cannot push/.test(message)) return "restricted";
   if (/base branch was modified|head branch was modified/.test(message)) return "retry";

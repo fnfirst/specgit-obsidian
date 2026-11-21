@@ -27,15 +27,10 @@ const isHeldWhy = (value: unknown): value is HeldWhy => value === "changed" || v
 
 export interface MovesDone {
   outcomes: ItemOutcome[];
-
   done: ChangeRow[];
-
   deleteToasts: { title: string; description: string }[];
-
   linksKept: string[];
-
   perFile: boolean;
-
   learned: boolean;
 }
 
@@ -59,9 +54,7 @@ export class MoveFlows {
       const answer = await this.deps.review.movesKnown(repo, { moves: mine.map((row) => ({ path: this.deps.documentFor(row.change.from!)!.path, newPath: row.doc.path, expectMain: row.change.sha })) });
       const body = (answer.ok ? answer.body : (answer.body ?? {})) as { blocked?: unknown; needsApproval?: unknown; takes?: unknown };
       if (!answer.ok && body.blocked === true && body.needsApproval === true) return "needs";
-
       if (!answer.ok) unknown = true;
-
       if (answer.ok && body.takes === "unknown") unknown = true;
     }
     return unknown ? "unknown" : "set";
@@ -85,23 +78,19 @@ export class MoveFlows {
     });
     const all = [...renames, ...deletes];
     const body = (result.ok ? result.body : (result.body ?? {})) as { moved?: unknown; deleted?: unknown; gone?: unknown; held?: unknown; blocked?: unknown; reason?: unknown };
-
     if (!result.ok && (body as { refused?: unknown }).refused === true) {
       const why = typeof body.reason === "string" && body.reason ? body.reason : COULD_NOT_PUBLISH;
       for (const row of all) into.outcomes.push({ path: row.change.path, status: "failed", reason: why });
       return;
     }
-
     if (!result.ok && result.status === 404 && body.blocked !== true) {
       into.perFile = true;
       return;
     }
-
     if (!result.ok && body.blocked !== true) {
       for (const row of all) into.outcomes.push({ path: row.change.path, status: "failed", reason: this.refusedWords(result) });
       return;
     }
-
     if (!result.ok && body.blocked === true) {
       into.perFile = true;
       into.learned = (body as { known?: unknown }).known === false;
@@ -127,14 +116,12 @@ export class MoveFlows {
       const path = row.change.path;
       const why = held.get(row.doc.path);
       if (gone.has(row.doc.path) || deleted.has(row.doc.path)) {
-
         this.deps.model.settledDelete(path);
         into.done.push(row);
         into.outcomes.push({ path, status: "done" });
         if (deleted.has(row.doc.path)) removed.push(path);
       } else into.outcomes.push({ path, status: "failed", reason: why ? NOT_DELETED[why](noteName(path)) : COULD_NOT_PUBLISH });
     }
-
     if (removed.length === 1) into.deleteToasts.push(deletedWords(/\.canvas$/i.test(removed[0]!) ? "board" : "note", removed[0]!, null, 0));
     else if (removed.length > 1) into.deleteToasts.push({ title: "Files deleted", description: `${removed.length} files were removed.` });
   }

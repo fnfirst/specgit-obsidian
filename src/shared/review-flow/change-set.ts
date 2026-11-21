@@ -30,19 +30,12 @@ export interface ChangeSetEntry {
   isDraft: boolean;
   authorLogin: string | null;
   stage: ReviewStage;
-
   block: PublishBlock | null;
-
   next: "submit" | "publish" | null;
-
   existsOnBase: boolean;
-
   requestedReviewers: string[];
-
   openComments: number;
-
   group?: GroupRef;
-
   ownerUnknown?: true;
 }
 
@@ -50,9 +43,7 @@ export type ChangeSetAction = "submit" | "approve" | "publish";
 
 export interface ChangeSet {
   entries: ChangeSetEntry[];
-
   dependencies: string[];
-
   stage: ReviewStage | null;
 }
 
@@ -72,7 +63,6 @@ function nextStep(isDraft: boolean, stage: ReviewStage): ChangeSetEntry["next"] 
 
 export interface ChangeSetCardStatus {
   repoPath: string | null;
-
   state: "ok" | "moved" | "missing" | "draft_only";
   review: {
     pr: {
@@ -85,15 +75,12 @@ export interface ChangeSetCardStatus {
       autoMergeEnabled: boolean;
       requestedReviewers?: string[];
     } | null;
-
     openThreads: number;
   } | null;
 }
 
 export interface ChangeSetStatus {
-
   boardOnBase: boolean;
-
   cards: Record<string, ChangeSetCardStatus>;
 }
 
@@ -183,7 +170,6 @@ const SECTION_OF: Record<ReviewStage, Exclude<ReviewSectionId, "published">> = {
 
 export interface ReviewListRow {
   entry: ChangeSetEntry;
-
   published: boolean;
 }
 

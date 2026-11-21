@@ -8,19 +8,14 @@ export function buildOptions(production) {
     bundle: true,
     format: "cjs",
     platform: "browser",
-
     target: "es2021",
-
     jsx: "automatic",
     jsxImportSource: "preact",
-
     alias: { react: "preact/compat", "react-dom": "preact/compat", "react/jsx-runtime": "preact/jsx-runtime" },
     outfile: "main.js",
     external: ["obsidian", "electron", "@codemirror/*", "@lezer/*", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
-
     minify: false,
     sourcemap: production ? false : "inline",
-
     legalComments: "eof",
     treeShaking: true,
     logLevel: "info",

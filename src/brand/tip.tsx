@@ -19,7 +19,6 @@ export function useTipOpen(): [boolean, (open: boolean) => void] {
       if (event.key === "Escape") setOpen(false);
     };
     const hide = (): void => setOpen(false);
-
     const [doc, win] = [activeDocument, activeWindow];
     doc.addEventListener("keydown", close);
     win.addEventListener("scroll", hide, true);
@@ -65,7 +64,6 @@ export function useTipTouch(setOpen: (open: boolean) => void): { handlers: Recor
         else window.clearTimeout(timer.current);
       },
       onPointerCancel: hide,
-
       onContextMenu: (event) => {
         if (pressed.current || swallow.current) event.preventDefault();
       },

@@ -1,11 +1,8 @@
 import { heldKind, type GroupOverview } from "./groups";
 
 export interface GroupControls {
-
   ungroup: boolean;
-
   stop: boolean;
-
   picks: { mine: boolean; theirs: boolean };
 }
 

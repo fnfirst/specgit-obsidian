@@ -4,16 +4,13 @@ export interface HttpRequest {
   headers?: Record<string, string>;
   contentType?: string;
   body?: string;
-
   binary?: true;
 }
 
 export interface HttpResponse {
   status: number;
   text: string;
-
   bytes?: ArrayBuffer;
-
   headers?: Record<string, string>;
 }
 

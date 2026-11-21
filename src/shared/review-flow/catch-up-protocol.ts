@@ -1,19 +1,13 @@
 export interface ChangeLine {
   kind: "added" | "changed" | "removed" | "moved" | "resized";
-
   text: string;
-
   before?: string;
 }
 
 export interface MainChanges {
-
   kind: "document" | "board";
-
   summary: string;
-
   lines: ChangeLine[];
-
   more: number;
 }
 
@@ -21,25 +15,17 @@ export const MAX_CHANGE_LINES = 8;
 export const MAX_LINE_CHARS = 140;
 
 export type CatchUpPreview =
-
   | { kind: "no_review" }
-
   | { kind: "up_to_date" }
   | {
       kind: "behind";
-
       base: string;
-
       mainBlob: string;
       changes: MainChanges;
-
       merge: "clean" | "conflicts";
-
       conflicts: number;
-
       submitted: boolean;
     }
-
   | { kind: "unsupported"; reason: UnsupportedReason; message: string };
 
 export type UnsupportedReason = "removed_on_main" | "other_files" | "no_file";
@@ -47,19 +33,15 @@ export type UnsupportedReason = "removed_on_main" | "other_files" | "no_file";
 export type CatchUpResult =
   | { kind: "no_review" }
   | { kind: "up_to_date" }
-
   | {
       kind: "caught_up";
       reviewBranch: string;
-
       source: string;
       contentSha: string;
       commitSha: string;
       changes: MainChanges;
     }
-
   | { kind: "conflicts"; base: string; conflicts: number; changes: MainChanges }
-
   | { kind: "main_moved"; preview: Extract<CatchUpPreview, { kind: "behind" }> }
   | { kind: "unsupported"; reason: UnsupportedReason; message: string };
 
@@ -72,7 +54,6 @@ export function nothingToCatchUp(preview: Exclude<CatchUpPreview, { kind: "behin
     case "unsupported":
       return { code: "cannot_catch_up", text: preview.message };
     default:
-
       return { code: "cannot_catch_up", text: "Couldn't read the published version." };
   }
 }

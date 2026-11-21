@@ -5,19 +5,12 @@ export type NotePhase = "local" | "joining" | "live" | "offline" | "blocked" | "
 
 export interface NoteStatus {
   phase: NotePhase;
-
   online: boolean;
-
   readOnly: boolean;
-
   others: number;
-
   here?: Here[];
-
   alsoIn?: string;
-
   why?: "read-only" | "revoked" | "unreachable" | "deleted";
-
   retryAt?: number;
 }
 
@@ -68,7 +61,6 @@ export function statusTip(status: { phase: NotePhase; online?: boolean; readOnly
     case "blocked":
       return "specgit: this note isn't live just now. Your edits stay in this vault.";
     case "locked":
-
       if (status.why === "deleted") return "specgit: this note was deleted on specgit.com, so it can't be edited here.";
       return "specgit: this note is read-only and isn't live. Click Disconnect, then Connect Live to fix it.";
   }

@@ -1,12 +1,9 @@
 import { BLOCK_ANCHOR_MIN, isBlockAnchor as isBlockLength, locateQuote, looseText, quoteNeedles } from "../shared/anchoring/anchor";
 
 export interface AnchorWords {
-
   lineStart: number;
   lineEnd: number;
-
   quotedText: string;
-
   exactText?: string;
 }
 

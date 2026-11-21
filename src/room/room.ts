@@ -28,11 +28,9 @@ const stepsIn = (answer: unknown): RoomSteps | null => (typeof answer === "objec
 export const BRIDGE_GRACE_MS = 1_500;
 
 export class Room {
-
   readonly doc = Object.assign(new Y.Doc(), { clientID: personClientId() });
   readonly awareness = new Awareness(this.doc);
   readonly text = this.doc.getText(MARKDOWN_ROOT);
-
   readonly origin = {};
   readonly undo = new RoomUndo(this.text, this.origin);
   readonly tree = new TreeIndex(this.doc.getXmlFragment(TREE_ROOT));
@@ -48,33 +46,24 @@ export class Room {
   private vouchedText: string | null = null;
   private absence: number | null = null;
   private readonly bridgeRequests: BridgeRequests;
-
   private readonly ask: () => Promise<unknown>;
-
   private recheckTimer: number | null = null;
-
   private retryTimer: number | null = null;
   private retryAtMs: number | null = null;
-
   private failedTries = 0;
   private readonly listeners = new Set<() => void>();
   private readonly stopWatchingFreshness: () => void;
-
   private readonly refusals = new Map<string, number>();
-
   private readonly own = new OwnChanges(this.text, { acknowledged: () => this.acknowledged });
   private readonly refusedListeners = new Set<(why: "riff" | "schema") => void>();
-
   private readonly leaving = new Map<number, boolean>();
 
   constructor(
     readonly ref: DocumentRef,
     private readonly open: OpenTransport,
     identity: Identity,
-
     askForBridge: (session: string | null) => Promise<unknown>,
   ) {
-
     this.ask = () =>
       askForBridge(sessionSeedClaim(this.doc)).then((answer) => {
         const steps = stepsIn(answer);
@@ -128,7 +117,6 @@ export class Room {
   }
 
   get stopped(): Stop | null {
-
     return this.transport?.stopped ?? (this.failedWith === "document_deleted" ? "deleted" : null);
   }
 
@@ -174,7 +162,6 @@ export class Room {
     this.stopWaitingToRetry();
     this.failure = null;
     this.dropTransport();
-
     this.refresh();
     void this.connect();
   }
@@ -213,7 +200,6 @@ export class Room {
       this.stopWatchingTransport = transport.subscribe(() => this.refresh());
       this.failedTries = 0;
     } catch (error) {
-
       this.failure = error instanceof Error ? error.message : "Couldn't reach specgit.";
       this.failedWith = error instanceof AuthError ? error.code : null;
       if (this.failedWith !== "signed_out" && this.failedWith !== "document_deleted") this.retryLater();
@@ -262,7 +248,6 @@ export class Room {
   }
 
   private readonly onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }): void => {
-
     for (const client of [...added, ...updated]) {
       const bridge: unknown = this.awareness.getStates().get(client)?.[BRIDGE_FIELD];
       if (typeof bridge === "object" && bridge !== null) this.leaving.set(client, (bridge as { leaving?: unknown }).leaving === true);
@@ -271,15 +256,11 @@ export class Room {
       if (this.leaving.get(client) === true) this.bridgeRequests.leftOnPurpose();
       this.leaving.delete(client);
     }
-
     for (const [session, refused] of refusedBy(this.awareness, [...added, ...updated])) {
       const before = this.refusals.get(session);
       this.refusals.set(session, refused.count);
-
       if (before === undefined) continue;
-
       for (const one of refused.recent.filter((recent) => recent.n > before)) {
-
         this.own.judge(one.range, one.landed, (told) => {
           if (told) [...this.refusedListeners].forEach((listener) => listener(one.why));
         });
@@ -290,11 +271,9 @@ export class Room {
 
   private refresh(): void {
     if (this.destroyed) return;
-
     this.own.sweep();
     const synced = this.transport?.synced ?? false;
     const fresh = isFresh(this.doc, this.awareness);
-
     this.bridgeRequests.missing(synced && !fresh && this.stopped === null && !this.startOver && !this.readOnly);
     if (!this.ready && synced && fresh) {
       this.ready = true;
@@ -302,7 +281,6 @@ export class Room {
       this.vouchedText = this.text.toJSON();
       this.recheck();
     } else if (this.ready) this.followBridge(synced, fresh);
-
     const seen = `${this.state}/${this.online}/${this.readOnly}/${this.present}/${this.startOver}/${this.stopped}/${this.others}/${this.alsoIn}/${this.retryAtMs}`;
     if (seen === this.lastSeen) return;
     this.lastSeen = seen;
@@ -336,7 +314,6 @@ export class Room {
   private notify(): void {
     let failed: Error | null = null;
     for (const listener of [...this.listeners]) {
-
       if (!this.listeners.has(listener)) continue;
       try {
         listener();

@@ -16,7 +16,6 @@ export interface HeldDeletes {
 }
 
 export interface AwareLine {
-
   added: number;
 }
 
@@ -32,16 +31,11 @@ export interface AwareSources {
 }
 
 export class Awareness {
-
   private presence: PresenceRead | null = null;
-
   private files: ReadonlyMap<string, CacheEntry> | null = null;
-
   private offAt: number | null = null;
-
   private inflight: Promise<PresenceRead> | null = null;
   private lastRead: { read: PresenceRead; at: number } | null = null;
-
   private generation = 0;
 
   constructor(private readonly now: () => number) {}
@@ -124,7 +118,6 @@ export class Awareness {
       fileAt: (path) => {
         const file = files.get(path);
         if (!file || from.documentFor(path) === null) return null;
-
         return { holds: (blob) => file.sha === blob || (file.sent === blob && agreedOf(file) === file.sha) };
       },
     });
@@ -143,28 +136,18 @@ export function withChoice(was: ReadonlyMap<string, NoteChoice>, path: string, c
 }
 
 export interface LayoutInput {
-
   aware: AwareState | null;
-
   loose: readonly ChangeRow[];
-
   units: StatusUnits;
-
   line: AwareLine | null;
-
   live?: (path: string) => boolean;
 }
 
 export interface Layout {
-
   units: StatusUnits;
-
   progressing: (row: ChangeRow) => boolean;
-
   changedHere: ChangeRow[];
-
   progressRows: ReadonlyMap<string, ChangeRow>;
-
   line: AwareLine | null;
 }
 

@@ -8,7 +8,6 @@ export const BURST_FROM = 20;
 export const WRITES_PER_FILE = 4;
 
 export function groupWrites(files: number, bytes: number): number {
-
   const burst = burstWrites(Math.max(Math.ceil(files / GROUP_UPLOAD_MAX_FILES), Math.ceil(bytes / GROUP_UPLOAD_CHUNK_BYTES)) + (bytes > GROUP_UPLOAD_CHUNK_BYTES ? 1 : 0));
   return files <= BURST_FROM ? burst + files : burst;
 }
@@ -75,9 +74,7 @@ export function burstParts(files: readonly BurstFile[], limit = GROUP_UPLOAD_CHU
 
 export interface BurstPartPlan {
   files: readonly BurstFile[];
-
   attachments?: readonly NamedAttachment[];
-
   named?: readonly NamedAttachment[];
 }
 
@@ -113,7 +110,6 @@ export function planBurstParts(files: readonly BurstFile[], attachmentsOf: Reado
     });
     const groups = attachmentGroups(fresh);
     const last = groups.at(-1);
-
     const rides = last !== undefined && burstBytes(part) + last.reduce((n, attachment) => n + attachment.base64.length, 0) <= ATTACHMENT_REQUEST_BYTES;
     for (const group of rides ? groups.slice(0, -1) : groups) plan.push({ files: [], attachments: group });
     plan.push({ files: part, ...(rides ? { attachments: last } : {}) });
@@ -129,9 +125,7 @@ export function newUploadId(random: () => number = Math.random): string {
 export type BurstSent = { ok: true; id?: string; left: BurstLeftOut[] } | { ok: false; result: Extract<StepResult, { ok: false }> };
 
 const RESENDS = 3;
-
 export const CONFLICT_WAITS_MS: readonly number[] = [2_000, 5_000, 10_000];
-
 export const UNAVAILABLE_WAITS_MS: readonly number[] = [3_000, 8_000, 20_000, 45_000];
 
 export async function sendBurst(
@@ -139,7 +133,6 @@ export async function sendBurst(
   parts: readonly (readonly BurstFile[] | BurstPartPlan)[],
   uploadId: string,
   wait: (ms: number) => Promise<void> = async () => undefined,
-
   options: { last?: boolean; onAnswer?: (body: Record<string, unknown>) => void } = {},
 ): Promise<BurstSent> {
   let id: string | undefined;

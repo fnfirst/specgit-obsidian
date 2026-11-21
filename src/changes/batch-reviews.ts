@@ -12,9 +12,7 @@ const prOf = (entry: InFlightBranch): PrInfo | null =>
   entry.prNumber === undefined ? null : { number: entry.prNumber, url: entry.prUrl ?? "", state: entry.prIsDraft === false ? "open" : "draft", isDraft: entry.prIsDraft !== false, authorLogin: reviewAuthor(entry) };
 
 export interface BatchReview {
-
   review: ReviewStatus | null;
-
   needsDetail: boolean;
 }
 
@@ -22,13 +20,11 @@ export function reviewFromInFlight(entries: readonly InFlightBranch[] | undefine
   const none: BatchReview = { review: null, needsDetail: false };
   if (!entries || entries.length === 0) return none;
   const { group, own, branch } = pickFileReview(entries, login, groups, saves);
-
   if (group) {
     const { entry, overview } = group;
     const pr: PrInfo = { number: overview.prNumber, url: overview.prUrl, state: overview.isDraft ? "draft" : "open", isDraft: overview.isDraft, mergeableState: overview.mergeableState, authorLogin: entry.authorLogin, group: { name: overview.name, files: overview.paths.length } };
     return { review: { reviewBranch: branch, pr }, needsDetail: false };
   }
-
   const theirs = openedBy(entries, login) ?? own;
   if (!theirs) return none;
   const pr = prOf(theirs);
@@ -49,7 +45,6 @@ function teammateEntry(entries: readonly InFlightBranch[], login: string): InFli
 }
 
 export function teammateReview(entries: readonly InFlightBranch[] | undefined, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): TheirReview | null {
-
   if (!entries || entries.length === 0 || login === null || login === "") return null;
   const { group, own } = pickFileReview(entries, login, groups, saves);
   if (own || group || openedBy(entries, login)) return null;
@@ -62,7 +57,6 @@ export function draftOf(entries: readonly InFlightBranch[] | undefined, login: s
   if (!entries || entries.length === 0) return null;
   const { group, own, branch } = pickFileReview(entries, login, groups, saves);
   if (group) {
-
     const mine = branch === null || isGroupBranch(branch) ? null : entries.find((one) => one.branch === branch);
     if (!mine) return { branch: group.entry.branch, blob: group.entry.docBlobSha ?? null, by: reviewAuthor(group.entry), prNumber: group.overview.prNumber, inGroup: true, viaGroup: true };
     return { branch: mine.branch, blob: mine.docBlobSha ?? null, by: reviewAuthor(mine), prNumber: mine.prNumber ?? null, inGroup: true };

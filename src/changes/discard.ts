@@ -17,27 +17,18 @@ export interface DiscardHost {
   readonly memory: SentMemory;
   busy<T>(work: () => Promise<T>, doing: BusyDoing): Promise<T>;
   alert(options: Parameters<Dialogs["alert"]>[0]): Promise<void>;
-
   readReviews(files: readonly ChangeRow[]): Promise<ChangeRow[]>;
-
   readReviewsFromMap(files: readonly ChangeRow[]): Promise<ChangeRow[]>;
-
   inReviewOfSomeoneElse(row: ChangeRow): boolean;
-
   closeReviews(rows: readonly ChangeRow[], step?: string, expectPr?: number | null): Promise<{ closed: ChangeRow[]; failed: { row: ChangeRow; result: Extract<StepResult, { ok: false }> } | null }>;
 }
 
 type Plan = Doing | { kind: "skip"; row: ChangeRow; why: SkipReason };
-
 type StillOpen = { why: "review" | "reviewChanged" | "reviewUnsure"; pr: number; elsewhere: boolean; grouped: boolean };
 type Doing =
-
   | { kind: "restore"; row: ChangeRow; original: DocumentRef; mine: string; roomed: boolean }
-
   | { kind: "recreate"; row: ChangeRow; original: DocumentRef; roomed: boolean }
-
   | { kind: "trash"; row: ChangeRow; original: DocumentRef; mine: string; roomed: boolean }
-
   | { kind: "rename"; row: ChangeRow; original: DocumentRef; mine: string; roomed: boolean };
 
 export function discardFiles(asked: readonly ChangeRow[]): ChangeRow[] {
@@ -61,21 +52,18 @@ export class Discard {
 
   async run(asked: readonly ChangeRow[]): Promise<void> {
     const { deps, model } = this.host;
-
     if (model.state().busy) return;
     const files = discardFiles(asked);
     if (files.length === 0) {
       const said = nothingToDiscard(model.state().phase);
       return deps.dialogs.toast(said.title, said.description);
     }
-
     const rows = await this.host.readReviewsFromMap(files);
     const plans = await Promise.all(rows.map((row) => this.plan(row)));
     const left: LeftAlone[] = plans.flatMap((plan) => (plan.kind === "skip" ? [{ name: withName(plan), why: plan.why }] : []));
     const todo = plans.filter((plan): plan is Doing => plan.kind !== "skip");
     const world: DiscardWorld = { deletesForGood: deps.deletesForGood() };
     if (todo.length === 0) return this.say(this.result(left), world);
-
     const place = model.placeNow();
     const ok = await deps.dialogs.confirm({
       title: discardTitle(todo.length, noteName(todo[0]!.row.change.path)),
@@ -111,18 +99,14 @@ export class Discard {
     const { change } = row;
     const original = change.kind === "renamed" && change.from ? deps.documentFor(change.from) : row.doc;
     if (!original) return { kind: "skip", row, why: "unmapped" };
-
     if (row.unread) return { kind: "skip", row, why: "unchecked" };
     if (this.host.inReviewOfSomeoneElse(row)) return { kind: "skip", row, why: "theirs" };
-
     const roomed = isRoomed(deps, change.path);
-
     if (roomed && row.theirs) return { kind: "skip", row, why: "theirs" };
     if (roomed && this.host.model.offline()) return { kind: "skip", row, why: "unreachable" };
     if (change.kind === "deleted") return { kind: "recreate", row, original, roomed };
     const why = await this.allowed(change.path);
     if (why !== null) return { kind: "skip", row, why };
-
     const mine = await deps.readText(change.path);
     if (mine === null) return { kind: "skip", row, why: "gone" };
     switch (change.kind) {
@@ -149,9 +133,7 @@ export class Discard {
     if (!deps.gitBlobs || commit === null || commit === undefined) return found;
     const states = model.vault();
     const wanted = plans.flatMap((plan) => {
-
       if (plan.kind === "skip" || plan.kind === "trash" || plan.kind === "recreate") return [];
-
       const sha = plan.row.change.kind === "renamed" ? states?.files.get(plan.row.change.from ?? "")?.repoSha : plan.row.change.repoSha;
       return sha ? [{ sha, path: plan.original.path, repo: plan.original.repo }] : [];
     });
@@ -172,7 +154,6 @@ export class Discard {
     const result = this.result(plans.flatMap((plan) => (plan.kind === "skip" ? [{ name: withName(plan), why: plan.why }] : [])));
     for (const plan of plans) {
       if (plan.kind === "skip") continue;
-
       const why = this.host.model.placeNow() !== place ? "place" : await this.one(plan, result);
       if (why !== null) result.skipped.push(typeof why === "string" ? { name: withName(plan), why } : { name: withName(plan), ...why });
     }
@@ -200,7 +181,6 @@ export class Discard {
       if (typeof main === "string") return main;
       github = main;
     }
-
     const now = await deps.readText(change.path);
     if (plan.kind === "recreate" ? now !== null : now === null) return plan.kind === "recreate" ? "exists" : "gone";
     if (plan.kind !== "recreate") {
@@ -208,11 +188,8 @@ export class Discard {
       const why = await this.allowed(change.path);
       if (why !== null) return why;
     }
-
     const roomed = plan.roomed || isRoomed(deps, change.path);
-
     let own: number | null = row.entry?.prNumber ?? null;
-
     if (own !== null && own > 0) {
       const checked = await this.checkOwn(row);
       if (typeof checked === "string") return checked;
@@ -223,13 +200,10 @@ export class Discard {
       if (typeof whose === "object") own = whose.pr;
       else if (whose !== "none" && whose !== "draft") return whose;
       else {
-
         const live = deps.phaseOf(change.path) === "live";
-
         const { failed } = await this.host.closeReviews([row], undefined, null);
         if (failed) return "notReset";
         const refused = await this.write(plan, github, result);
-
         if ((refused === "changed" || refused === "held") && plan.kind === "restore" && live) {
           result.restored++;
           return "keptTyping";
@@ -237,12 +211,10 @@ export class Discard {
         return refused;
       }
     }
-
     const done = await this.write(plan, github, result);
     if (done !== null) return done;
     if (own !== null) {
       const { failed } = await this.host.closeReviews([row], undefined, own > 0 ? own : undefined);
-
       const changed = !failed ? false : failed.result.code === "review_changed";
       if (failed) return { why: isLostAnswerResult(failed.result) ? "reviewUnsure" : changed ? "reviewChanged" : "review", pr: own, elsewhere: plan.kind === "trash" || plan.kind === "rename", grouped: this.host.model.groupOf(change.path) !== undefined };
       result.reviewsClosed++;
@@ -314,7 +286,6 @@ export class Discard {
         if (moved !== "renamed") return moved === "exists" ? "exists" : moved === "gone" ? "gone" : "failed";
         this.host.model.settledDelete(change.path);
         this.forget(change.path);
-
         const why = await this.rewrite(back, plan.mine, github!.text);
         if (why !== null) return why;
         result.restored++;

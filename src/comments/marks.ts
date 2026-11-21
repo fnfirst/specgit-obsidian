@@ -10,14 +10,10 @@ export interface MarkThread {
 }
 
 const setMarks = StateEffect.define<MarkThread[]>();
-
 const setActive = StateEffect.define<string | null>();
-
 const addMark = StateEffect.define<{ id: string; span: Span }>();
-
 const track = StateEffect.define<{ key: string; span: Span }>();
 const untrack = StateEffect.define<string>();
-
 const OFFER = "menu-offer";
 
 interface MarkState {
@@ -61,7 +57,6 @@ const marks = StateField.define<MarkState>({
     }
     for (const effect of transaction.effects) {
       if (effect.is(setMarks)) {
-
         let text: string | null = null;
         const next = new Map<string, Span>();
         for (const thread of effect.value) {
@@ -107,7 +102,6 @@ export function marksChanged(update: ViewUpdate): boolean {
 
 export interface MarkEvents {
   clicked(path: string, threadId: string | null): void;
-
   selected?(read: boolean): void;
 }
 
@@ -128,7 +122,6 @@ export class CommentMarks {
       ViewPlugin.define(
         (view): PluginValue => {
           this.views.add(view);
-
           queueMicrotask(() => this.catchUp(view));
           return { destroy: () => void this.views.delete(view) };
         },

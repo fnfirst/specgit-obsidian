@@ -1,7 +1,6 @@
 declare const URL: new (address: string) => { href: string; protocol: string; hostname: string; port: string; username: string; password: string };
 
 const AVATAR_HOSTS: ReadonlySet<string> = new Set(["avatars.githubusercontent.com", "private-avatars.githubusercontent.com"]);
-
 const AVATAR_CHARS = 2000;
 
 export function drawableAvatar(url: unknown): string | null {
@@ -19,7 +18,6 @@ export const SOMEONE = "Someone";
 declare const Intl: { Segmenter?: new (locale?: string, options?: { granularity: "grapheme" }) => { segment(text: string): Iterable<{ segment: string }> } };
 
 export const UNITS_PER_CHARACTER = 32;
-
 const MARKS_ON_A_LETTER = 8;
 
 const MARK = /^\p{M}$/u;
@@ -39,30 +37,20 @@ const CANCEL_TAG = 0xe007f;
 const MONGOLIAN_VOWEL_SEPARATOR = 0x180e;
 
 const isTagLetter = (point: number): boolean => point >= 0xe0061 && point <= 0xe007a;
-
 const FLAG_REGIONS: ReadonlySet<string> = new Set(["gbeng", "gbsct", "gbwls"]);
-
 const isBreak = (point: number): boolean => (point >= 0x09 && point <= 0x0d) || point === 0x85 || point === 0x2028 || point === 0x2029;
 
 function kindOf(char: string): Kind {
   const point = char.codePointAt(0)!;
-
   if (point >= 0xd800 && point <= 0xdfff) return "drop";
-
   if (point === ZWNJ || point === ZWJ) return "joiner";
-
   if ((point >= 0xfe00 && point <= 0xfe0f) || (point >= 0xe0100 && point <= 0xe01ef)) return "selector";
-
   if (point >= 0xe0000 && point <= 0xe007f) return "tag";
-
   if (isBreak(point)) return "space";
-
   if (CONTROL_OR_FORMAT.test(char)) return "drop";
-
   if ((NOT_ASSIGNED.test(char) && DRAWS_NOTHING_BY_DEFAULT.test(char)) || NONCHARACTER.test(char)) return "drop";
   if (MARK.test(char)) return "mark";
   if (SPACE.test(char)) return "space";
-
   if (point === 0x115f || point === 0x1160 || point === 0x3164 || point === 0xffa0 || point === 0x2800 || point === 0x1d159) return "blank";
   return "text";
 }
@@ -114,11 +102,9 @@ function trimmed(chars: readonly string[]): string {
   let to = chars.length;
   const kinds = chars.map(kindOf);
   while (from < to && (kinds[from] === "space" || kinds[from] === "joiner" || kinds[from] === "selector")) from++;
-
   const endsALetter = (at: number): boolean => chars[at]!.codePointAt(0) === ZWJ && kinds[at - 1] === "mark";
   while (to > from && (kinds[to - 1] === "space" || kinds[to - 1] === "drop" || (kinds[to - 1] === "joiner" && !endsALetter(to - 1)))) to--;
   let draws = false;
-
   for (let at = from; at < to && !draws; at++) draws = kinds[at] === "text";
   return draws ? chars.slice(from, to).join("") : "";
 }
@@ -136,19 +122,15 @@ export function safeText(value: unknown, max: number): string {
   if (text === "") return "";
   const clusters = Intl.Segmenter === undefined ? Array.from(text) : Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (part) => part.segment);
   if (clusters.length <= max && clusters.every((cluster) => cluster.length <= UNITS_PER_CHARACTER)) return text;
-
   const long = clusters.slice(0, max).findIndex((cluster) => cluster.length > UNITS_PER_CHARACTER);
   const shown = long === -1 ? clusters.slice(0, max) : [...clusters.slice(0, long), held(clusters[long]!)];
-
   return trimmed(kept(shown.join("")));
 }
 
 export const safeName = (value: unknown): string => safeText(value, 40) || SOMEONE;
 
 const FALLBACK_COLOR = "#30bced";
-
 const COLOR_CHARS = 64;
-
 const COLOR = /^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([\d\s.,%/-]+\))$/i;
 
 export const safeColor = (value: unknown): string => (typeof value === "string" && value.length <= COLOR_CHARS && COLOR.test(value) ? value : FALLBACK_COLOR);
@@ -162,15 +144,11 @@ export function initialsOf(name: string): string {
 export const faceInitials = (name: string): string => (name === SOMEONE ? "?" : initialsOf(name) || "?");
 
 const IN_OBSIDIAN = " in Obsidian";
-
 export const nameInObsidian = (name: string): string => (name.endsWith(IN_OBSIDIAN) ? name : `${name}${IN_OBSIDIAN}`);
 
 export const USER_FIELD = "user";
-
 export const ACTOR_FIELD = "actor";
-
 export const LOGIN_FIELD = "login";
-
 export const OBSIDIAN_ACTOR = { kind: "person", surface: "obsidian" } as const;
 
 export function actorInObsidian(actor: unknown): boolean {
@@ -178,25 +156,15 @@ export function actorInObsidian(actor: unknown): boolean {
 }
 
 export interface RoomPerson {
-
   name: string;
-
   label: string;
-
   named: boolean;
-
   gaveName: boolean;
-
   initials: string;
-
   color: string;
-
   picture: string | null;
-
   login: string | null;
-
   inObsidian: boolean;
-
   surface: string | null;
 }
 
@@ -261,7 +229,6 @@ export function joinList(items: readonly string[]): string {
 
 export function alsoIn(places: OwnPlaces, from: PlaceSurface): string {
   let before = "";
-
   const order = from === "obsidian" ? (["specgit", "obsidian", "claude", "chatgpt", "cursor", "copilot", "vscode", "other"] as const) : PLACE_SURFACES;
   const parts = order.filter((place) => (places[place] ?? 0) > 0).map((place) => {
     const { prep, name } = placeParts(place, from);
@@ -277,9 +244,7 @@ export const webAlsoIn = (places: OwnPlaces): string => alsoIn(places, "specgit"
 export const obsidianAlsoIn = (places: OwnPlaces): string => alsoIn(places, "obsidian");
 
 const MAX_PICTURES = 200;
-
 export const PICTURE_RETRY_MS = 60_000;
-
 const pictures = new Map<string, { how: "loaded" | "failed"; at: number }>();
 
 export function rememberPicture(address: string, how: "loaded" | "failed"): void {

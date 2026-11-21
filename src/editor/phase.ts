@@ -9,7 +9,6 @@ export type Phase = "off" | NotePhase;
 
 export const setPhase = StateEffect.define<Phase>();
 export const setReader = StateEffect.define<boolean>();
-
 export const setDeleted = StateEffect.define<boolean>();
 
 export const deletedField = StateField.define<boolean>({
@@ -37,7 +36,6 @@ export const phaseField = StateField.define<Phase>({
     return phase;
   },
   provide: (field) => [
-
     Prec.highest(EditorState.readOnly.computeN([field, readerField], (state) => (HELD.includes(state.field(field)) || state.field(readerField) ? [true] : []))),
     EditorView.editorAttributes.compute([field], (state): Record<string, string> => {
       const phase = state.field(field);
@@ -67,14 +65,12 @@ export const phaseBadge = ViewPlugin.fromClass(
       const mark = this.badge.createSpan({ cls: "specgit-room-badge-mark" });
       setIcon(mark, MARK_ICON);
       const words = this.badge.createSpan({ cls: "specgit-room-badge-words" });
-
       this.words.observe(words, { childList: true, characterData: true, subtree: true });
       this.draw();
       this.place();
     }
 
     update(update: ViewUpdate): void {
-
       if (!this.badge.isConnected || !this.badge.classList.contains("is-in-header")) this.place();
       if (update.startState.field(phaseField) !== update.state.field(phaseField) || update.startState.field(readerField) !== update.state.field(readerField) || update.startState.field(deletedField, false) !== update.state.field(deletedField, false)) this.draw();
     }
@@ -110,7 +106,6 @@ export const phaseBadge = ViewPlugin.fromClass(
       const compact = this.badge.classList.contains("is-compact");
       if (!compact) this.full = this.badge.offsetWidth;
       const others = [...(this.badge.parentElement?.children ?? [])].filter((child) => child !== this.badge).reduce((sum, child) => sum + (child as HTMLElement).offsetWidth, 0);
-
       const room = header.clientWidth - 96 - others - 40;
       this.badge.classList.toggle("is-compact", this.full > room);
     }
@@ -123,7 +118,6 @@ export const phaseBadge = ViewPlugin.fromClass(
       if (hidden) return;
       this.badge.setAttribute("aria-label", statusTip({ phase, readOnly, ...(this.view.state.field(deletedField, false) ? { why: "deleted" as const } : {}) }));
       this.badge.setAttribute("data-phase", phase);
-
       const words = statusText({ phase, online: true, readOnly, others: 0 });
       if (this.shown !== words) this.badge.querySelector(".specgit-room-badge-words")!.textContent = words;
       this.shown = words;
