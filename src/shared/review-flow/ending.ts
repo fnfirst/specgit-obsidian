@@ -4,11 +4,8 @@ import { asksBeforeSeparate } from "./separate-reviews";
 
 export const ENDING_FILES_PER_STEP = 15;
 export const ENDING_WRITES_PER_FILE = 3;
-
 export const ENDING_STEP_RECORD_WRITES = RECORD_WRITES;
-
 export const ENDING_WRITES_PER_HOUR = 300;
-
 export const ENDING_STEP_MS = Math.round(((ENDING_FILES_PER_STEP * ENDING_WRITES_PER_FILE + ENDING_STEP_RECORD_WRITES) * 3_600_000) / ENDING_WRITES_PER_HOUR);
 
 export type EndingStopped = "no_credential" | "no_access" | "failed";
@@ -21,11 +18,8 @@ export const endingStopOf = (row: { ending?: number | object | null; hold: Group
   row.endingStopped ?? (endingWaitsForPick(row) ? "held" : undefined);
 
 export interface EndingProgress {
-
   remaining: number;
-
   total: number;
-
   stopped?: EndingStop;
 }
 
@@ -40,7 +34,6 @@ export function endingTime(files: number): string {
 }
 
 export function endingConfirm(files: number): string | null {
-
   if (!asksBeforeSeparate(files)) return null;
   if (files <= ENDING_FILES_PER_STEP) return `This makes ${files} separate reviews, one for each file. If some files already have their own review, fewer new ones are made.`;
   return `This makes ${files} separate reviews, one for each file. It can take up to ${endingTime(files)}, because GitHub limits how fast reviews can be created. If some files already have their own review, fewer new ones are made and it goes faster. While it goes, the group stays here, shrinking, and you can stop it and keep what is left.`;

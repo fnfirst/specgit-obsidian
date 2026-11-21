@@ -5,27 +5,16 @@ import { gitBlobSha } from "./blob-sha";
 export interface CacheEntry {
   mtime: number;
   size: number;
-
   sha: string;
-
   at: number;
-
   base: string | null;
-
   sent?: string;
-
   sentTo?: string;
-
   agreed?: string;
-
   sentCommit?: string;
-
   sentAt?: number;
-
   same?: string;
-
   sameBy?: "server";
-
   differs?: string;
 }
 
@@ -42,21 +31,15 @@ export interface Gone {
 }
 
 export interface Scanned {
-
   files: Map<string, CacheEntry>;
   gone: Gone[];
-
   hashed: number;
 }
 
 const KEY_PREFIX = "specgit-file-cache";
-
 export const SLICE_MS = 12;
-
 export const SCAN_CONCURRENCY = 4;
-
 export const RACY_MS = 2_000;
-
 export const COPIED_KEPT_MS = 10 * 60_000;
 
 const sentOf = (entry: CacheEntry | undefined): Pick<CacheEntry, "sent" | "sentTo" | "agreed" | "sentCommit" | "sentAt"> =>
@@ -74,13 +57,9 @@ const isEntry = (value: unknown): value is CacheEntry => {
 
 export class FileCache {
   private entries = new Map<string, CacheEntry>();
-
   private removed = new Map<string, Gone>();
-
   private foreign = new Map<string, string>();
-
   private readonly copied = new Map<string, { sha: string; at: number }>();
-
   private dirty = false;
 
   private readonly key: string;
@@ -98,7 +77,6 @@ export class FileCache {
     try {
       const stored = this.state.load(this.key);
       const record = typeof stored === "object" && stored !== null ? (stored as { files?: unknown; removed?: unknown; foreign?: unknown; copied?: unknown }) : {};
-
       for (const [path, kept] of Object.entries((typeof record.copied === "object" && record.copied !== null ? record.copied : {}) as Record<string, unknown>)) {
         if (Array.isArray(kept) && typeof kept[0] === "string" && typeof kept[1] === "number") this.copied.set(path, { sha: kept[0], at: kept[1] });
       }
@@ -108,7 +86,9 @@ export class FileCache {
         const candidate = gone as Partial<Gone> | null;
         if (candidate && typeof candidate.path === "string" && typeof candidate.sha === "string") this.removed.set(candidate.path, { path: candidate.path, sha: candidate.sha, base: candidate.base ?? null });
       }
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   save(): void {
@@ -116,7 +96,9 @@ export class FileCache {
     try {
       this.state.save(this.key, { files: Object.fromEntries(this.entries), removed: [...this.removed.values()], ...(this.foreign.size > 0 ? { foreign: Object.fromEntries(this.foreign) } : {}), ...(this.copied.size > 0 ? { copied: Object.fromEntries([...this.copied].map(([path, one]) => [path, [one.sha, one.at]])) } : {}) });
       this.dirty = false;
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   get(path: string): CacheEntry | undefined {
@@ -170,7 +152,6 @@ export class FileCache {
         try {
           bytes = await read(file.path);
         } catch {
-
           if (before) next.set(file.path, before);
           continue;
         }
@@ -187,14 +168,12 @@ export class FileCache {
       }
     };
     await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, stale.length) }, work));
-
     const present = new Set<string>();
     const files = new Map<string, CacheEntry>();
     for (const file of listed) {
       present.add(file.path);
       const entry = next.get(file.path);
       if (!entry) continue;
-
       const live = this.entries.get(file.path);
       if (live && (live.base !== entry.base || live.sent !== entry.sent || live.sentTo !== entry.sentTo || live.agreed !== entry.agreed || live.sentCommit !== entry.sentCommit || live.sentAt !== entry.sentAt || (live.sha === entry.sha && (live.same !== entry.same || live.sameBy !== entry.sameBy || live.differs !== entry.differs)))) {
         const { sent: _was, sentTo: _to, agreed: _agreed, sentCommit: _commit, sentAt: _at, same: _same, sameBy: _by, differs: _differs, ...rest } = entry;
@@ -209,7 +188,6 @@ export class FileCache {
       gone.push(lost);
     }
     this.entries = files;
-
     for (const [path, one] of this.copied) {
       if (!present.has(path) && this.now() - one.at > COPIED_KEPT_MS) {
         this.copied.delete(path);

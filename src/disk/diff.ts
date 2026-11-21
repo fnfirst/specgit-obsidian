@@ -76,7 +76,6 @@ function myers(a: number[], b: number[], budget: Budget): Hunk[] | null {
   const n = a.length;
   const m = b.length;
   const limit = Math.min(n + m, MAX_EDITS);
-
   const offset = limit + 1;
   const reach = new Int32Array(2 * limit + 3);
   const rounds: Int32Array[] = [];
@@ -103,18 +102,15 @@ function walkBack(rounds: Int32Array[], last: number, n: number, m: number): Hun
   let x = n;
   let y = m;
   for (let d = last; d > 0; d--) {
-
     const before = rounds[d] ?? new Int32Array(0);
     const reached = (k: number): number => before[k + d + 1] ?? 0;
     const k = x - y;
     const down = k === -d || (k !== d && reached(k - 1) < reached(k + 1));
     const fromX = reached(down ? k + 1 : k - 1);
     const fromY = fromX - (down ? k + 1 : k - 1);
-
     const middleX = down ? fromX : fromX + 1;
     const middleY = down ? fromY + 1 : fromY;
     const next = hunks[0];
-
     if (next && middleX === x && middleY === y) {
       next.aFrom = fromX;
       next.bFrom = fromY;

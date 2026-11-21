@@ -12,12 +12,10 @@ export default defineConfig([
       },
     },
     rules: {
-
       "obsidianmd/ui/sentence-case": ["warn", { brands: ["specgit", "GitHub", "Markdown", "Obsidian"], allowAutoFix: false }],
     },
   },
   {
-
     files: ["test/**/*.ts", "test/**/*.tsx"],
     rules: {
       "obsidianmd/prefer-create-el": "off",
@@ -33,7 +31,6 @@ export default defineConfig([
     },
   },
   {
-
     files: ["test/stylesheet.ts"],
     rules: { "obsidianmd/no-forbidden-elements": "off" },
   },

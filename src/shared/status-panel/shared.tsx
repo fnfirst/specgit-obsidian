@@ -9,36 +9,22 @@ export interface Ctx {
   noun: StatusNoun;
   readOnly: boolean;
   offline: boolean;
-
   busy: boolean;
-
   running: StatusRunning | undefined;
-
   chip: StatusChipKey;
   checked: ReadonlySet<string>;
-
   checkables: ReadonlyMap<string, Checkable>;
-
   kind: CheckKind | null;
-
   boxes: boolean;
-
   flash: ReadonlySet<string>;
-
   flashHeld: boolean;
   openMenuId: string | null;
-
   openGroups: ReadonlySet<string>;
-
   toggle: (id: string, shift?: boolean) => void;
   tips: Tips;
-
   menuFor: (id: string, anchor: HTMLElement) => void;
-
   memberMenuFor: (group: string, member: string, anchor: HTMLElement) => void;
-
   openItems: (items: readonly PanelMenuItem[], anchor: HTMLElement, id: string) => void;
-
   act: (action: PanelAction) => void;
 }
 
@@ -57,7 +43,6 @@ export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [
       return { picture: "ladder", lit: "in-review", name, line: STATUS_TIPS.changesRequested(tipPeople) };
     case "ready":
       return { picture: "ladder", lit: "ready", name, line: STATUS_TIPS.ready };
-
     case "out-of-date":
       return { picture: "ladder", lit: "ready", name, line: reason ?? STATUS_TIPS.outOfDate };
     case "changed-in-both":
@@ -87,7 +72,6 @@ export function Pill({ state, tipPeople, reason, asksYou, autoPublish, id, ctx }
 }
 
 export const checkClick = (toggle: Ctx["toggle"], id: string) => (event: { target: unknown; currentTarget: unknown; preventDefault: () => void; shiftKey?: boolean }) => {
-
   if (event.target === event.currentTarget) event.preventDefault();
   toggle(id, !!event.shiftKey);
 };
@@ -138,8 +122,8 @@ export function Check({ item, ctx }: { item: StatusDoc | StatusGroup; ctx: Ctx }
   if (!own) return ctx.boxes ? <DimBox id={id} name={name} tip={noStepTip(item)} ctx={ctx} /> : null;
   if (ctx.kind && own.kind !== ctx.kind) return <DimBox id={id} name={name} tip={{ name: STATUS_OTHER_STEP, line: statusOtherStepLine(own.kind, ctx.kind, ctx.checked.size) }} ctx={ctx} />;
   return (
-    <label className="sp-check-hit" {...ctx.tips.bind(`${id}:check`, STATUS_CONTROL_TIPS.select)} onClick={checkClick(ctx.toggle, id)}>
-      <input type="checkbox" className="sp-check" aria-label={STATUS_LABELS.select(name)} checked={ctx.checked.has(id)} onChange={() => undefined} />
+    <label className={cx("sp-check-hit", boxesWait(ctx) && "sp-check-wait")} {...ctx.tips.bind(`${id}:check`, STATUS_CONTROL_TIPS.select)} onClick={checkClick(ctx.toggle, id)}>
+      <input type="checkbox" className="sp-check" aria-label={STATUS_LABELS.select(name)} aria-disabled={boxesWait(ctx) ? "true" : undefined} checked={ctx.checked.has(id)} onChange={() => undefined} />
     </label>
   );
 }
@@ -151,7 +135,6 @@ function DimBox({ id, name, tip, ctx }: { id: string; name: string; tip: TipCont
       className="sp-check-hit sp-check-dim"
       {...ctx.tips.bind(key, tip)}
       onClick={(event) => {
-
         if (event.target !== event.currentTarget) return;
         event.preventDefault();
         ctx.tips.toggle(event.currentTarget, key, tip);
@@ -163,6 +146,8 @@ function DimBox({ id, name, tip, ctx }: { id: string; name: string; tip: TipCont
 }
 
 export const buttonsOff = (ctx: Pick<Ctx, "offline" | "busy">): boolean => ctx.offline || ctx.busy;
+
+export const boxesWait = (ctx: Pick<Ctx, "busy" | "running">): boolean => ctx.busy && ctx.running === "submit";
 
 export const runningLabel = (ctx: Pick<Ctx, "busy" | "running">, step: StatusRunning, label: string): string => (ctx.busy && ctx.running === step ? STATUS_RUNNING[step] : label);
 
@@ -177,7 +162,6 @@ export function MoreButton({ id, name, ctx, open }: { id: string; name: string; 
       data-sp-menu={id}
       {...ctx.tips.bind(`${id}:more`, STATUS_CONTROL_TIPS.more)}
       onClick={(event) => {
-
         ctx.tips.hide();
         (open ?? ((anchor: HTMLElement) => ctx.menuFor(id, anchor)))(event.currentTarget);
       }}
@@ -211,7 +195,6 @@ export function Faces({ people, id, kind, ctx }: { people: readonly (string | St
 export function LiveWho({ people, id, ctx }: { people: readonly (string | StatusPerson)[]; id: string; ctx: Ctx }) {
   const logins = othersOf(people).map((one) => one.login);
   if (logins.length === 0) return null;
-
   const tip: TipContent = { picture: "join", name: logins.join(", "), line: STATUS_TIPS.live(logins.length) };
   return (
     <span className="sp-live-who" tabIndex={0} role="group" aria-label={logins.join(", ")} {...ctx.tips.bind(`${id}:faces`, tip)}>

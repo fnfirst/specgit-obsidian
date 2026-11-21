@@ -2,17 +2,13 @@ import * as Y from "yjs";
 
 export interface TextRun {
   readonly node: Y.XmlText;
-
   readonly value: string;
-
   readonly embeds: readonly number[];
 }
 
 export interface AtomRun {
   readonly atom: Y.XmlElement;
-
   readonly parent: Y.XmlElement;
-
   readonly target: string;
   readonly value: "";
 }
@@ -37,7 +33,6 @@ function readRun(node: Y.XmlText): TextRun {
 }
 
 export class TreeIndex {
-
   version = 0;
   private list: TreeRun[] = [];
   private byNode = new Map<Y.XmlText, TextRun>();
@@ -87,7 +82,6 @@ export class TreeIndex {
           list.push(run);
           byNode.set(child, run);
         } else if (child instanceof Y.XmlElement) {
-
           if (child.nodeName === WIKI_LINK_TAG && parent instanceof Y.XmlElement) {
             list.push({ atom: child, parent, target: String(child.getAttribute("target") ?? "").trim(), value: "" });
           } else visit(child);

@@ -8,7 +8,6 @@ export function noteUrl(server: string, doc: DocumentRef): string {
 }
 
 export function giveAccessUrl(server: string, repo: string, ownerInstallationId: number | null = null): string {
-
   if (ownerInstallationId !== null) return `https://github.com/settings/installations/${ownerInstallationId}`;
   return `${normalizeServer(server)}/api/auth/app/install?returnTo=${encodeURIComponent(`/repos/${GIT_PROVIDER}/${repo}`)}`;
 }

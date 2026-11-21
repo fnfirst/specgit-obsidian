@@ -6,17 +6,11 @@ import { GIVE_ACCESS_LABEL } from "../changes/words";
 import { ONBOARD, PICKER_META } from "../onboard/words";
 
 export interface RepoModalDeps {
-
   load(): Promise<RepoList>;
-
   choose(name: string): void;
-
   giveAccess(repo: RepoChoice): void;
-
   retry(): void;
-
   dismissed(): void;
-
   onboard?(): void;
 }
 
@@ -45,7 +39,6 @@ export class RepoSuggestModal extends SuggestModal<Row> {
     void this.deps.load().then((list) => {
       this.list = list;
       this.showNote();
-
       this.inputEl.dispatchEvent(new Event("input"));
     });
   }
@@ -91,7 +84,6 @@ export class RepoSuggestModal extends SuggestModal<Row> {
     meta.createSpan({ text: repo.private ? PRIVATE_WORD : PUBLIC_WORD });
     meta.createSpan({ text: accessWords(repo), cls: repo.access === "writable" ? "specgit-pick-can" : "specgit-pick-cannot" });
     if (repo.access === "not_installed") {
-
       el.createEl("button", { text: GIVE_ACCESS_LABEL, cls: "specgit-button specgit-pick-access" }, (button) =>
         button.addEventListener("click", (event) => {
           event.stopPropagation();

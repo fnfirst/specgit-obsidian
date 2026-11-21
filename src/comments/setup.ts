@@ -23,15 +23,10 @@ export interface CommentsSetup {
   documentFor: (path: string) => DocumentRef | null;
   status: StatusBoard;
   signedIn: () => boolean;
-
   me: ThreadsStoreDeps["me"];
-
   showPanel: () => void | Promise<void>;
-
   openInSpecgit: (path: string) => void;
-
   dialogs: Pick<Dialogs, "alert" | "confirm">;
-
   live?: () => boolean;
 }
 
@@ -52,16 +47,13 @@ export function pageSignals(plugin: Plugin, live?: () => boolean): PollSignals {
   };
   const touched = (): void => {
     page.activity = Date.now();
-
     activeCallbacks.forEach((callback) => callback());
   };
   const options = { capture: true, passive: true } as const;
-
   watchWindows(plugin, (win, on) => {
     for (const type of ["keydown", "beforeinput", "compositionend", "paste"] as const) on(win.document, type, typed, options);
     for (const type of ["pointerdown", "pointermove", "wheel", "scroll", "touchstart"] as const) on(win.document, type, touched, options);
     on(win, "focus", touched, options);
-
     on(win, "focus", () => focusedCallbacks.forEach((callback) => callback()));
     on(win.document, "visibilitychange", () => {
       if (appHidden()) return;
@@ -72,7 +64,6 @@ export function pageSignals(plugin: Plugin, live?: () => boolean): PollSignals {
   return {
     now: Date.now,
     hidden: appHidden,
-
     focused: () => activeDocument.hasFocus(),
     ...(live ? { live } : {}),
     lastInputAt: () => page.input,
@@ -118,14 +109,12 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     signedIn: deps.signedIn,
     me: deps.me,
     isLive: (path) => deps.status.phaseOf(path) === "live",
-
     saveNote: async (path) => {
       await markdownViewOf(path)?.save();
       const status = deps.status.get(path);
       if (status?.phase === "live" && !status.online) throw new Error(PLUGIN_COMMENT_WORDS.notReachable);
     },
     error,
-
     stay: (title, description) =>
       void new Notice(
         createFragment((fragment) => {
@@ -135,7 +124,6 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
         0,
       ),
     alert: (title, description) => deps.dialogs.alert({ title, description }),
-
     discardUnsent: (quote) =>
       deps.dialogs.confirm({
         title: PLUGIN_COMMENT_WORDS.unsent.title,
@@ -145,7 +133,6 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
         destructive: true,
       }),
     showPanel: deps.showPanel,
-
     afterJump: () => {
       if (Platform.isMobile) workspace.rightSplit.collapse();
     },
@@ -161,13 +148,11 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
 
   const selectionListeners = new Set<() => void>();
   const selectionChanged = (): void => selectionListeners.forEach((listener) => listener());
-
   const editorSelectionListeners = new Set<() => void>();
 
   plugin.registerEditorExtension(
     marks.extension({
       selected: (read) => {
-
         if (!read) editorSelectionListeners.forEach((listener) => listener());
         selectionChanged();
       },
@@ -206,7 +191,6 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     workspace.on("editor-menu", (menu, editor, info) => {
       const path = commentable(info, editor);
       if (!path) return;
-
       const view = marks.editorFor(editor);
       const selected = view?.state.selection.main;
       if (view && selected && !selected.empty) marks.offer(view, { from: selected.from, to: selected.to });
@@ -216,7 +200,6 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
   plugin.addCommand({
     id: "comment-on-selection",
     name: PLUGIN_COMMENT_WORDS.commandName,
-
     icon: MARK_ICON,
     editorCheckCallback: (checking, editor, info) => {
       const path = commentable(info, editor);
@@ -234,12 +217,10 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
       const component = new Component();
       component.load();
       void MarkdownRenderer.render(app, linkifyMentions(mediaAsWords(markdown)), element, "", component).then(() => {
-
         element.querySelectorAll("pre > code.language-suggestion").forEach((code) => {
           const block = code.parentElement;
           if (!block) return;
           block.addClass("specgit-suggestion");
-
           block.parentElement?.insertBefore(createEl("p", { cls: "specgit-suggestion-label", text: PLUGIN_COMMENT_WORDS.after }), block);
         });
       });
@@ -263,9 +244,7 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
       return () => void editorSelectionListeners.delete(listener);
     },
     openInSpecgit: deps.openInSpecgit,
-
     offline: { is: () => false, subscribe: () => () => undefined },
-
     openUrl: (url) => void (/^https:\/\//i.test(url) && window.open(url)),
     error,
     now: Date.now,

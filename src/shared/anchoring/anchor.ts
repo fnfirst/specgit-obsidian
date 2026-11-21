@@ -17,7 +17,6 @@ export function computeAnchor(
 
   const before = lines.slice(0, start - 1).join("\n");
   const after = lines.slice(end).join("\n");
-
   const trimmedExact = exactText?.trim();
   const keepExact = trimmedExact && trimmedExact.length > 0 && trimmedExact.length < quotedText.trim().length;
   return {
@@ -83,7 +82,6 @@ export function locateQuote(source: string, quote: string, near: LineRange): Lin
 }
 
 export interface QuotedLines extends LineRange {
-
   exactText: string;
 }
 
@@ -112,7 +110,6 @@ export function reanchor(anchor: Anchor, newSource: string): ReanchorResult {
   if (occurrences.length > 1) {
     const best = disambiguate(lines, occurrences, anchor);
     if (best) return { status: "fuzzy", lineStart: best.start, lineEnd: best.end, confidence: 0.7 };
-
     return { status: "outdated", lineStart: anchor.lineStart, lineEnd: anchor.lineEnd, confidence: 0 };
   }
 
@@ -145,7 +142,6 @@ const MIN_FUZZY_SCORE = 1.2;
 const MIN_FUZZY_MARGIN = 0.3;
 
 function disambiguate(lines: string[], occurrences: Occurrence[], anchor: Anchor): Occurrence | null {
-
   if (!anchor.prefix && !anchor.suffix) return null;
 
   const scored = occurrences
@@ -161,7 +157,6 @@ function disambiguate(lines: string[], occurrences: Occurrence[], anchor: Anchor
 
   const best = scored[0]!;
   const runnerUp = scored[1];
-
   if (best.score < MIN_FUZZY_SCORE) return null;
   if (runnerUp && best.score - runnerUp.score < MIN_FUZZY_MARGIN) return null;
   return best.occ;

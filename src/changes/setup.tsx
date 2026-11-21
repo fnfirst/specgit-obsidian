@@ -49,59 +49,36 @@ export interface ChangesSetup {
   settings: () => MappingSettings;
   bases: BaseStore;
   gitCopy: (doc: DocumentRef) => Promise<string | null>;
-
   gitFile: (doc: DocumentRef) => Promise<MainFile>;
-
   gitBlobs?: (repo: string, commit: string | null, files: ReadonlyArray<{ sha: string; path: string }>, byBlob?: boolean) => Promise<BlobsAnswer>;
-
   branchFile: (doc: DocumentRef, branch: string) => Promise<BranchFile>;
-
   gitBlob: (doc: DocumentRef, sha: string) => Promise<string | null>;
   signedIn: () => boolean;
   viewerLogin: () => string;
-
   phaseOf: (path: string) => NotePhase;
-
   othersHere: (path: string) => number;
-
   ownRestarts: Pick<OwnRestarts, "expect" | "sent" | "done">;
-
   server: () => string;
   openInSpecgit: (path: string) => void;
-
   openComments?: (path: string) => number;
   deletedOnMain?: (path: string) => boolean;
-
   isLive: (path: string) => boolean;
-
   copyIn?: (files: readonly CopyInFile[], skipped?: readonly string[]) => Promise<unknown>;
-
   dialogs: Dialogs;
-
   live?: () => boolean;
-
   stayOn?: () => boolean;
-
   stopped?: (path: string) => void;
-
   deleted?: (path: string, at: number) => void;
   deletedAt?: (path: string) => number | null;
   restored?: (path: string) => void;
-
   touchNote?: (path: string) => void;
-
   bringFor?: (path: string, text: string) => Promise<void>;
   attachmentProblems?: (path: string, problems: ReadonlyArray<{ name: string; why: string }>) => void;
-
   heldWhy?: (path: string) => string | null;
-
   join?: (path: string) => void;
-
   addToMyNote?: (path: string) => void;
-
   offered?: () => readonly string[];
   addOffered?: () => void;
-
   bringInNewer?: () => Promise<unknown>;
   bringInDraft?: (path: string) => Promise<BroughtDraft>;
 }
@@ -129,21 +106,17 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     if (current?.key !== key) {
       const left = current;
       const cache = new FileCache(key, { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) });
-
       if (left) cache.inherit(new Map([...left.cache.foreignFiles(), ...left.cache.matchedFiles()]));
       current = { key, cache, mirror: new MirrorClient(deps.api, repo(), folder(), { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) }), attachments: new AttachmentMemory(key, { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) }) };
     }
     return current;
   };
   const activePath = (): string | null => app.workspace.getActiveFile()?.path ?? null;
-
   const fetched = new Map<string, string>();
   const model = new ChangesModel({
-
     prefetchBlobs: async (reads) => {
       fetched.clear();
       if (!deps.gitBlobs) return;
-
       for (let at = 0; at < reads.length; at += FILES_PER_BATCH) {
         const run = reads.slice(at, at + FILES_PER_BATCH);
         const answer = await deps.gitBlobs(run[0]!.doc.repo, null, run.map(({ doc, sha }) => ({ sha, path: doc.path })), true);
@@ -175,7 +148,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
       if (!file) throw new Error("gone");
       return app.vault.readBinary(file);
     },
-
     get cache() {
       return placed().cache;
     },
@@ -196,7 +168,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     heldWhy: (path) => deps.heldWhy?.(path) ?? null,
     isLive: (path) => deps.isLive(path),
   });
-
   const repoPathOf = (path: string): string | null => underFolder(folder(), path);
   const attachmentsOf = async (path: string): Promise<Attachment[]> => {
     const file = app.vault.getFileByPath(path);
@@ -215,7 +186,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
           return target ? { path: target.path, mtime: target.stat.mtime, size: target.stat.size } : null;
         },
         repoPathOf,
-
         sha: (one) => memory.hash(one.path, { mtime: one.mtime, size: one.size }, async () => gitBlobSha(await bytesOf(one))),
         base64: async (one) => base64Of(await bytesOf(one)),
         agreedOf: (repoPath) => memory.agreedOf(repoPath),
@@ -252,7 +222,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
       const read = deps.bases.read(path);
       return read.status === "found" && read.base.room !== null;
     },
-
     keepBase: (path, doc, raw) => keepGitBase(deps.bases, path, doc, raw),
     deletesForGood: () => trashOption(app) === "none",
     gitCopy: deps.gitCopy,
@@ -260,7 +229,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     ...(deps.gitBlobs ? { gitBlobs: deps.gitBlobs } : {}),
     branchFile: deps.branchFile,
     gitBlob: deps.gitBlob,
-
     baseText: (path) => {
       const read = deps.bases.read(path);
       return read.status === "found" && read.base.room === null ? read.base.text : null;
@@ -278,7 +246,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     candidates: (doc) => review.reviewers(doc),
     openComments: (path) => deps.openComments?.(path) ?? 0,
     showChanges: (shown, context) => {
-
       const yours = context.kind === "yours";
       const modal = showChanges(app, shown, context, yours ? () => since.closed() : undefined);
       if (yours) since.opened(() => modal.close());
@@ -297,7 +264,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     repo,
     folder,
     isLive: (path: string) => deps.isLive(path),
-
     giveAccess: () => void window.open(giveAccessUrl(deps.server(), repo())),
     copyIn: async () => void (await deps.copyIn?.(model.missingFiles(), model.missingSkipped())),
     ...(deps.join ? { join: deps.join } : {}),
@@ -330,7 +296,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     documentFor: mapped,
     ask: host.confirm,
     openMenu: host.openMenu,
-
     touch: Platform.isMobile,
     since,
     plansUrl: () => `${deps.server().replace(/\/+$/, "")}${GROUP_PRO_ONLY.upgradePath}`,
@@ -348,7 +313,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     lookSoon();
   };
   plugin.registerEvent(app.vault.on("create", watch));
-
   const liveFiles = new LiveFiles({
     isLive: (path) => deps.isLive(path),
     later: (run, ms) => {
@@ -364,7 +328,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   });
   plugin.registerEvent(app.vault.on("modify", (file) => (/\.md$/i.test(file.path) ? liveFiles.changed(file.path) : undefined)));
   plugin.register(() => liveFiles.dispose());
-
   const renames = new Set<number>();
   plugin.registerEvent(
     app.vault.on("rename", (file) => {
@@ -383,7 +346,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   plugin.registerEvent(app.vault.on("modify", watch));
   plugin.registerEvent(app.vault.on("delete", watch));
   plugin.registerEvent(app.vault.on("rename", watch));
-
   const signals = pageSignals(plugin, deps.live);
   const watcher = new Watch({ signals, moved: () => placed().mirror.moved(), live: () => deps.live?.() === true, look: lookSoon, stay: () => deps.stayOn?.() === true });
   const unquiet = (): void => watcher.unquiet();
@@ -396,24 +358,19 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     if (appHidden()) return;
     unquiet();
     lookSoon();
-
     void model.refreshPresence();
     status.reviewsChanged();
   };
-
   watchWindows(plugin, (win, on) => {
     on(win.document, "visibilitychange", resumed);
     on(win, "focus", resumed);
   });
-
   const first = window.setTimeout(() => plugin.registerInterval(window.setInterval(() => void watcher.tick(), CHECK_EVERY_MS)), clientPollOffset(CHECK_EVERY_MS));
   plugin.register(() => window.clearTimeout(first));
   plugin.register(() => window.clearTimeout(timer));
   plugin.register(() => model.dispose());
-
   const reviewEvents = new ReviewEvents();
   const reaction = createPollGateFor(restingSignals(signals, () => deps.stayOn?.() === true)).reaction(({ expireReviews }) => {
-
     if (expireReviews) {
       model.expireReviews(reviewEvents.named(Date.now()));
       status.reviewsChanged();
@@ -423,7 +380,6 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   });
   plugin.register(reaction.start());
   app.workspace.onLayoutReady(() => void model.refresh());
-
   plugin.addCommand({
     id: "discard-all",
     name: DISCARD.command,
@@ -438,12 +394,9 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     model,
     flows,
     review,
-
     liveFiles,
     attachments: () => placed().attachments,
-
     settingsChanged: () => {
-
       void model.refreshPresence(true);
       if (placeKey() === lookedAt) return;
       lookedAt = placeKey();
@@ -455,15 +408,12 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     },
     live: {
       heard: (event) => {
-
         if (event.kind === "presence") return void model.refreshPresence();
         reviewEvents.heard(event, Date.now());
         reaction.heard(event);
       },
-
       catchUp: (first = false) => {
         reaction.catchUp(first);
-
         void model.refreshPresence(true);
         status.reviewsChanged();
       },

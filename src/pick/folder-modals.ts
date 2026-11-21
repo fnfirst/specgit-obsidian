@@ -11,20 +11,15 @@ export type FolderAnswer = "use" | "whole" | "other";
 export interface FolderQuestion {
   repo: string;
   proposal: FolderProposal | null;
-
   unread: boolean;
-
   total: number;
-
   hidden: number;
 }
 
 export interface CopyInQuestion {
   repo: string;
   count: number;
-
   hidden: number;
-
   leftOut: LeftOut;
 }
 
@@ -91,7 +86,6 @@ export class FolderConfirmModal extends SpecgitModal {
         if (choice.primary) button.setCta();
       });
     }
-
     buttons.addButton((button) => button.setButtonText(CANCEL).onClick(() => this.close()));
   }
 

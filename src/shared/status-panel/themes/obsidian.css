@@ -30,7 +30,6 @@
   --sp-btn-border: transparent;
   --sp-btn-shadow: var(--input-shadow);
   --sp-btn-height: var(--input-height);
-
   --sp-safe-bottom: var(--size-4-10);
 }
 .is-mobile .sp-theme-obsidian {

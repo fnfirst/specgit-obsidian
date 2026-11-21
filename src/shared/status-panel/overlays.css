@@ -7,7 +7,6 @@
   background: var(--sp-bg-raised);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
   pointer-events: none;
-
   overflow-y: auto;
 }
 .sp-tip-art {
@@ -34,7 +33,6 @@
 .sp-tip-reason {
   color: var(--sp-warning);
 }
-
 .sp-tip-link {
   display: inline-flex;
   align-items: center;

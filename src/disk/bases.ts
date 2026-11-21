@@ -2,36 +2,25 @@ import { hashText } from "../hash";
 import type { Eol } from "./line-endings";
 
 export interface LocalState {
-
   load(key: string): unknown;
-
   save(key: string, value: unknown): void;
 }
 
 export interface Base {
-
   room: string | null;
-
   doc?: string;
-
   text: string;
   hash: string;
-
   eol: Eol;
-
   lineage: number[];
-
   at: number;
 }
 
 export type BaseRead = { status: "none" } | { status: "found"; base: Base } | { status: "unreadable" };
 
 export interface BaseLimits {
-
   notes: number;
-
   chars: number;
-
   note: number;
 }
 
@@ -43,7 +32,6 @@ const noteKey = (path: string): string => `specgit-base-${hashText(path)}`;
 interface Entry {
   path: string;
   size: number;
-
   git?: true;
 }
 
@@ -54,7 +42,6 @@ function readRecord(value: unknown, path: string): Base | null {
   const { room, text, hash, eol, lineage, at, doc } = value;
   if ((room !== null && typeof room !== "string") || typeof text !== "string" || typeof hash !== "string" || typeof at !== "number") return null;
   if ((eol !== "lf" && eol !== "crlf") || !Array.isArray(lineage) || !lineage.every((client) => typeof client === "number")) return null;
-
   if (room === null ? typeof doc !== "string" : doc !== undefined) return null;
   return hashText(text) === hash ? { room, ...(typeof doc === "string" ? { doc } : {}), text, hash, eol, lineage, at } : null;
 }
@@ -96,7 +83,6 @@ export class BaseStore {
     entries.push({ path, size: base.text.length, ...(base.room === null ? { git: true as const } : {}) });
     const total = (): number => entries.reduce((sum, entry) => sum + entry.size, 0);
     while (entries.length > this.limits.notes || total() > this.limits.chars) this.dropOldest(entries);
-
     while (entries.some((entry) => entry.path === path) && !this.keep(path, record)) this.dropOldest(entries);
     this.saveEntries(entries);
   }
@@ -116,7 +102,9 @@ export class BaseStore {
   private clear(path: string): void {
     try {
       this.state.save(noteKey(path), null);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   private dropOldest(entries: Entry[]): string | undefined {
@@ -147,6 +135,8 @@ export class BaseStore {
   private saveEntries(entries: Entry[]): void {
     try {
       this.state.save(INDEX_KEY, entries);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }

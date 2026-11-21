@@ -23,12 +23,9 @@ import type { ApplyStatus, CommentMarks, MarkThread } from "./marks";
 import { PLUGIN_COMMENT_WORDS } from "./words";
 
 export interface Draft {
-
   quote: string;
-
   from: number;
   to: number;
-
   lineStart: number;
   lineEnd: number;
 }
@@ -38,11 +35,8 @@ export interface NoteUi {
   draft: Draft | null;
   draftBody: string;
   posting: boolean;
-
   focusRequests: number;
-
   waiting: boolean;
-
   applyingId: string | null;
 }
 
@@ -51,26 +45,16 @@ export interface CommentsHost {
   api: CommentsPort;
   documentFor(path: string): DocumentRef | null;
   signedIn(): boolean;
-
   me: ThreadsStoreDeps["me"];
-
   isLive(path: string): boolean;
-
   saveNote(path: string): Promise<void>;
-
   discardUnsent(quote: string): Promise<boolean>;
-
   error(title: string, description: string): void;
-
   stay(title: string, description: string): void;
-
   alert(title: string, description: string): Promise<void>;
-
   showPanel(): void | Promise<void>;
-
   afterJump(): void;
   signals: PollSignals;
-
   every(run: () => void, ms: number): () => void;
   wait(ms: number): Promise<void>;
   later(run: () => void, ms: number): void;
@@ -121,7 +105,6 @@ export class NoteComments {
     if (this.ui.posting) return false;
     const { draft: current, draftBody } = this.ui;
     if (current && draftBody.trim() !== "") {
-
       const same = current.from === draft.from && current.to === draft.to;
       if (same || !(await this.host.discardUnsent(plainQuote(current.quote)))) {
         this.patch({ focusRequests: this.ui.focusRequests + 1 });
@@ -192,7 +175,6 @@ export class NoteComments {
     if (this.sending || !draft || body === "") return;
     this.sending = true;
     this.patch({ posting: true });
-
     let found = this.host.isLive(this.path) ? await this.locate(draft).catch(() => null) : null;
     if (this.host.isLive(this.path) && found === null) {
       this.patch({ waiting: true });
@@ -289,7 +271,6 @@ export class CommentsHub {
     if (known) {
       const wasActive = this.active === path;
       this.drop(path);
-
       if (wasActive && doc) queueMicrotask(() => this.setActive(path));
     }
     if (!doc) return null;
@@ -367,7 +348,6 @@ export class CommentsHub {
     if (!note || looseText(selection.quote) === "") return false;
     const shown = Promise.resolve(this.host.showPanel());
     const started = await note.beginDraft(selection);
-
     await shown;
     if (started) note.focusBox();
     return started;

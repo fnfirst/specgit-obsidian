@@ -5,11 +5,9 @@ import type { StayPorts, StayVault } from "./types";
 
 export function tiedTo(ports: StayPorts, identity: string, now: () => string, documentFor: (path: string) => DocumentRef | null, activity: Activity): StayPorts {
   const live = (): boolean => ports.enabled() && now() === identity;
-
   const own = <T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T> => activity.during(paths, run, left);
   const vault: StayVault = {
     ...ports.vault,
-
     process: (path, edit) => {
       let text: string | null = null;
       return own(
@@ -24,7 +22,6 @@ export function tiedTo(ports: StayPorts, identity: string, now: () => string, do
         async () => (live() ? ports.vault.create(path, text) : "failed"),
         (result) => (result === "created" ? { [path]: gitBlobShaOfText(text) } : null),
       ),
-
     rename: (from, to) => {
       let text: string | null = null;
       return own(

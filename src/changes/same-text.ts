@@ -10,12 +10,10 @@ export type Sameness = "same" | "differs" | "unknown" | "needs-read";
 const BOM = "\uFEFF";
 
 export function layoutShas(text: string): Set<string> {
-
   const lf = (text.startsWith(BOM) ? text.slice(1) : text).replace(/\r\n/g, "\n");
   const core = lf.replace(/\n+$/, "");
   const tails = core === "" ? [""] : opensUnclosedFence(lf) ? [lf.slice(core.length)] : ["", "\n", "\n\n"];
   const shas = new Set<string>();
-
   for (const bom of ["", BOM]) {
     for (const eol of ["lf", "crlf"] as const) {
       for (const tail of tails) shas.add(gitBlobShaOfText(bom + withEol(core + tail, eol)));
@@ -27,9 +25,7 @@ export function layoutShas(text: string): Set<string> {
 const hasFrontMatter = (text: string): boolean => /^---[ \t]*\r?\n/.test(text.replace(/^\uFEFF/, ""));
 
 export interface SameTextDeps {
-
   readBytes(path: string): Promise<ArrayBuffer | null>;
-
   readBlob(doc: DocumentRef, sha: string): Promise<string | null>;
 }
 
@@ -37,9 +33,7 @@ export async function sameAsRepo(deps: SameTextDeps, path: string, doc: Document
   const kind = pathKind(path);
   const board = kind === "board";
   if (!board && !/\.md$/i.test(path)) return "differs";
-
   if (board && !mayRead) return "needs-read";
-
   const bytes = await deps.readBytes(path);
   if (bytes === null || (await gitBlobSha(bytes)) !== sha) return "unknown";
   const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
@@ -54,7 +48,6 @@ export async function sameAsRepo(deps: SameTextDeps, path: string, doc: Document
 }
 
 export const SAME_PER_LOOK = 12;
-
 const AT_ONCE = 4;
 
 export interface SettleSameness {
@@ -63,14 +56,10 @@ export interface SettleSameness {
   cache: Pick<FileCache, "sameAs" | "differsFrom">;
   ask: (path: string, doc: DocumentRef, sha: string, repoSha: string, mayRead: boolean) => Promise<Sameness>;
   documentFor: (path: string) => DocumentRef | null;
-
   alive: () => boolean;
-
   unsure: Map<string, number>;
-
   notBase: Set<string>;
   now: () => number;
-
   prefetch?: (reads: ReadonlyArray<{ doc: DocumentRef; sha: string }>) => Promise<void>;
 }
 
@@ -82,7 +71,6 @@ interface Comparison {
   sha: string;
   against: string;
   base: boolean;
-
   repoSha: string | undefined;
 }
 
@@ -94,7 +82,6 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
     const doc = documentFor(path);
     if (!doc || repoSha === entry.sha || unchangedHere(entry) || (repoSha !== undefined && entry.same === repoSha)) continue;
     const against = (blob: string): boolean => (unsure.get(`${entry.sha}|${blob}`) ?? 0) > now();
-
     if (entry.base !== null && entry.base !== repoSha && !notBase.has(`${entry.sha}|${entry.base}`)) {
       if (!against(entry.base)) first.push({ path, doc, sha: entry.sha, against: entry.base, base: true, repoSha });
       continue;
@@ -102,7 +89,6 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
     if (repoSha === undefined || entry.differs === repoSha || against(repoSha)) continue;
     first.push({ path, doc, sha: entry.sha, against: repoSha, base: false, repoSha });
   }
-
   const answer = (one: Comparison, result: Sameness): Comparison | null => {
     if (result === "same") cache.sameAs(one.path, one.sha, one.against);
     else if (result === "unknown") unsure.set(`${one.sha}|${one.against}`, now() + UNSURE_FOR_MS);
@@ -121,11 +107,9 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
     if (result === "needs-read") queue.push(one);
     else {
       const next = answer(one, result);
-
       if (next) first.push(next);
     }
   }
-
   if (prefetch && queue.length > 0 && alive()) await prefetch(queue.slice(0, SAME_PER_LOOK).map((one) => ({ doc: one.doc, sha: one.against })));
   let reads = 0;
   const worker = async (): Promise<void> => {

@@ -28,28 +28,19 @@ export function commentEmptyWords(mobile: boolean): string {
 }
 
 export const PLUGIN_COMMENT_WORDS = {
-
   before: "Before",
   after: "After",
-
   commandName: "Comment with specgit",
-
   menuItem: "Comment with specgit",
-
   menuWordsChanged: "Those words changed while the menu was open. Select them again to comment.",
-
   notSavedYet: "This note is still saving. Try the comment again in a minute.",
-
   onlyHere: "That text is only in your vault so far. Click Connect Live in the Status tab, then comment on it.",
-
   unsent: {
     title: "Keep your unsent comment?",
     description: (quote: string): string => `You started a comment on “${quote.length > 60 ? `${quote.slice(0, 59).trimEnd()}…` : quote}” and haven't sent it.`,
     keep: "Keep writing",
     discard: "Discard it",
   },
-
   resolveAllInSpecgit: "Resolve all in specgit",
-
   notReachable: "Can't reach the live note, so your change isn't saved yet. Try again when you're back online.",
 } as const;

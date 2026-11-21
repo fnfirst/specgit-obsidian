@@ -19,7 +19,6 @@ export interface CatchUpHost {
   readonly memory: SentMemory;
   busy<T>(work: () => Promise<T>, doing: Doing): Promise<T>;
   alert(options: Parameters<Dialogs["alert"]>[0]): Promise<void>;
-
   send(row: ChangeRow, options: { toReview?: boolean; afresh?: boolean }): Promise<Sent>;
 }
 
@@ -53,7 +52,6 @@ export class CatchUpFlows {
         await this.deps.dialogs.alert({ title: CATCH_UP_HERE.failed, description: sent.message });
         return false;
       }
-
       const said = sent.inVault === false ? CATCH_UP_HERE.doneInReview : CATCH_UP_HERE.done;
       this.deps.dialogs.toast(said.title, said.description);
       return true;
@@ -98,7 +96,6 @@ export class CatchUpFlows {
       const mine = (await this.deps.readText(row.change.path)) ?? "";
       const merged = preview.merge === "clean" ? await this.commitClean(row, preview) : await this.commitChosen(row, preview, mine);
       if (merged === null) return false;
-
       const took = await this.host.memory.writeAndRemember(row.change.path, mine, merged.text, merged.text, preview.mainBlob);
       const said = took ? CATCH_UP_HERE.done : CATCH_UP_HERE.doneInReview;
       this.deps.dialogs.toast(said.title, [merged.summary, said.description].filter(Boolean).join(" "));
@@ -126,7 +123,6 @@ export class CatchUpFlows {
     }
     const body = seen.body as { baseSource: string; theirsSource: string; oursTipSha: string; theirsTipSha: string };
     const regions = mergeRegions(toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400));
-
     const mergedText = conflictsIn(regions) === 0 ? settledText(regions, []) : null;
     const came = mergedText === null ? null : changesBetween(toLf(mine), toLf(mergedText));
     const chosen = await this.deps.chooseWhatToKeep({ name: noteName(row.change.path), regions, fromBase: true, other: "github", settle: () => null, signal: new AbortController().signal, ...(came ? { merged: came } : {}) });

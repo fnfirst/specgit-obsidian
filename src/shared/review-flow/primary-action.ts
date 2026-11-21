@@ -13,7 +13,6 @@ export function resolvePrimary(
   if (liveBranch || pr?.state === "merged") {
     return { kind: "published", label: "Published" };
   }
-
   if (upstream) {
     return { kind: "propose", label: `Propose to ${upstream.owner}/${upstream.repo}` };
   }
@@ -21,7 +20,6 @@ export function resolvePrimary(
     return { kind: "submit", label: "Submit for review…" };
   }
   if (canResolve && pr.mergeableState === "dirty") return { kind: "resolve", label: "Resolve conflicts…" };
-
   if (viewerCanApprove(pr, viewerLogin)) {
     return { kind: "approve", label: "Approve" };
   }

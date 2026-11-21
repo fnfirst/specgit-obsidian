@@ -5,14 +5,11 @@ export const REVIEW_VISIBLE_RETRY_MS = 1500;
 export type ReviewStart<Pr> = { ok: true; pr?: Pr } | { ok: false; message: string | null };
 
 export interface ReviewOpenerDeps {
-
   wait(ms: number): Promise<void>;
-
   later(run: () => void, ms: number): void;
 }
 
 export class ReviewOpener<Pr = unknown> {
-
   private readonly starts = new Map<string, Promise<ReviewStart<Pr>>>();
 
   constructor(private readonly deps: ReviewOpenerDeps) {}

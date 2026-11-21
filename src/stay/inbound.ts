@@ -21,21 +21,16 @@ import type { StayPorts } from "./types";
 export const READS_PER_PASS = 40;
 
 export const trashedWords = (names: readonly string[]): string => `Moved ${names.length === 1 ? names[0]! : `${names.length} notes`} to the trash. ${names.length === 1 ? "It was" : "They were"} deleted on GitHub.`;
-
 export const heldDeletesWords = (count: number): string => `${count} notes were deleted on GitHub at once, so none was moved to the trash.`;
-
 export const TEXTS_PER_PASS = 200;
-
 export const FIRST_WAIT_MS = 20_000;
 export const MAX_WAIT_MS = 5 * 60_000;
-
 export const STUCK_MS = 60_000;
 
 export interface InboundContext {
   ports: StayPorts;
   state: StayState;
   activity: Activity;
-
   current(): boolean;
 }
 
@@ -47,35 +42,24 @@ interface Said {
   created: string[];
   moved: string[];
   trashed: string[];
-
   came: Array<{ name: string; shown: Shown[] }>;
 }
 
 export class Inbound {
-
   private readonly declined = new Map<string, string>();
-
   private readonly deciding = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private readonly abort = new AbortController();
-
   private readonly waiting = new Map<string, { sha: string; until: number; strikes: number }>();
-
   private readonly announced = new Map<string, string>();
-
   private readonly cues = new Map<string, { sha: string; since: number; told: boolean }>();
-
   private readonly opening = new Set<string>();
-
   private readonly reviewTold = new Map<string, string>();
   private looked: Looked | null = null;
-
   private texts = new Map<string, string>();
-
   private gone: Map<string, boolean> | null = null;
   private reads = 0;
   private cut = false;
-
   private readonly releasedDeletes = new Set<string>();
   private announcedDeletes = 0;
 
@@ -107,7 +91,6 @@ export class Inbound {
     for (const [path, sha] of added) if (!inMove.has(path) && this.ready(path, sha)) await this.guarded(path, sha, () => this.add(looked, path, sha, said));
     const deletes = removed.filter(([path]) => !inMove.has(path));
     const here = deletes.filter(([path]) => looked.files.has(path)).map(([path]) => path);
-
     const still = new Set(here);
     for (const path of this.releasedDeletes) if (!still.has(path)) this.releasedDeletes.delete(path);
     const asked = here.filter((path) => !this.releasedDeletes.has(path));
@@ -121,7 +104,6 @@ export class Inbound {
       };
       const words = heldDeletesWords(asked.length);
       if (this.ctx.ports.aware()) {
-
         this.ctx.ports.heldDeletes?.({ count: asked.length, move: release });
         this.ctx.ports.notify(words, { label: "Show them", run: () => this.ctx.ports.openStatus?.(), lasting: true });
       } else this.ctx.ports.notify(words, { label: "Move them to the trash", run: release });
@@ -137,7 +119,6 @@ export class Inbound {
     }
     this.tellStuck();
     state.save();
-
     if (!silent) this.tell(said);
     return { changed: said.updated.length + said.merged.length + said.created.length + said.moved.length + said.trashed.length, more: this.cut };
   }
@@ -206,7 +187,6 @@ export class Inbound {
     if (!this.ctx.current()) return false;
     const waited = this.waiting.get(path);
     if (waited && waited.sha === sha && this.ctx.ports.now() < waited.until) return false;
-
     if (this.declined.get(path) === sha || this.announced.get(path) === sha || this.deciding.has(path)) return false;
     if (spend && this.reads >= READS_PER_PASS) {
       this.cut = true;
@@ -244,12 +224,10 @@ export class Inbound {
     list(said.created, "Added");
     list(said.moved, "Renamed");
     const matched = parts.length ? [`${parts.join(". ")}, to match GitHub.`] : [];
-
     const trashed = said.trashed.length ? [trashedWords(said.trashed)] : [];
     if (matched.length + trashed.length === 0) return;
     const message = [...matched, ...trashed].join(" ");
     const { ports } = this.ctx;
-
     if (ports.seeChanges && said.came.length) ports.notify(message, { label: "See changes", run: () => ports.seeChanges?.(said.came.flatMap(({ name, shown }) => (said.came.length > 1 ? [{ kind: "heading" as const, text: name }, ...shown] : shown))) });
     else ports.notify(message);
   }
@@ -271,7 +249,6 @@ export class Inbound {
   private readonly choices = new Set<string>();
 
   private askChoice(path: string, words: string, label: string, run: () => void, notice: string, plain: string = notice): void {
-
     if (!this.ctx.ports.aware()) {
       this.ctx.ports.notify(plain, { label, run, lasting: true });
       return;
@@ -308,7 +285,6 @@ export class Inbound {
       this.tell(said);
       this.ctx.state.save();
       this.ctx.ports.lookAgain();
-
       if (this.ctx.state.data.seen?.[path] !== sha && !this.deciding.has(path) && !this.declined.has(path)) {
         this.ctx.ports.notify(`specgit couldn't merge ${noteName(path)} with the changes on GitHub just now. It stays in the Status tab, where you can catch it up.`);
       }
@@ -323,7 +299,6 @@ export class Inbound {
     for (const [from, sha] of removed) {
       const to = added.find(([path, other]) => other === sha && seen[path] === undefined && !taken.has(path) && !looked.files.has(path));
       const entry = looked.files.get(from);
-
       if (!to || !entry || (entry.sha !== sha && !unchangedHere(entry))) continue;
       taken.add(to[0]);
       moves.push({ from, to: to[0], sha, held: entry.sha });
@@ -334,7 +309,6 @@ export class Inbound {
   private async free(path: string, doc: DocumentRef, sha: string): Promise<boolean> {
     const { ports } = this.ctx;
     if ((await notWritableBecause({ phaseOf: (one) => ports.phaseOf(one), hasUnsavedText: (one) => ports.vault.hasUnsavedText(one) }, path)) !== null) return this.notFree(path, sha);
-
     const drafts = this.looked?.drafts;
     const review = drafts?.level && !ports.inGroup(path) ? (drafts.byPath.has(path) ? "open" : "none") : await this.readReview(doc);
     if (review === "none") return true;
@@ -361,7 +335,6 @@ export class Inbound {
   }
 
   private keepAsBase(path: string, doc: DocumentRef, main: MainText): void {
-
     if (!this.ctx.current()) return;
     this.ctx.ports.recordBase(path, doc, toLf(main.text), main.text);
     this.ctx.ports.rebase(path, main.sha);
@@ -377,12 +350,9 @@ export class Inbound {
     const doc = ports.documentFor(path);
     if (!doc) return this.settled(path, sha);
     const entry = looked.files.get(path);
-
     if (entry?.sha === sha || (!entry && looked.deleted.some((gone) => gone.path === path))) return this.settled(path, sha);
-
     if (entry && this.followsDraft(looked, path, doc, entry.sentTo)) return this.settled(path, sha);
     if (!(await this.free(path, doc, sha))) return;
-
     const batched = this.texts.get(sha);
     const main: MainFile = batched !== undefined ? { kind: "file", text: batched, sha } : await this.readMain(doc);
     if (main.kind !== "file" || !this.ctx.current()) return this.wait(path, sha);
@@ -449,7 +419,6 @@ export class Inbound {
     const { ports, activity } = this.ctx;
     const mine = await ports.vault.read(path);
     if (mine === null) return this.wait(path, main.sha);
-
     const matched = entryBase ?? (this.ctx.state.data.guessed.includes(path) ? null : before);
     const base = await matchedBase(
       matched,
@@ -502,7 +471,6 @@ export class Inbound {
         this.ctx.state.save();
         ports.lookAgain();
       } catch {
-
         this.wait(path, main.sha);
       } finally {
         this.deciding.delete(path);
@@ -515,11 +483,9 @@ export class Inbound {
     const [from, to] = [ports.documentFor(move.from), ports.documentFor(move.to)];
     if (!from || !to) return this.settled(move.from, null);
     if (ports.phaseOf(move.to) !== "local" || !(await this.free(move.from, from, move.sha))) return this.wait(move.from, move.sha);
-
     const mirror = this.looked?.repo;
     if (!mirror || mirror.has(move.from) || mirror.get(move.to) !== move.sha || !this.ctx.current()) return this.wait(move.from, move.sha);
     const current = await ports.vault.read(move.from);
-
     if (current === null || gitBlobShaOfText(current) !== move.held || ports.vault.exists(move.to)) return this.wait(move.from, move.sha);
     activity.ownWrite(move.from, move.to);
     if ((await ports.vault.rename(move.from, move.to)) !== "renamed") return this.unwritten(move.from, move.sha, move.to);
@@ -533,13 +499,11 @@ export class Inbound {
     const entry = looked.files.get(path);
     const doc = ports.documentFor(path);
     if (!entry || !doc) return this.settled(path, null);
-
     if (entry.sha !== sha && !unchangedHere(entry)) {
       if (!state.data.kept.includes(path)) state.data.kept.push(path);
       return this.settled(path, null);
     }
     if (!(await this.free(path, doc, sha))) return;
-
     const mirror = looked.repo.get(path);
     if (mirror !== undefined) return this.settled(path, mirror);
     if (this.gone !== null) {
@@ -552,7 +516,6 @@ export class Inbound {
       if (main.kind !== "absent" || !this.ctx.current()) return this.wait(path, sha);
     }
     activity.ownWrite(path);
-
     if (!(await ports.vault.trash(path, entry.sha))) return this.unwritten(path, sha);
     this.settled(path, null);
     said.trashed.push(noteName(path));

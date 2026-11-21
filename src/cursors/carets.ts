@@ -29,7 +29,6 @@ export function drawCaret(fields: CaretFields, onPictureError?: () => void): HTM
   const caret = createSpan({ cls: "specgit-caret" });
   caret.setCssProps({ "--specgit-peer": color });
   const chip = caret.createSpan({ cls: "specgit-caret-chip" });
-
   fillChip(chip, initials, photo, () => {
     const img = createEl("img");
     if (onPictureError) img.addEventListener("error", onPictureError);
@@ -41,9 +40,7 @@ export function drawCaret(fields: CaretFields, onPictureError?: () => void): HTM
 }
 
 export interface PeerCaret extends CaretFields {
-
   id: number;
-
   anchor: number;
   head: number;
 }
@@ -51,7 +48,6 @@ export interface PeerCaret extends CaretFields {
 const drawnFields = new WeakMap<HTMLElement, { fields: CaretFields; drewFailed: boolean }>();
 
 class Caret extends WidgetType {
-
   private readonly fields: CaretFields;
 
   constructor(fields: CaretFields) {
@@ -75,7 +71,6 @@ class Caret extends WidgetType {
   override updateDOM(dom: HTMLElement): boolean {
     const prev = drawnFields.get(dom);
     if (!prev || !sameVisual(this.fields, prev.fields)) return false;
-
     if (prev.drewFailed && this.fields.photo !== null && !pictureFailed(this.fields.photo)) return false;
     showCaretName(dom);
     return true;
@@ -115,7 +110,6 @@ export function personIsIn(view: EditorView): boolean {
 
 export class CaretLayer {
   decorations: DecorationSet = Decoration.none;
-
   peers: readonly PeerCaret[] = [];
   private published = "";
   private pending: number | null = null;
@@ -137,12 +131,10 @@ export class CaretLayer {
       if ([...change.added, ...change.updated, ...change.removed].some((client) => client !== doc.clientID)) this.schedule();
     };
     awareness.on("change", onPresence);
-
     const onFocusIn = (): void => {
       this.published = "";
       this.publish();
     };
-
     const onFocusOut = (event: FocusEvent): void => {
       const next = event.relatedTarget as Node | null;
       if (next?.instanceOf(Node) && view.contentDOM.contains(next)) return;
@@ -210,7 +202,6 @@ export class CaretLayer {
     if (!personIsIn(this.view)) return this.withdraw();
     const alignment = this.alignment();
     const [from, to] = [alignment.toTree(anchor), alignment.toTree(head)];
-
     if (!from || !to) return this.withdraw();
     const position = ({ node, index, assoc }: TreePoint): unknown => Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(node, index, assoc));
     const cursor = { anchor: position(from), head: position(to) };
@@ -240,7 +231,6 @@ export class CaretLayer {
       if (from !== to) {
         marks.push(Decoration.mark({ class: "specgit-selection", attributes: { style: `--specgit-peer: ${fields.color}` } }).range(Math.min(from, to), Math.max(from, to)));
       }
-
       marks.push(Decoration.widget({ widget: new Caret(fields), side: to > from ? -1 : 1 }).range(to));
     };
 
@@ -249,7 +239,6 @@ export class CaretLayer {
       if (client === this.doc.clientID || !cursor) return;
       active.add(client);
       const [anchor, head] = [treeText(this.doc, cursor.anchor), treeText(this.doc, cursor.head)];
-
       const person = roomPerson(state);
       const color = person.color;
       const fields: CaretFields = { color, label: person.label, initials: person.initials, photo: isAgentState(state) ? null : person.picture, placed: JSON.stringify(cursor.head) };
@@ -258,7 +247,6 @@ export class CaretLayer {
         alignment ??= this.alignment();
         const [anchorAt, headAt] = [alignment.toText(anchor.node, anchor.index, anchor.assoc), alignment.toText(head.node, head.index, head.assoc)];
         if (anchorAt !== null && headAt !== null) {
-
           const [from, to] = [Math.min(anchorAt, length), Math.min(headAt, length)];
           this.lastPlaced.set(client, { from, to, fields, heldSince: null });
           emit(client, from, to, fields);

@@ -11,21 +11,13 @@ import type { StayDrafts } from "./stay/draft-state";
 import { STAY, STAY_DRAFTS_WORDS } from "./stay/words";
 
 export interface Settings extends MappingSettings {
-
   server: string;
-
   login: string;
-
   displayName: string;
-
   avatarUrl: string;
-
   color: string;
-
   stayConnected: boolean;
-
   stayOffered: boolean;
-
   stayDrafts: StayDrafts;
 }
 
@@ -44,7 +36,9 @@ export class DeviceSettings {
     let stored: unknown = null;
     try {
       stored = this.state.load(DEVICE_KEY);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
     const given = (typeof stored === "object" && stored !== null ? stored : {}) as Record<string, unknown>;
     return { stayConnected: given.stayConnected === true, stayOffered: given.stayOffered === true };
   }
@@ -52,7 +46,9 @@ export class DeviceSettings {
   write(settings: Pick<Settings, "stayConnected" | "stayOffered">): void {
     try {
       this.state.save(DEVICE_KEY, { stayConnected: settings.stayConnected, stayOffered: settings.stayOffered });
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }
 
@@ -67,7 +63,6 @@ export function readSettings(stored: unknown): Settings {
     if (typeof value === "string" && typeof DEFAULT_SETTINGS[key] === "string") (settings[key] as string) = value;
     else if (typeof value === "boolean" && typeof DEFAULT_SETTINGS[key] === "boolean") (settings[key] as boolean) = value;
   }
-
   settings.stayDrafts = given.stayDrafts === "mine" ? "mine" : "everyone";
   settings.server = isServerAddress(settings.server) ? normalizeServer(settings.server) : DEFAULT_SERVER;
   return settings;
@@ -82,20 +77,15 @@ export interface Account {
   signedIn(): boolean;
   signIn(): Promise<void>;
   signOut(): Promise<void>;
-
   onChange(listener: () => void): () => void;
-
   keeping?(): SignInKeeping | null;
 }
 
 export interface SettingsHost {
   config: Settings;
   saveConfig(): Promise<void>;
-
   setStayConnected(on: boolean): Promise<void>;
-
   linked?(): void;
-
   onSaved?(listener: () => void): () => void;
 }
 
@@ -144,26 +134,18 @@ export class SpecgitSettingTab extends PluginSettingTab {
   private readonly host: SettingsHost;
   private stopWatching: (() => void) | null = null;
   private stopWatchingSaves: (() => void) | null = null;
-
   private typing = 0;
-
   private flushers: Array<() => void> = [];
-
   private openedWith: string | null = null;
-
   private declarative = false;
-
   private mounted = 0;
-
   private updating = false;
 
   constructor(
     app: App,
     plugin: Plugin & SettingsHost,
     private readonly account: Account,
-
     private readonly reportProblem: () => void = () => undefined,
-
     private readonly picker: { chooseRepository(): Promise<void>; chooseFolder(): Promise<void> } = { chooseRepository: () => Promise.resolve(), chooseFolder: () => Promise.resolve() },
   ) {
     super(app, plugin);
@@ -220,9 +202,7 @@ export class SpecgitSettingTab extends PluginSettingTab {
 
   private attach(): void {
     this.openedWith ??= this.host.config.repo;
-
     this.stopWatching ??= this.account.onChange(() => this.redraw());
-
     this.stopWatchingSaves ??= this.host.onSaved?.(() => {
       if (this.typing === 0) this.redraw();
     }) ?? null;
@@ -357,7 +337,6 @@ export class SpecgitSettingTab extends PluginSettingTab {
       type: "group",
       heading: "Live notes",
       items: [
-
         {
           name: "Repository",
           desc: this.repoDesc(),
@@ -397,7 +376,6 @@ export class SpecgitSettingTab extends PluginSettingTab {
                 .setDisabled(!stay && !stayReady)
                 .onChange(async (value) => {
                   await this.host.setStayConnected(value);
-
                   this.redraw();
                 }),
             );

@@ -1,7 +1,6 @@
 const BOM = "\uFEFF";
 const toLf = (text: string): string => text.replace(/\r\n/g, "\n");
 const withoutBom = (text: string): string => (text.startsWith(BOM) ? text.slice(1) : text);
-
 const trimBlanks = (text: string): string => text.replace(/^[ \t]+|[ \t]+$/g, "");
 const isFence = (line: string | undefined): boolean => line !== undefined && /^---[ \t]*$/.test(line);
 
@@ -15,7 +14,6 @@ function split(text: string): { front: string | null; body: string } {
 }
 
 function plain(value: string): string | null {
-
   return /^["'|>&*!{[#%@`]/.test(value) || /^[-?](?:[ \t]|$)/.test(value) || /\s#/.test(value) ? null : value;
 }
 
@@ -24,7 +22,6 @@ function shapeOf(front: string): string | null {
   const entries: Array<[string, string | string[]]> = [];
   for (let at = 0; at < lines.length; at++) {
     const line = lines[at]!;
-
     if (/^ *$/.test(line)) continue;
     const entry = /^([^\s#:"'[\]{}-][^:]*):(?:[ \t]+(.*))?$/.exec(line);
     if (!entry) return null;
@@ -40,7 +37,6 @@ function shapeOf(front: string): string | null {
       const items: string[] = [];
       let column: string | null = null;
       for (let next; at + 1 < lines.length && (next = /^( *)-[ \t]+(\S.*)$/.exec(lines[at + 1]!)); at++) {
-
         if (column !== null && next[1] !== column) return null;
         column = next[1]!;
         const item = trimBlanks(next[2]!);

@@ -17,7 +17,6 @@ export class PanelView extends ItemView {
     private readonly comments: PanelComments,
   ) {
     super(leaf);
-
     this.scope = new Scope(this.app.scope);
     this.scope.register(["Mod"], "Enter", () => (sendFrom(this.contentEl.doc.activeElement) ? false : undefined));
   }

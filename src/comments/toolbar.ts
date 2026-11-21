@@ -9,17 +9,13 @@ export interface ToolbarWorld {
 const SETTING = "mobileToolbarCommands";
 
 export interface ToolbarOffer {
-
   shown(): boolean;
-
   add(): boolean;
-
   dismiss(): void;
 }
 
 export function toolbarOffer(world: ToolbarWorld, commandId: string): ToolbarOffer {
   const { vault } = world;
-
   const listed = (): string[] | null => {
     if (typeof vault.getConfig !== "function" || typeof vault.setConfig !== "function") return null;
     try {

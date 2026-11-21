@@ -3,7 +3,6 @@ import type { ChangeLine } from "./catch-up-protocol";
 const places = (n: number) => (n === 1 ? "1 place" : `${n} places`);
 
 export const CATCH_UP = {
-
   title: (base: string) => `Catch up with ${base}`,
   done: (base: string) => `Caught up with ${base}`,
   behind: (kind: "document" | "board") => `The published version has changed since your review began. This ${kind === "board" ? "board" : "document"} is behind it.`,
@@ -30,7 +29,6 @@ export const CATCH_UP = {
     }
   },
   was: (before: string) => `It said: ${before}`,
-
   stays: "Everything in your review is still here.",
   toastDone: (summary: string, base: string) => ({ title: `Caught up with ${base}`, description: `${summary} Your edits are all still here.` }),
   toastMoved: { title: "The published version changed again", description: "Here is what it changed now. Look it over, then catch up." },

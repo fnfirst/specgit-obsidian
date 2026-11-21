@@ -4,11 +4,8 @@ import { upToDateWords } from "./lifecycle-copy";
 import type { ReviewState } from "./review-state";
 
 export interface SummaryLine {
-
   short: string;
-
   full: string;
-
   pr: number | null;
 }
 

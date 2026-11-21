@@ -1,15 +1,10 @@
 export const LIVE_FILES_AFTER_MS = 2_000;
 
 export interface LiveFilesPorts {
-
   isLive(path: string): boolean;
-
   later(run: () => void, ms: number): () => void;
-
   read(path: string): Promise<string | null>;
-
   bring(path: string, text: string): Promise<void>;
-
   send(path: string): Promise<void>;
 }
 
@@ -46,6 +41,8 @@ export class LiveFiles {
       if (text === null) return;
       await this.ports.bring(path, text);
       await this.ports.send(path);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }

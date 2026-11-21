@@ -59,9 +59,7 @@ export const TRY_AGAIN_WORDS = "Try again in a moment.";
 
 export function groupFailedWords(reason: string, code?: string | null, extra?: { written?: number; retry?: boolean }): string {
   const retry = extra?.retry ?? !code;
-
   const said = reason.endsWith(` ${TRY_AGAIN_WORDS}`) ? reason.slice(0, -(TRY_AGAIN_WORDS.length + 1)) : reason;
-
   const asTheyWere = code === GROUP_FLOW_PARTIAL || (extra?.written ?? 0) > 0 ? "" : " Your files are as they were.";
   return `${said}${asTheyWere}${retry ? ` ${TRY_AGAIN_WORDS}` : ""}`;
 }

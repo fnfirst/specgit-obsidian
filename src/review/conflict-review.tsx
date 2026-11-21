@@ -63,15 +63,10 @@ const MERGED_WORDS = { before: MERGED_REVIEW.before, after: MERGED_REVIEW.after,
 
 export interface ConflictReviewProps {
   regions: Region[];
-
   merged?: Shown[];
-
   fromBase: boolean;
-
   other?: Other;
-
   settle: () => Settle;
-
   apply: (text: string) => void;
   cancel: () => void;
 }
@@ -103,7 +98,6 @@ export function ConflictReview(props: ConflictReviewProps) {
     const verdict = props.settle();
     if (verdict === null) return props.apply(text);
     if ("error" in verdict) return setError(verdict.error);
-
     setRegions(verdict.regions);
     setChoices([]);
     setPreview(false);
@@ -112,7 +106,6 @@ export function ConflictReview(props: ConflictReviewProps) {
 
   const body = regions.map((region, at) => {
     if (!isConflict(region)) return <Unchanged key={at} text={region.text} />;
-
     const index = conflicts.indexOf(region);
     return <Card key={at} number={index + 1} total={total} conflict={region} choice={choices[index]} pick={(choice) => pick(index, choice)} other={other} />;
   });
@@ -188,7 +181,6 @@ interface CardProps {
 
 function Card({ number, total, conflict, choice, pick, other }: CardProps) {
   const words = wordsOf(other);
-
   const marks = wordDiff(conflict.mine, conflict.theirs);
   const edited = typeof choice === "object";
   const keeps = (side: "mine" | "theirs"): boolean => choice === side || choice === "both";
@@ -208,7 +200,6 @@ function Card({ number, total, conflict, choice, pick, other }: CardProps) {
             {MERGE.keep(kindOf(side), words.keeps)}
           </button>
         ))}
-        { }
         <button type="button" class="specgit-button" aria-pressed={edited} onClick={() => pick(edited ? choice : { edited: chosen(conflict, choice ?? "mine") })}>
           {MERGE.edit}
         </button>

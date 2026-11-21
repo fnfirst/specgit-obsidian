@@ -5,7 +5,6 @@ export interface CleanRegion {
 
 export interface ConflictRegion {
   type: "conflict";
-
   index: number;
   ours: string[];
   theirs: string[];
@@ -17,9 +16,7 @@ export type MergeRegion = CleanRegion | ConflictRegion;
 export interface ThreeWayMerge {
   regions: MergeRegion[];
   conflicts: ConflictRegion[];
-
   hasConflicts: boolean;
-
   cleanResult: string | null;
 }
 
@@ -38,7 +35,6 @@ function choiceLines(conflict: ConflictRegion, choice: ConflictChoice): string[]
     case "both":
       return [...conflict.ours, ...conflict.theirs];
     case "custom":
-
       return choice.text === "" ? [] : choice.text.split("\n");
   }
 }

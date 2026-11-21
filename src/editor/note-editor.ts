@@ -49,43 +49,28 @@ const later = (run: () => void): void => void Promise.resolve().then(run);
 
 export class NoteEditor implements PluginValue {
   private path = "";
-
   private file: object | null = null;
   private ref: DocumentRef | null = null;
   private room: Room | null = null;
-
   private takenText: string | null = null;
-
   private refusedTold = false;
   private binding: Binding | null = null;
   private carets: CaretLayer | null = null;
-
   private textVersion = 0;
   private phase: Phase = "off";
-
   private stops: Array<() => void> = [];
-
   private watching: Array<() => void> = [];
   private patience: number | null = null;
-
   private readonly join: Join;
-
   private recorded: string | null = null;
   private reading = false;
-
   private rebinds = 0;
-
   private mayOnlyRead = false;
-
   private readonly review: Review;
-
   private announce = false;
-
   private answered: { key: string; steps: RoomSteps | null } | null = null;
-
   private readonly ownWrites: OwnWrites;
   private destroyed = false;
-
   private documentDeleted = false;
 
   constructor(
@@ -133,7 +118,6 @@ export class NoteEditor implements PluginValue {
     }
     this.binding?.update(update);
     this.carets?.update(update);
-
     if (this.phase === "local" && this.ref && !this.destroyed) this.matchChoice();
   }
 
@@ -168,7 +152,6 @@ export class NoteEditor implements PluginValue {
       vault.onDelete((path) => this.deleted(path)),
       vault.onModify((path) => path === this.path && this.saved()),
       connections.subscribe(() => this.matchChoice()),
-
       this.services.onMapping(() => this.placeAt(this.path)),
     );
     const ref = this.services.documentFor(this.path);
@@ -239,7 +222,6 @@ export class NoteEditor implements PluginValue {
     this.unbind();
     this.carets?.destroy();
     this.carets = null;
-
     const other = this.registry.editorsOf(this.path).find((editor) => editor !== this && editor.carets !== null);
     if (other) other.tellReading();
     else this.services.reading?.publish(this.path, null);
@@ -259,7 +241,6 @@ export class NoteEditor implements PluginValue {
       this.services.report(this.path, null);
       this.services.cameIn(this.path, null);
     }
-
     next?.takeLead();
   }
 
@@ -269,7 +250,6 @@ export class NoteEditor implements PluginValue {
     if (room.successor) return this.follow(room.successor);
     this.keepToAccess(room);
     if (room.stopped) return this.halt(room.stopped);
-
     if (room.state === "ready") later(() => this.meet());
     else if (room.state === "failed") this.giveUp();
     this.report();
@@ -297,10 +277,8 @@ export class NoteEditor implements PluginValue {
   private deletedOnSpecgit(): void {
     const text = this.view.state.doc.toString();
     const typed = this.takenText !== null && text !== this.takenText;
-
     for (const editor of this.registry.editorsOf(this.path)) editor.markDeleted();
     this.holdAll("locked");
-
     if (this.told.deletedShown(this.path)) return;
     const words = typed ? `${DELETED_WORDS.title}. ${DELETED_WORDS.typed}` : DELETED_WORDS.title;
     if (!this.services.notifyActions) return this.services.notify(words, this.path);
@@ -316,7 +294,6 @@ export class NoteEditor implements PluginValue {
         }
       },
     };
-
     this.told.deletedRaised(this.path, this.services.notifyActions(words, typed ? [copy, close] : [close], this.path, typed));
   }
 
@@ -341,12 +318,9 @@ export class NoteEditor implements PluginValue {
   }
 
   private follow(next: Room): void {
-
     const key = this.ref ? docKey(this.ref) : null;
     const agreed = this.binding && this.room ? (this.room.vouched ?? "") : null;
-
     this.takenText = this.room ? (this.room.vouched ?? this.room.text.toJSON()) : null;
-
     const leaving = this.room?.steps ?? null;
     if (key !== null && this.services.ownRestarts.pending(key)) this.join.cutOffEither((room) => this.ownStep(key, leaving, room), agreed);
     else if (agreed !== null) this.join.cutOff(agreed, true);
@@ -386,7 +360,6 @@ export class NoteEditor implements PluginValue {
     this.moveTo("offline");
     if (!this.leads()) return;
     const problem = this.room?.problem;
-
     if (problem) this.services.notify(joinFailedWords(problem), this.path);
     else if (this.room?.state === "ready") this.services.notify(SAID.stillPaused, this.path);
   }
@@ -414,19 +387,16 @@ export class NoteEditor implements PluginValue {
 
   private bindTo(room: Room, text: string, notice: string | null, kept = false, git?: string | null): void {
     const before = this.view.state.doc.toString();
-
     const roomBefore = toLf(room.text.toJSON());
     const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), text);
     this.binding = binding;
     this.join.bound();
-
     if (this.answered !== null) this.services.ownRestarts.settle(this.answered.key, this.answered.steps, true);
     this.answered = null;
     this.setAll("live");
     this.services.joined?.(this.path);
     if (notice !== null) this.services.notify(notice);
     this.tellWhatCameIn(before, text, kept, git, roomBefore);
-
     for (const editor of this.registry.editorsOf(this.path)) if (editor !== this) later(() => editor.bindIfReady());
     void this.record();
   }
@@ -434,11 +404,9 @@ export class NoteEditor implements PluginValue {
   private tellWhatCameIn(before: string, after: string, kept: boolean, git: string | null | undefined, room: string): void {
     if (!this.announce) return;
     this.announce = false;
-
     if (this.services.mainMoved?.(this.path)) this.services.notify(SAID.mainMoved);
     const shown = changesBetween(before, after);
     if (shown === null) return;
-
     const [binding, path, ref] = [this.binding, this.path, this.ref];
     const update = this.services.cameIn(path, shown, cameInNow(changesIn(shown), kept));
     if (!update || !ref) return;
@@ -453,7 +421,6 @@ export class NoteEditor implements PluginValue {
   private async chooseWhatToKeep(outcome: Extract<Outcome, { kind: "review" }>): Promise<void> {
     const verdict = await this.review.ask(outcome);
     const room = this.room;
-
     if (verdict === "withdrawn" || !room) return;
     if (verdict === "closed") return this.stayLocal(SAID.declined);
     this.bindTo(room, verdict.applied, null);
@@ -502,7 +469,6 @@ export class NoteEditor implements PluginValue {
   }
 
   private saved(): void {
-
     this.ownWrites.takeSave(this.registry.editorsOf(this.path).map((editor) => editor.ownWrites));
     if (this.binding) this.rebinds = 0;
     void this.record();
@@ -525,18 +491,18 @@ export class NoteEditor implements PluginValue {
 
   private async record(): Promise<void> {
     const { binding, room } = this;
-
     if (!binding || !room || this.endsSoon(room) || !this.leads() || this.reading || this.view.state.doc.toString() === this.recorded) return;
     this.reading = true;
     try {
       const file = await this.services.vault.read(this.path);
       const text = this.view.state.doc.toString();
-
       if (file === null || room.name === null || this.binding !== binding || toLf(file) !== text || !room.acknowledged) return;
       if (this.endsSoon(room)) return;
       this.services.bases.write(this.path, { room: room.name, text, eol: eolOf(file), lineage: lineageOf(room.doc) });
       this.recorded = text;
-    } catch { /* empty */ } finally {
+    } catch {
+      void 0;
+    } finally {
       this.reading = false;
     }
   }
@@ -550,7 +516,6 @@ export class NoteEditor implements PluginValue {
     const next = this.services.documentFor(to);
     if (this.ref && next && next.repo === this.ref.repo && next.path === this.ref.path) {
       if (from === to) return;
-
       this.registry.move(from, to);
       this.path = to;
       this.services.bases.move(from, to);
@@ -558,10 +523,8 @@ export class NoteEditor implements PluginValue {
       this.report();
       return;
     }
-
     const old = this.ref;
     this.leave();
-
     this.join.forget();
     this.answered = null;
     if (old) this.services.connections.move(old, next);

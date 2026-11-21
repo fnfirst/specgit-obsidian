@@ -1,6 +1,5 @@
 export interface Bearer {
   accessToken(): Promise<string>;
-
   renew(): Promise<string>;
 }
 

@@ -2,7 +2,7 @@ import type { Shown } from "../disk/regions";
 import { ShownList } from "./parts";
 import { type ChangesContext, changesWords } from "./words";
 
-export function ChangesView({ shown, close, context = { kind: "came-in" } }: { shown: Shown[]; close: () => void;   context?: ChangesContext }) {
+export function ChangesView({ shown, close, context = { kind: "came-in" } }: { shown: Shown[]; close: () => void;  context?: ChangesContext }) {
   const words = changesWords(context);
   return (
     <div class="specgit-review specgit-changes">

@@ -14,7 +14,7 @@ export function Unchanged({ text }: { text: string }) {
   );
 }
 
-export function Side({ label, text, empty, tone, words }: { label: string; text: string; empty: string; tone?: "kept" | "removed" | "added";   words?: WordPart[] }) {
+export function Side({ label, text, empty, tone, words }: { label: string; text: string; empty: string; tone?: "kept" | "removed" | "added";  words?: WordPart[] }) {
   return (
     <div class={`specgit-side${tone ? ` is-${tone}` : ""}`}>
       <p class="specgit-side-label">{label}</p>

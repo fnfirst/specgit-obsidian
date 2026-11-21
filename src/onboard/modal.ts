@@ -88,7 +88,6 @@ export class OnboardModal extends SpecgitModal {
   private on: OnboardEvents | null = null;
   private quiet = false;
   private opened = false;
-
   private nameStep: NameStep | null = null;
 
   constructor(
@@ -184,7 +183,6 @@ export class OnboardModal extends SpecgitModal {
         if (event.key === "Enter" && this.view.step === "name" && !isBlocked(this.view)) this.on?.press(text.getValue(), isPrivate);
       });
     });
-
     const hint = contentEl.createEl("p", { cls: "specgit-hint" });
     showHint();
     new Setting(contentEl).setName(PRIVATE).addToggle((toggle) => {

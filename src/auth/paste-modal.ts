@@ -7,15 +7,12 @@ export const REOPEN_BROWSER = "Open the browser again";
 export const DIDNT_COME_BACK = "Paste a code instead";
 export const PASTE_CODE_HELP = "Paste the code that specgit.com shows.";
 export const FINISH_SIGN_IN = "Finish signing in";
-
 export const DIDNT_FINISH = "This sign-in didn't finish.";
 export const SIGN_IN_AGAIN = "Sign in again";
 export const CLOSE = "Close";
 
 export interface PasteCodeModalOptions {
-
   signInAgain?: () => void;
-
   lastsMs?: number;
 }
 

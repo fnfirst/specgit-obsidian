@@ -72,7 +72,6 @@ export class ReadBacks {
     const held = await saveLandedAs(this.deps(), doc, text);
     if (held === null) return saved;
     this.found();
-
     return { ok: true, body: { unchanged: true, source: held.text, contentSha: held.sha } };
   }
 

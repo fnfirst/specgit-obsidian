@@ -12,9 +12,7 @@ export class ReportModal extends SpecgitModal {
   constructor(
     app: App,
     private readonly form: ReportForm,
-
     private readonly prefilled: boolean,
-
     private readonly sent: () => void = () => undefined,
   ) {
     super(app);
@@ -93,7 +91,6 @@ export class ReportModal extends SpecgitModal {
     const { form } = this;
     if (form.busy) return;
     const pending = form.submit();
-
     this.refresh();
     const result = await pending;
     if (result.kind === "closed") {

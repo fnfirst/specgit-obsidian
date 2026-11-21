@@ -4,11 +4,8 @@ import { ALL_SELECTED, forgetKeys, pruneSelectionAfterGrace, selectKeys, type Se
 
 export interface SelectionMemory {
   selection: Selection;
-
   absences: ReadonlyMap<string, number>;
-
   offered: ReadonlySet<string>;
-
   arriving: ReadonlySet<string>;
 }
 
@@ -17,9 +14,7 @@ export const freshSelectionMemory = (selection: Selection = ALL_SELECTED): Selec
 export interface SelectionUnit {
   key: string;
   authorLogin: string | null;
-
   group?: true;
-
   ownerUnknown?: true;
   startsUnchecked?: boolean;
 }
@@ -29,7 +24,6 @@ export function keepSelection(memory: SelectionMemory, units: readonly Selection
   const arriving = new Set([...memory.arriving].filter((key) => !present.has(key)));
   const absences = new Map(memory.absences);
   let selection = pruneSelectionAfterGrace(memory.selection, new Set([...present, ...arriving]), absences, now).selection;
-
   const unchecked = new Set(units.filter((unit) => unit.startsUnchecked === true || isSomeoneElses({ authorLogin: unit.authorLogin, ...(unit.ownerUnknown ? { ownerUnknown: true as const } : {}) }, viewer, unit.group === true)).map((unit) => unit.key));
   const offered = new Set([...memory.offered].filter((key) => unchecked.has(key)));
   const fresh = [...unchecked].filter((key) => !offered.has(key));

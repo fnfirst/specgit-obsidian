@@ -39,53 +39,34 @@ export type StatusFlows = Pick<
 
 export interface StatusPorts {
   flows: StatusFlows;
-
   units: () => Units;
-
   active: () => string | null;
-
   choice: (path: string) => NoteChoice | undefined;
-
   inVault: (path: string) => boolean;
   openNote: (path: string) => void;
-
   openInSpecgit: (path: string) => void;
-
   openNoteInSpecgit: (path: string) => void;
   openUrl: (url: string) => void;
-
   join: (path: string) => void;
   connect: (path: string) => void;
   disconnect: (path: string) => void;
   copyLink: (path: string) => void;
-
   copyIn: () => Promise<void>;
-
   moveHeldDeletes: () => void;
   addOffered: () => void;
-
   vaultFile: (path: string) => VaultFile | undefined;
-
   bringInNewer: () => Promise<unknown>;
   bringInDraft: (path: string) => Promise<BroughtDraft>;
-
   showSince: (path: string, on: boolean) => void;
-
   ask: (question: ConfirmQuestion) => Promise<string>;
   confirmCatchUp: (row: ChangeRow, preview: CatchUpPreview | null) => Promise<boolean>;
-
   editGroup: (id: string | null) => void;
   setReviewers: (next: (was: readonly StatusReviewer[]) => readonly StatusReviewer[]) => void;
   setNotice: (notice: StatusNotice | null) => void;
-
   done: (step: "submit" | "publish", id: string) => boolean;
-
   refresh: () => Promise<void>;
-
   busy: () => boolean;
-
   toast: (title: string, description?: string) => void;
-
   notBrought: string;
 }
 
@@ -117,7 +98,6 @@ async function bulk(ports: StatusPorts, rows: readonly ChangeRow[], step: "submi
 async function chooseForGroup(ports: StatusPorts, card: ChangeRow): Promise<void> {
   const overview = card.group!.overview;
   const controls = groupControls(overview);
-
   const picks = ports.busy() ? { mine: false, theirs: false } : controls.picks;
   const choices = [
     ...(picks.mine ? [{ id: "mine", label: HOLD_PICKS.mine, primary: true }] : []),
@@ -139,7 +119,6 @@ async function chooseForNote(ports: StatusPorts, path: string, row: ChangeRow | 
 async function catchUp(ports: StatusPorts, row: ChangeRow | undefined): Promise<void> {
   if (!row) return;
   const preview = await ports.flows.preview(row.doc);
-
   if (await ports.confirmCatchUp(row, preview)) await ports.flows.settleFromMain(row, { asked: true });
 }
 
@@ -158,12 +137,10 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
       switch (action.action) {
         case "open":
         case "review":
-
           return ports.inVault(action.id) ? ports.openNote(action.id) : ports.openInSpecgit(action.id);
         case "join":
           return ports.join(action.id);
         case "show-changes": {
-
           const file = ports.vaultFile(action.id);
           const compared = file ? comparedOf(file.state) : null;
           if (file && compared?.kind === "both" && !compared.baseUnknown) return flows.showVaultView(file, "mine");
@@ -199,7 +176,6 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
           return catchUp(ports, row);
         case "submit-only":
         case "publish-only":
-
           return;
       }
       return;
@@ -249,7 +225,6 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
           return path === null ? undefined : ports.openNoteInSpecgit(path);
         case "copy-link":
           return path === null ? undefined : ports.copyLink(path);
-
         case "view-on-github":
         case "propose":
           return;
@@ -282,9 +257,7 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
     case "submit": {
       const rows = rowsOf(units, action.ids);
       if (rows.length === 0) return;
-
       await bulk(ports, rows, "submit", () => flows.submit(rows, action.reviewers, { asked: true }));
-
       ports.setReviewers(() => []);
       return;
     }
@@ -292,7 +265,6 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
       return approve(ports, rowsOf(units, action.ids));
     case "publish": {
       const rows = rowsOf(units, action.ids);
-
       const own = rows.length === 1 && action.ids.length === 1 && action.ids[0] === ports.active();
       return rows.length === 0 ? undefined : bulk(ports, rows, "publish", () => (own ? flows.publish(rows, { document: true }) : flows.publish(rows)));
     }
@@ -304,7 +276,6 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
     }
     case "group-together": {
       const made = await flows.createGroup(groupableRows(rowsOf(units, action.ids)));
-
       if (made.ok && made.id !== undefined) {
         ports.editGroup(groupId(made.id));
         return { groupId: groupId(made.id) };
@@ -330,7 +301,6 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
       return card ? void (await flows.renameGroup(card, action.name)) : undefined;
     }
     case "add-reviewer": {
-
       const rows = rowsOf(units, action.ids);
       const first = rows[0] ?? pinnedUnit(ports);
       if (!first) return;

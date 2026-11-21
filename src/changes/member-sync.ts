@@ -41,7 +41,6 @@ export class MemberSync {
   }
 
   private async syncMember(row: ChangeRow): Promise<Sent> {
-
     for (let attempt = 1; ; attempt++) {
       const sent = await this.syncMemberOnce(row);
       if (sent.ok || "held" in sent || !sent.moved) return sent;
@@ -55,7 +54,6 @@ export class MemberSync {
     const name = noteName(change.path);
     const text = await deps.readText(change.path);
     if (text === null) return { ok: false, message: COULDNT_FINISH };
-
     const status = row.review ?? (await deps.review.status(doc));
     const there: BranchFile = status === null ? { kind: "unreadable" } : status.reviewBranch === null ? { kind: "absent" } : await deps.branchFile(doc, status.reviewBranch);
     if (there.kind === "unreadable") return { ok: false, message: UNREADABLE(name) };
@@ -64,13 +62,10 @@ export class MemberSync {
       await memory.remember(change.path, text, undefined, text);
       return { ok: true, expectMain: null };
     }
-
     return sendThroughBranch(this.host, row, text, there, async (body, head, levelledWith) => {
-
       const outgoing = inRepoEndings(body, head!.text);
       const saved = await this.host.backs.save(row.doc, outgoing, await deps.review.save(doc, outgoing, undefined, { toExistingReview: true, expectBranch: head!.sha }));
       if (saved.ok) {
-
         await memory.accepted(change.path, text, outgoing, levelledWith, saved.body);
         return { ok: true, expectMain: null };
       }
@@ -93,7 +88,6 @@ export class MemberSync {
     if (toLf(mine) === toLf(there.text)) return void (await memory.remember(row.change.path, there.text, undefined, mine));
     const sent = await memory.sentBase(row, there, branch ?? undefined);
     const merged = await mergedWith(deps, row, mine, there.text, sent ?? deps.baseText(row.change.path));
-
     if (merged === null) return;
     await memory.writeAndRemember(row.change.path, mine, merged, there.text);
   }

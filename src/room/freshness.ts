@@ -22,7 +22,6 @@ export interface Refusal {
   n: number;
   range: RefusalRange | null;
   why: "riff" | "schema";
-
   landed: Landed | null;
 }
 

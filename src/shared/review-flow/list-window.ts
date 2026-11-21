@@ -5,9 +5,7 @@ export const WINDOW_ROWS = 8;
 export const WINDOW_OVERSCAN = 6;
 
 export interface ListWindow {
-
   start: number;
-
   end: number;
   before: number;
   after: number;

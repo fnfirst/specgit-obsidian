@@ -9,33 +9,23 @@ export type InFlightActivity = "fresh" | "idle" | "stale";
 
 export interface InFlightBranch {
   branch: string;
-
   isReviewBranch: boolean;
   authorLogin: string | null;
   authorName: string | null;
   authorAvatarUrl: string | null;
-
   lastCommitAt: string;
   activity: InFlightActivity;
-
   changedStatus: string;
-
   renamedFrom?: string;
-
   docBlobSha?: string;
   prNumber?: number;
   prTitle?: string;
   prUrl?: string;
   prIsDraft?: boolean;
-
   prAuthorLogin?: string | null;
-
   ownerLogin?: string;
-
   writers?: string[];
-
   boardNotes?: string[];
-
   namedForPath?: boolean;
 }
 
@@ -44,21 +34,13 @@ export type InFlightMap = Record<string, InFlightBranch[]>;
 export interface InFlightResponse {
   base: string;
   paths: InFlightMap;
-
   pathsKnown?: false;
-
   groups?: Record<string, GroupOverview>;
-
   groupsLocked?: true;
-
   saves?: SavesTo;
-
   canPush?: boolean;
-
   publishQuota?: PublishQuota;
-
   unscanned?: number;
-
   stale?: boolean;
 }
 
@@ -76,14 +58,12 @@ export const isViewersBranch = (entry: Pick<InFlightBranch, "prAuthorLogin" | "p
 export interface FileReviewPick {
   group: { entry: InFlightBranch; overview: GroupOverview } | null;
   own: InFlightBranch | null;
-
   branch: string | null;
 }
 
 export function pickFileReview(entries: readonly InFlightBranch[] | undefined, viewerLogin: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): FileReviewPick {
   let group: FileReviewPick["group"] = null;
   let own: InFlightBranch | null = null;
-
   let holder: InFlightBranch | null = null;
   for (const entry of entries ?? []) {
     if (isGroupBranch(entry.branch)) {
@@ -113,7 +93,6 @@ export function ownReviewOf(entries: readonly InFlightBranch[] | undefined, path
 export interface DraftWorkItem {
   path: string;
   entry: InFlightBranch;
-
   isViewer: boolean;
 }
 
@@ -127,9 +106,7 @@ export function draftWorkItems(map: InFlightMap, viewerLogin: string | null, bro
   for (const [path, entries] of Object.entries(map)) {
     for (const entry of entries) {
       if (!entry.isReviewBranch) continue;
-
       if (entry.branch === browsedBranch) continue;
-
       if (entry.changedStatus === "removed") continue;
       out.push({
         path,

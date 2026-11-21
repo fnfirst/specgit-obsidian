@@ -3,17 +3,11 @@ import { gitBlobShaOfText } from "../changes/blob-sha";
 import { toLf } from "./line-endings";
 
 export interface GuardedVault {
-
   read(path: string): Promise<string | null>;
-
   hasUnsavedText(path: string): Promise<boolean>;
-
   process(path: string, edit: (current: string) => string | null): Promise<"written" | "refused" | "gone">;
-
   create(path: string, text: string): Promise<"created" | "exists" | "failed">;
-
   rename(from: string, to: string): Promise<"renamed" | "exists" | "gone" | "failed">;
-
   trash(path: string, expectedSha: string): Promise<boolean>;
   exists(path: string): boolean;
 }
@@ -22,13 +16,11 @@ const DISPLAY_ONLY_VIEWS: ReadonlySet<string> = new Set(["backlink", "outgoing-l
 
 export function guardedVault(app: App): GuardedVault {
   const { vault, workspace, fileManager } = app;
-
   const heldInPane = (path: string, disk: string): boolean => {
     let held = false;
     workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view as { file?: { path: string } | null; editor?: { getValue(): string }; getViewType(): string };
       if (view.file?.path !== path) return;
-
       if (view.editor === undefined ? view.getViewType() !== "markdown" && !DISPLAY_ONLY_VIEWS.has(view.getViewType()) : view.editor.getValue() !== toLf(disk)) held = true;
     });
     return held;
@@ -58,7 +50,6 @@ export function guardedVault(app: App): GuardedVault {
       let refused = false;
       try {
         await vault.process(file, (current) => {
-
           const next = heldInPane(path, current) ? null : edit(current);
           if (next === null) {
             refused = true;
@@ -67,7 +58,6 @@ export function guardedVault(app: App): GuardedVault {
           return next;
         });
       } catch {
-
         return vault.getFileByPath(path) ? "refused" : "gone";
       }
       return refused ? "refused" : "written";
@@ -97,7 +87,6 @@ export function guardedVault(app: App): GuardedVault {
     trash: async (path, expectedSha) => {
       const file = fileAt(path);
       const current = file ? await vault.read(file).catch(() => null) : null;
-
       if (!file || current === null || gitBlobShaOfText(current) !== expectedSha || heldInPane(path, current)) return false;
       try {
         await fileManager.trashFile(file);

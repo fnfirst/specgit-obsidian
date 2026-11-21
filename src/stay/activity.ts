@@ -1,19 +1,12 @@
 export interface ActivityOptions {
-
   quietMs: number;
-
   flurry: number;
   flurryMs: number;
-
   ownMs: number;
-
   suspectMs: number;
-
   gitLookbackMs: number;
-
   slowFiles: number;
   slowMs: number;
-
   pendingMs: number;
 }
 
@@ -25,19 +18,13 @@ export class Activity {
   private flurryEnds = 0;
   private gitEnds = 0;
   private history: Array<{ at: number; path: string }> = [];
-
   private readonly suspect = new Map<string, number>();
-
   private readonly git = new Map<string, number>();
   private readonly own = new Map<string, number>();
-
   private readonly ownAt = new Map<string, number>();
-
   private readonly wrote = new Map<string, { sha: string; at: number }>();
-
   private readonly pending = new Map<string, Map<number, number>>();
   private writes = 0;
-
   listener: ((path: string) => void) | null = null;
 
   constructor(
@@ -67,7 +54,6 @@ export class Activity {
     const id = this.writes++;
     const began = this.now();
     for (const path of paths) this.pending.set(path, new Map(this.pending.get(path)).set(id, began));
-
     let happened = left === undefined;
     try {
       const result = await run();
@@ -105,7 +91,6 @@ export class Activity {
   touched(path: string): void {
     const now = this.now();
     if ((this.own.get(path) ?? 0) > now || this.writing(path)) {
-
       this.ownAt.set(path, now);
       return;
     }

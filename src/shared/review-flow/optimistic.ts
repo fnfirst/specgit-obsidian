@@ -4,24 +4,18 @@ import { openedBy, type InFlightBranch, type InFlightMap, type InFlightResponse 
 export const CHANGE_GRACE_MS = 20_000;
 
 export type InFlightChange =
-
   | { kind: "grouped"; id: string; name: string; prNumber: number; prUrl: string; paths: readonly string[]; viewer: string | null; at: string }
-
   | {
       kind: "released";
       id: string;
       ended: boolean;
       files: ReadonlyArray<{ path: string; branch: string; prNumber: number; prUrl: string; isDraft: boolean }>;
-
       ending?: { remaining: number; total: number };
-
       viewer: string | null;
       at: string;
     }
   | { kind: "renamed"; id: string; name: string }
-
   | { kind: "draft"; paths: readonly string[]; groupIds: readonly string[]; isDraft: boolean }
-
   | { kind: "gone"; prNumbers: readonly number[]; paths: readonly string[] };
 
 export const releasedChange = (id: string, ended: boolean, files: Extract<InFlightChange, { kind: "released" }>["files"], viewer: string | null, at: string, ending?: { remaining: number; total: number }): InFlightChange => ({ kind: "released", id, ended, files, viewer, at, ...(ending ? { ending } : {}) });
@@ -51,7 +45,6 @@ export function applyChange(response: InFlightResponse, change: InFlightChange):
       const branch = branchOf(change.id);
       const existing = groups[branch];
       const members = [...new Set([...(existing?.paths ?? []), ...change.paths])];
-
       const overview: GroupOverview = { isDraft: true, mergeableState: null, hold: null, holdPaths: [], ...existing, id: change.id, name: change.name, prNumber: change.prNumber, prUrl: change.prUrl, paths: members };
       groups[branch] = overview;
       const paths: InFlightMap = { ...response.paths };
@@ -63,7 +56,6 @@ export function applyChange(response: InFlightResponse, change: InFlightChange):
           branch,
           isReviewBranch: true,
           authorLogin: old?.authorLogin ?? change.viewer,
-
           ...(change.viewer ? { prAuthorLogin: change.viewer } : {}),
           ...(owner ? { ownerLogin: owner } : {}),
           authorName: old?.authorName ?? change.viewer,
@@ -99,12 +91,10 @@ export function applyChange(response: InFlightResponse, change: InFlightChange):
           continue;
         }
         const rest = entries.filter((entry) => entry.branch !== branch);
-
         const { prAuthorLogin: _groupsOpener, ...held } = inGroup ?? ({} as InFlightBranch);
         const own: InFlightBranch[] = file ? [{ ...held, branch: file.branch, prNumber: file.prNumber, prUrl: file.prUrl, prIsDraft: file.isDraft }] : [];
         if (own.length + rest.length > 0) paths[path] = [...own, ...rest];
       }
-
       for (const file of change.files) {
         if (paths[file.path]) continue;
         paths[file.path] = [
@@ -154,7 +144,6 @@ export function applyChange(response: InFlightResponse, change: InFlightChange):
 }
 
 export function agrees(response: InFlightResponse, change: InFlightChange): boolean {
-
   const files = response.pathsKnown !== false;
   const hasEntry = (path: string, test: (entry: InFlightBranch) => boolean) => (response.paths[path] ?? []).some(test);
   switch (change.kind) {
@@ -212,6 +201,14 @@ function undoes(later: InFlightChange, earlier: InFlightChange): "wholly" | "par
     const put = new Set(later.paths);
     return earlier.files.length > 0 && earlier.files.every((file) => put.has(file.path)) ? "wholly" : null;
   }
+  if (earlier.kind === "draft") {
+    if (later.kind !== "draft" || later.isDraft === earlier.isDraft) return null;
+    const paths = new Set(later.paths);
+    const groupIds = new Set(later.groupIds);
+    const named = earlier.paths.length + earlier.groupIds.length;
+    const moved = earlier.paths.filter((path) => paths.has(path)).length + earlier.groupIds.filter((id) => groupIds.has(id)).length;
+    return moved === 0 ? null : moved === named ? "wholly" : "partly";
+  }
   if (earlier.kind !== "grouped") return null;
   if (later.kind === "gone") return later.prNumbers.includes(earlier.prNumber) ? "wholly" : null;
   if (later.kind !== "released" || later.id !== earlier.id) return null;
@@ -230,4 +227,23 @@ export function stillPending(response: InFlightResponse, pending: readonly Pendi
     if (confirmed.has(one) || young.some((later, i) => i > at && settled.has(later) && undoes(later.change, one.change) === "wholly")) settled.add(one);
   }
   return young.filter((one, at) => !settled.has(one) || (confirmed.has(one) && young.some((earlier, i) => i < at && !settled.has(earlier) && undoes(one.change, earlier.change) === "partly")));
+}
+
+export function draftFlagsPending(shown: InFlightResponse, pending: readonly PendingChange[]): Map<number, boolean> {
+  const moved = new Map<number, boolean>();
+  for (const { change } of pending) {
+    if (change.kind !== "draft") continue;
+    for (const id of change.groupIds) {
+      const branch = branchOf(id);
+      const overview = shown.groups?.[branch];
+      if (overview && overview.prNumber > 0) moved.set(overview.prNumber, change.isDraft);
+      for (const entries of Object.values(shown.paths)) {
+        for (const entry of entries) if (entry.branch === branch && isReview(entry) && entry.prNumber && entry.prNumber > 0) moved.set(entry.prNumber, change.isDraft);
+      }
+    }
+    for (const path of change.paths) {
+      for (const entry of shown.paths[path] ?? []) if (isReview(entry) && !isGroupBranch(entry.branch) && entry.prNumber && entry.prNumber > 0) moved.set(entry.prNumber, change.isDraft);
+    }
+  }
+  return moved;
 }

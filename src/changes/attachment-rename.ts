@@ -1,13 +1,9 @@
 export const RENAME_LOOKS_AFTER_MS = 3_000;
 
 export interface AttachmentRenamePorts {
-
   resolved(): Readonly<Record<string, Readonly<Record<string, number>>>>;
-
   isLive(path: string): boolean;
-
   live(path: string): void;
-
   local(path: string): void;
 }
 

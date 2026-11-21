@@ -13,7 +13,6 @@ export function eolOf(text: string): Eol {
 export const withEol = (lf: string, eol: Eol): string => (eol === "crlf" ? lf.replace(/\n/g, "\r\n") : lf);
 
 export class LineEndingMap {
-
   private readonly breaks: number[] = [];
 
   constructor(text: string) {
@@ -34,7 +33,6 @@ export class LineEndingMap {
 
   toLf(offset: number): number {
     if (!this.crlf) return offset;
-
     let low = 0;
     let high = this.breaks.length;
     while (low < high) {

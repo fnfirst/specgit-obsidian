@@ -8,17 +8,13 @@ export interface SecretStore {
 }
 
 export interface SignInKeeping {
-
   kept(): boolean;
   keep(on: boolean): void;
 }
 
 export interface AuthStorageOptions {
-
   canEncrypt?: () => boolean;
-
   keepChoice?: { read(): boolean; write(on: boolean): void };
-
   moved?: () => void;
 }
 
@@ -51,9 +47,7 @@ export class AuthStorage {
   private readonly serverId: string;
   private readonly pendingId: string;
   private readonly server: string;
-
   private memory: string | null = null;
-
   private pendingMemory: string | null = null;
 
   constructor(

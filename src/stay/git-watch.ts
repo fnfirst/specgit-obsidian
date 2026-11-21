@@ -7,11 +7,8 @@ export interface GitLogEntry {
 }
 
 export interface GitPorts {
-
   log(): Promise<number | null>;
-
   entries(): Promise<GitLogEntry[]>;
-
   stash(): Promise<number | null>;
 }
 
@@ -26,7 +23,6 @@ export class GitWatch {
   private lookedAt = Number.NEGATIVE_INFINITY;
   private seen: number | null | undefined;
   private stashSeen: number | null = null;
-
   private counted = 0;
 
   constructor(
@@ -52,7 +48,6 @@ export class GitWatch {
     let moved = stashed;
     if (first || logged) {
       const entries = await this.ports.entries();
-
       const fresh = first ? [] : entries.slice(entries.length >= this.counted ? this.counted : entries.length - 1);
       this.counted = entries.length;
       moved ||= fresh.some(changedFiles);

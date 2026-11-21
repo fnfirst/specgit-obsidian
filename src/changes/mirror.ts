@@ -36,47 +36,38 @@ export type MirrorState =
       kind: "files";
       version: number;
       files: Map<string, string>;
-
       headSha: string | null;
-
       added: Set<string>;
     }
-
   | { kind: "building" }
-
   | { kind: "not_installed" }
-
   | { kind: "unknown"; status: number | null };
 
 export class MirrorClient {
   private version: number | null = null;
   private files = new Map<string, string>();
   private headSha: string | null = null;
-
   private added = new Map<string, number>();
 
   constructor(
     private readonly api: SpecgitApi,
     private readonly repo: string,
-
     private readonly folder: string,
-
     private readonly state?: LocalState,
-
     private readonly now: () => number = Date.now,
   ) {
     this.key = `specgit-mirror-added-${hashText(`${repo}\n${folder}`)}`;
     try {
       const stored = state?.load(this.key);
-
       if (Array.isArray(stored)) {
         this.kept = new Map(stored.flatMap((one: unknown): Array<[string, number]> => (Array.isArray(one) && typeof one[0] === "string" && typeof one[1] === "number" ? [[one[0], one[1]]] : [])));
       }
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   private readonly key: string;
-
   private kept = new Map<string, number>();
 
   repoPath(vaultPath: string): string {
@@ -96,7 +87,6 @@ export class MirrorClient {
   async read(): Promise<MirrorState> {
     const named = splitRepo(this.repo);
     if (!named) return { kind: "unknown", status: null };
-
     const query: Record<string, string> = { branch: NOTE_BRANCH, folder: "", fresh: "1" };
     if (this.version !== null) query.since = String(this.version);
     let answer;
@@ -109,14 +99,11 @@ export class MirrorClient {
     if (answer.code === "app_not_installed") return { kind: "not_installed" };
     const body = answer.body;
     if (answer.status !== 200 || !body || typeof body.version !== "number") return { kind: "unknown", status: answer.status };
-
     if (Array.isArray(body.files)) {
       if (!body.files.every(isFile)) return { kind: "unknown", status: answer.status };
       const before = this.files;
       this.files = new Map((body.files).map((file) => [this.vaultPath(file.path), file.sha]));
-
       const was = new Map([...this.kept, ...this.added]);
-
       const next = new Map([...was].filter(([path]) => this.files.has(path)));
       for (const path of this.files.keys()) if (!next.has(path) && before.size > 0 && !before.has(path)) next.set(path, this.now());
       if (next.size !== was.size || [...next.keys()].some((path) => !was.has(path))) this.changed = true;
@@ -147,12 +134,13 @@ export class MirrorClient {
   private remember(): void {
     if (!this.changed) return;
     this.changed = false;
-
     const oldestFirst = [...this.added].sort((a, b) => a[1] - b[1]);
     for (const [path] of oldestFirst.slice(0, Math.max(0, oldestFirst.length - ADDED_KEPT))) this.added.delete(path);
     try {
       this.state?.save(this.key, [...this.added].sort((a, b) => a[1] - b[1]));
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   private apply(change: MirrorChange): void {

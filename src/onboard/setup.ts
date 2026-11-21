@@ -16,13 +16,9 @@ export const ONBOARD_ACTION = "specgit-onboard";
 export interface OnboardSetupDeps {
   api: SpecgitApi;
   signedIn: () => boolean;
-
   signIn: (options?: { install?: boolean }) => Promise<void>;
-
   onAuth: (listener: (event: AuthEvent) => void) => () => void;
-
   apply: (mapping: { repo: string; folder: string }) => Promise<void>;
-
   repoChosen: () => boolean;
 }
 
@@ -31,7 +27,6 @@ type Sized = { path: string; size: number };
 function vaultReads(app: App): Pick<UploadDeps, "listed" | "config" | "ownGitignore" | "read" | "configDir"> {
   const { vault } = app;
   const { adapter, configDir } = vault;
-
   const listConfig = async (dir: string, top: boolean): Promise<Sized[]> => {
     const { files, folders } = await adapter.list(dir);
     const here = await Promise.all(files.map(async (path): Promise<Sized> => ({ path, size: (await adapter.stat(path))?.size ?? 0 })));
@@ -70,7 +65,6 @@ export function setUpOnboard(plugin: Plugin, deps: OnboardSetupDeps): VaultOnboa
   const onboarding = new VaultOnboarding({
     ui: new OnboardWindow(app),
     signedIn: deps.signedIn,
-
     signIn: (options) =>
       new Promise((resolve) => {
         const stop = deps.onAuth((event) => {

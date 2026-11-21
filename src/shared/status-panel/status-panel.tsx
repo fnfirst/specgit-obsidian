@@ -30,19 +30,16 @@ import { DRAW_LIMIT, asksBeforeSubmit, checkablesOf, layoutOf, loginsOf, selecti
 import { ConfirmDialog, MenuPopover, placeMenu, type OpenMenu } from "./overlays";
 import { PINNED_MENU_LABEL, PinnedCard, type CardButton } from "./pinned";
 import { GroupCard, Row, groupMenuItems, groupMenuLabel, memberMenuId, rowMenuItems, rowMenuLabel } from "./rows";
-import { buttonsOff, cx, runningLabel, type Ctx } from "./shared";
+import { boxesWait, buttonsOff, cx, runningLabel, type Ctx } from "./shared";
 import { SubmitStep } from "./submit-step";
 import { TipCard, useTips, type TipContent } from "./tips";
 import type { ConfirmQuestion, Lane, PanelAction, PanelHost, PanelMenuItem, StatusChipKey, StatusNotice, StatusPanelModel, StatusRowMenuItem } from "./types";
 
 const NOTICE_MS = 4000;
-
 const FLASH_MS = 1000;
 
 const laneWord = (lane: Exclude<Lane, "none">): string => STATUS_CHIPS[lane];
-
 const CARD_OWN_STEPS: readonly StatusRowMenuItem[] = ["open", "show-changes", "submit-only", "publish-only"];
-
 const CHIP_LANES = ["approve", "publish", "drafts"] as const;
 
 function useCoarse(): boolean {
@@ -91,7 +88,6 @@ function Skeleton() {
 }
 
 export function StatusPanel({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
-
   if (model.loading && !model.pinned) return <Skeleton />;
   return <Loaded model={model} host={host} />;
 }
@@ -104,7 +100,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const coarse = pointerCoarse || host.touch === true;
   const tips = useTips(rootRef);
   const layout = useMemo(() => layoutOf(model), [model]);
-
   const [chip, setChip] = useState<StatusChipKey>(() => model.start?.chip ?? "all");
   const [checkedRaw, setCheckedRaw] = useState<ReadonlySet<string>>(() => new Set(model.checked));
   const [shownAll, setShownAll] = useState<ReadonlySet<string>>(() => new Set());
@@ -121,10 +116,8 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const checked = useMemo(() => new Set([...checkedRaw].filter((id) => checkables.has(id))), [checkedRaw, checkables]);
   const selection = useMemo(() => selectionOf(checkables, checked), [checkables, checked]);
   const order = useMemo(() => [...checkables.keys()], [checkables]);
-
   const kind = selection.checked[0]?.kind ?? null;
   const { onAction, onChecked } = model;
-
   const act = useCallback((action: PanelAction): void => void onAction(action), [onAction]);
 
   const touched = useRef(false);
@@ -135,14 +128,19 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const setChecked = useCallback(
     (next: Set<string>) => {
       touched.current = true;
-
       setStep(null);
       setCheckedRaw(next);
       onChecked?.([...next]);
     },
     [onChecked],
   );
-
+  const joinedIds = useMemo(() => new Set(model.items.flatMap((item) => (item.kind === "group" ? item.members.map((member) => member.id) : []))), [model.items]);
+  useEffect(() => {
+    if (![...checkedRaw].some((id) => joinedIds.has(id))) return;
+    const next = new Set([...checkedRaw].filter((id) => !joinedIds.has(id)));
+    setCheckedRaw(next);
+    if (touched.current) onChecked?.([...next]);
+  }, [joinedIds, checkedRaw, onChecked]);
   const wasDeleted = useRef<ReadonlySet<string> | null>(null);
   useEffect(() => {
     const deleted = new Set(model.items.flatMap((item) => (item.kind === "doc" && item.state === "deleted" ? [item.id] : [])));
@@ -154,26 +152,25 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     const next = new Set([...checkedRaw].filter((id) => !turned.includes(id)));
     setCheckedRaw(next);
     onChecked?.([...next]);
-
     setStep((now) => (now && now.ids.some((id) => turned.includes(id)) ? null : now));
   }, [model.items, checkedRaw, onChecked]);
   const pickChip = useCallback(
     (key: StatusChipKey) => {
       setChip(key);
-
       const shown = checkablesOf(layout, key);
       const kept = [...checked].filter((id) => shown.has(id));
       if (kept.length !== checked.size) setChecked(new Set(kept));
     },
     [checked, layout, setChecked],
   );
+  const wait = boxesWait({ busy: !!model.busy, running: model.running });
   const toggle = useCallback(
     (id: string, shift?: boolean) => {
+      if (wait) return;
       const own = checkables.get(id);
       if (!own) return;
       const next = new Set(checked);
       const willCheck = !next.has(id);
-
       const step = kind ?? own.kind;
       if (willCheck && own.kind !== step) return;
       const from = lastChecked.current ? order.indexOf(lastChecked.current) : -1;
@@ -188,7 +185,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
       lastChecked.current = id;
       setChecked(next);
     },
-    [checkables, checked, kind, order, setChecked],
+    [checkables, checked, kind, wait, order, setChecked],
   );
 
   const laneMap = useMemo(() => new Map(layout.entries.map((entry) => [entry.item.id, entry.lane] as const)), [layout]);
@@ -211,7 +208,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   }, [notice, model.start?.holdNotice]);
 
   const ownConfirm = useCallback((question: ConfirmQuestion) => new Promise<string>((resolve) => setDialog({ question, resolve })), []);
-
   const ask = useCallback((question: ConfirmQuestion) => {
     tips.hide();
     return (host.confirm ?? ownConfirm)(question);
@@ -279,7 +275,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
       if (choice === "group") {
         const ids = things.filter((one) => !one.isGroup).map((one) => one.id);
         const answer = await onAction({ type: "group-together", ids });
-
         if (answer && typeof answer.groupId === "string") setStep({ ids: [answer.groupId], documents: ids.length });
         return;
       }
@@ -326,7 +321,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     }
     if (start.tip && root) {
       const anchor = root.querySelector<HTMLElement>(`[data-sp-tip="${start.tip}"]`);
-
       if (anchor && start.tip.endsWith(":faces")) {
         const logins = loginsOf(layout.entries.find((entry) => `${entry.item.id}:faces` === start.tip)?.item.here);
         tips.openAt(anchor, start.tip, { picture: "join", name: logins.join(", "), line: STATUS_TIPS.live(logins.length) });
@@ -334,11 +328,9 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
       else if (anchor) anchor.click();
     }
     if (start.scroll && listRef.current) listRef.current.scrollTop = start.scroll;
-
   }, []);
 
   const stepChip = chip !== "all" && chip !== "live";
-
   const ofStep = [...checkables.values()].filter((one) => one.kind === (kind ?? one.kind)).map((one) => one.id);
   const allChecked = ofStep.length > 0 && checked.size === ofStep.length;
   const someChecked = checked.size > 0 && !allChecked;
@@ -349,10 +341,8 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
 
   const groupButton = (() => {
     const { drafts, groups } = selection;
-
     if (model.groupsOff) return null;
     if (chip !== "drafts" && kind !== "submit") return null;
-
     if (model.grouping) return { kind: "dim" as const, label: STATUS_BAR.group, run: () => undefined };
     if (drafts.length >= 1 && groups.length === 1) {
       const target = groups[0]!;
@@ -370,7 +360,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     if (groupButton.kind === "dim") return model.grouping?.retry ? void act({ type: "retry" }) : tips.toggle(anchor, "bar:group", dimGroup);
     if (groupButton.kind === "menu") {
       const ids = selection.drafts.map((one) => one.id);
-
       tips.hide();
       openMenu(
         [...selection.groups.map((one) => ({ label: one.name, run: () => act({ type: "add-to-group", ids, group: one.id }) })), { label: STATUS_BAR.newGroup, run: () => act({ type: "add-to-group", ids, group: null }) }],
@@ -384,9 +373,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
 
   const footer = (() => {
     if (step) return null;
-
     if (model.readOnly) return null;
-
     if (!kind || selection.documents === 0) return null;
     const label = runningLabel(ctx, kind, (kind === "approve" ? statusApproveLabel : kind === "publish" ? statusPublishLabel : statusSubmitLabel)(selection.documents, false, noun));
     const ids = selection.checked.map((one) => one.id);
@@ -453,7 +440,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
       const step = kind ?? checkables.get(id)?.kind;
       for (const one of [id, next.getAttribute("data-row-id") ?? ""]) if (checkables.get(one)?.kind === step) more.add(one);
       lastChecked.current = next.getAttribute("data-row-id");
-      setChecked(more);
+      if (!wait) setChecked(more);
     }
     (next.querySelector<HTMLElement>(".sp-check") ?? next.querySelector<HTMLElement>(".sp-name-link, .sp-name"))?.focus();
   };
@@ -468,7 +455,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     ) : null;
 
   const cardOnly = !!model.cardOnly;
-
   const quiet = !cardOnly && checked.size > 0;
   const card = layout.pinned ? <PinnedCard pinned={layout.pinned} ctx={ctx} quiet={quiet} hasMore={cardMenu.length > 0} onButton={onCardButton} onMore={onCardMore} /> : null;
   const failed = (
@@ -479,7 +465,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
       </button>
     </div>
   );
-
   const openCommentsOf = (ids: readonly string[]): number =>
     ids.reduce((sum, id) => sum + ((layout.pinned?.id === id ? layout.pinned.openComments : layout.entries.find((entry) => entry.item.id === id)?.item.openComments) ?? 0), 0);
 
@@ -519,7 +504,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
         ) : (
           <>
             {card}
-            { }
             {chips.length > 1 ? (
             <div className="sp-chip-row" role="group" aria-label={STATUS_TITLE}>
               {chips.map((one) => {
@@ -540,19 +524,17 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
             </div>
             ) : null}
             {model.readOnly && !layout.pinned ? <p className="sp-view-only">{STATUS_VIEW_ONLY}</p> : null}
-            { }
             {!model.readOnly && checkables.size > 0 && (stepChip || checked.size > 0) ? (
               <div className="sp-bar" data-testid="sp-bar">
                 <label
-                  className="sp-check-hit"
+                  className={cx("sp-check-hit", wait && "sp-check-wait")}
                   onClick={(event) => {
-
                     if (event.target !== allBox.current) event.preventDefault();
+                    if (wait) return;
                     setChecked(allChecked ? new Set() : new Set(ofStep));
                   }}
                 >
-                  <input ref={allBox} type="checkbox" className="sp-check" aria-label={STATUS_LABELS.selectAll} checked={allChecked} onChange={() => undefined} />
-                  { }
+                  <input ref={allBox} type="checkbox" className="sp-check" aria-label={STATUS_LABELS.selectAll} aria-disabled={wait ? "true" : undefined} checked={allChecked} onChange={() => undefined} />
                   <span className="sp-bar-count">{STATUS_SELECT_ALL}</span>
                 </label>
                 {groupButton ? (
@@ -567,7 +549,6 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
                       aria-disabled={buttonsOff(ctx) ? "true" : undefined}
                       aria-haspopup={groupButton.kind === "menu" ? "menu" : undefined}
                       data-sp-menu="bar"
-
                       {...tips.bind("bar:group", liveGroup)}
                       onClick={(event) => (buttonsOff(ctx) ? undefined : onGroupButton(event.currentTarget))}
                     >

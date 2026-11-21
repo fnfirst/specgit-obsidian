@@ -9,7 +9,6 @@ export interface RepoChoice {
   fullName: string;
   private: boolean;
   access: RepoAccess;
-
   ownerInstallationId: number | null;
   pushedAt: string | null;
 }
@@ -85,11 +84,9 @@ export function typedRepository(query: string): string | null {
 
 export function rowsFor(list: RepoList | null, query: string, onboard = false): Row[] {
   const typed = typedRepository(query);
-
   const words = (typed ?? query).toLowerCase().split(/\s+/).filter(Boolean);
   const repos = list?.kind === "ok" ? list.repos : [];
   const shown = repos.filter((repo) => words.every((word) => repo.fullName.toLowerCase().includes(word))).slice(0, MAX_ROWS);
-
   const rows: Row[] = [...(onboard && query.trim() === "" ? [{ kind: "onboard" as const }] : []), ...shown.map((repo): Row => ({ kind: "repo", repo }))];
   if (typed !== null && !repos.some((repo) => repo.fullName.toLowerCase() === typed.toLowerCase())) rows.push({ kind: "use", name: typed });
   if (list !== null && list.kind !== "ok" && list.kind !== "signed_out") rows.push({ kind: "retry" });

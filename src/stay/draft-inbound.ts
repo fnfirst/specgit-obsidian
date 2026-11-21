@@ -21,9 +21,7 @@ import type { StayPorts } from "./types";
 import { CHOICE_WORDS, DRAFT_SAID } from "./words";
 
 export const RECENT_MS = 5_000;
-
 export const ENDED_AFTER_MS = 60_000;
-
 export const UNLEVEL_ENDED_WAITS_MS = [10_000, 20_000, 40_000, 80_000, 120_000] as const;
 
 export const TRANSIT_MS = 2_000;
@@ -34,16 +32,12 @@ export interface DraftContext {
   ports: StayPorts;
   state: StayState;
   activity: Activity;
-
   current(): boolean;
 }
 
 export interface DraftPass {
-
   changed: number;
-
   more: boolean;
-
   wake: number | null;
 }
 
@@ -51,30 +45,18 @@ export class DraftInbound {
   private reads = 0;
   private cut = false;
   private wake: number | null = null;
-
   private readonly unlevel = new Map<string, { strikes: number; until: number }>();
   private looked: Looked | null = null;
-
   private readonly waiting = new Map<string, { until: number; strikes: number }>();
-
   private readonly endWaiting = new Map<string, { until: number; strikes: number }>();
-
   private readonly toldConflict = new Map<string, string>();
-
   private readonly noticed = new Set<string>();
-
   private readonly toldOffer = new Map<string, string>();
-
   private initial: Map<string, string> | null = null;
-
   private readonly initialOffered = new Set<string>();
-
   private offerNotice: NoticeHandle | null = null;
-
   private offerSaid = 0;
-
   private readonly attachmentsFor = new Map<string, string>();
-
   private readonly endedMemo = {
     get: (path: string): { sent: string; ended: Ended } | undefined => this.ctx.state.data.endedOwn?.[path],
     has: (path: string): boolean => this.ctx.state.data.endedOwn?.[path] !== undefined,
@@ -82,31 +64,21 @@ export class DraftInbound {
     delete: (path: string): void => void delete this.ctx.state.data.endedOwn?.[path],
     keys: (): string[] => Object.keys(this.ctx.state.data.endedOwn ?? {}),
   };
-
   pending(path: string): boolean {
     return this.endedMemo.has(path);
   }
-
   private ends = new Map<string, End | "unknown">();
-
   private endsAsked = new Set<string>();
-
   private texts = new Map<string, string>();
-
   private draftTexts = new Map<string, string>();
-
   private draftsDeferred = new Set<string>();
-
   private known: (sha: string) => string | undefined = () => undefined;
-
   private readonly awaiting = new Map<string, { sent: string; to: string | null; agreed: string }>();
-
   private readonly deciding = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private readonly abort = new AbortController();
 
   private readonly renames: DraftRenames;
-
   private readonly deletes: DraftDeletes;
 
   constructor(private readonly ctx: DraftContext) {
@@ -137,7 +109,6 @@ export class DraftInbound {
     if (blob !== null) this.toldConflict.set(path, blob);
     if (this.noticed.has(path)) return;
     this.noticed.add(path);
-
     if (!this.ctx.ports.aware()) {
       this.ctx.ports.notify(DRAFT_SAID.conflict(noteName(path)), { label: DRAFT_SAID.chooseButton, run: () => this.settleNow(path), lasting: true });
       return;
@@ -168,13 +139,11 @@ export class DraftInbound {
     this.cut = false;
     this.wake = null;
     if (!looked.drafts) return { changed: 0, wake: null };
-
     if (draft && !looked.files.has(path) && this.renames.mayBeRename(looked, looked.drafts.byPath, path, draft) && this.renames.holding(path)) {
       this.ctx.ports.lookAgain();
       return { changed: 0, wake: null };
     }
     this.forgetReads();
-
     const moved = draft ? { ...draft, blob: "" } : null;
     const changed = ((await this.one(looked, path, moved, looked.drafts.level)) ? 1 : 0) + (await this.deletes.flush());
     this.deletes.tellKept();
@@ -222,9 +191,7 @@ export class DraftInbound {
     this.reads = 0;
     this.cut = false;
     this.wake = null;
-
     let changed = this.keepAwaiting(looked);
-
     if (!drafts) return { changed, more: false, wake: null };
     this.noteInitial(looked, drafts);
     await this.backfill(looked);
@@ -235,11 +202,9 @@ export class DraftInbound {
     const paths = new Set<string>([...drafts.byPath.keys(), ...this.endedMemo.keys(), ...[...looked.files].filter(([, entry]) => entry.sent !== undefined).map(([path]) => path)]);
     await this.readEnds(looked, paths, drafts);
     await this.readDrafts(looked, paths, drafts);
-
     for (const path of [...this.unlevel.keys()]) if (!paths.has(path)) this.unlevel.delete(path);
     for (const path of paths) {
       if (!this.ctx.current()) break;
-
       if (renamed.paths.has(path)) continue;
       if (await this.one(looked, path, drafts.byPath.get(path) ?? null, drafts.level)) changed++;
     }
@@ -332,7 +297,6 @@ export class DraftInbound {
       if (end === undefined) this.endsAsked.add(path);
       else this.ends.set(path, end);
     }
-
     if (!ports.blobTexts) return;
     const wanted: Array<{ doc: DocumentRef; sha: string }> = [];
     const seen = new Set<string>();
@@ -351,7 +315,6 @@ export class DraftInbound {
     const { ports } = this.ctx;
     this.draftTexts = new Map();
     this.draftsDeferred = new Set();
-
     if (!ports.draftTexts || !drafts.level) return;
     const asked: Array<{ doc: DocumentRef; sha: string }> = [];
     const seen = new Set<string>();
@@ -360,11 +323,9 @@ export class DraftInbound {
       const doc = ports.documentFor(path);
       if (!draft || !draft.blob || !doc || (ports.inGroup(path) && draft.inGroup !== true) || seen.has(draft.blob) || !this.ready(path, false)) continue;
       const entry = looked.files.get(path);
-
       if (entry?.sent !== undefined && !(drafts.asOf !== undefined && drafts.asOf > (entry.sentAt ?? 0) + TRANSIT_MS)) continue;
       const kind = draftCase({ file: this.facts(looked, path), draft, login: ports.login(), policy: this.policyFor(path, draft), leftAlone: null, ended: null }).kind;
       if (kind !== "take" && kind !== "create" && kind !== "merge") continue;
-
       if (asked.length >= TEXTS_PER_PASS) {
         this.draftsDeferred.add(path);
         continue;
@@ -389,7 +350,6 @@ export class DraftInbound {
   private ready(path: string, spend = true, pairing = false): boolean {
     const waited = this.waiting.get(path);
     if (waited && this.ctx.ports.now() < waited.until) return false;
-
     const endWaited = pairing ? undefined : this.endWaiting.get(path);
     if (endWaited && this.ctx.ports.now() < endWaited.until) return false;
     if (spend && this.reads >= READS_PER_PASS) {
@@ -419,17 +379,14 @@ export class DraftInbound {
   private async one(looked: Looked, path: string, draft: Draft | null, level: boolean): Promise<boolean> {
     const { ports } = this.ctx;
     const doc = ports.documentFor(path);
-
     if (!doc || (ports.inGroup(path) && draft?.inGroup !== true)) {
       this.unlevel.delete(path);
       return false;
     }
-
     const same = looked.files.get(path);
     if (draft && draft.blob !== null && same !== undefined && same.sha === draft.blob && !(same.sent === draft.blob && agreedOf(same) === same.sha && same.sentTo === (draftKey(draft) ?? undefined)) && follows(draft, ports.login(), same.sentTo, this.policyFor(path, draft)) && (await this.leftAlone(looked, path)) === null) {
       const to = draftKey(draft);
       ports.agreed(path, { sent: draft.blob, to, agreed: same.sha });
-
       Object.assign(same, { sent: draft.blob, agreed: same.sha, ...(to === null ? {} : { sentTo: to }) });
       this.settled(path);
       this.clearConflict(path);
@@ -442,12 +399,10 @@ export class DraftInbound {
     let answer: Case = draftCase(input);
     let ended: Ended | null = memo?.ended ?? null;
     const entry = looked.files.get(path);
-
     if (draft || entry?.sent === undefined || level || memo || (answer.kind !== "none" && answer.kind !== "wait")) this.unlevel.delete(path);
     else {
       const now = ports.now();
       let known = this.unlevel.get(path);
-
       if (!known || (now >= known.until && known.strikes < UNLEVEL_ENDED_WAITS_MS.length)) {
         const strikes = known ? known.strikes : 0;
         known = { strikes: strikes + 1, until: now + UNLEVEL_ENDED_WAITS_MS[strikes]! };
@@ -455,7 +410,6 @@ export class DraftInbound {
       }
       if (now < known.until) this.wake = Math.min(this.wake ?? Number.POSITIVE_INFINITY, known.until - now + 50);
     }
-
     if (!draft && entry?.sent !== undefined && level && !memo && ports.now() - (entry.sentAt ?? 0) <= ENDED_AFTER_MS && (answer.kind === "none" || answer.kind === "wait")) {
       this.wake = Math.min(this.wake ?? Number.POSITIVE_INFINITY, ENDED_AFTER_MS - (ports.now() - (entry.sentAt ?? 0)) + 50);
     }
@@ -469,26 +423,20 @@ export class DraftInbound {
         this.waitEnd(path);
         return false;
       }
-
       if (end === "closed" || end === "closedUnnamed") return this.keepClosed(looked, path, end === "closedUnnamed");
       ended = end === "published" ? "published" : "discarded";
       answer = draftCase({ ...input, ended });
-
       if (answer.kind === "end-own" && entry?.sent !== undefined) {
         this.endedMemo.set(path, { sent: entry.sent, ended });
         ports.agreed(path, null);
       }
     }
-
     const alone = draft && answer.kind === "settled" ? await this.leftAlone(looked, path) : null;
     if (draft && answer.kind === "settled" && (alone === null || alone === "live")) await this.attachments(path, doc, draft, alone === null);
-
     if (answer.kind === "settled" || answer.kind === "send" || answer.kind === "none") this.clearConflict(path);
     if (!["offer", "take", "create", "merge", "settle", "restore", "end-own"].includes(answer.kind)) return false;
-
     if (answer.kind === "end-own" && input.file.publishedMoved) return false;
     if ((await this.leftAlone(looked, path)) !== null || !this.ctx.current()) return false;
-
     if (answer.kind === "offer") return this.offer(path, looked.drafts?.byPath.get(path) ?? draft);
     const batched = (["settle", "restore", "end-own"].includes(answer.kind) && this.mainOf(path) !== null) || (draft !== null && ["take", "create", "merge"].includes(answer.kind) && this.draftOf(draft) !== null);
     if (this.draftsDeferred.has(path) && ["take", "create", "merge"].includes(answer.kind)) {
@@ -514,7 +462,6 @@ export class DraftInbound {
           return await this.end(path, doc, looked, answer.kind as "settle" | "restore" | "end-own", ended === "discarded");
       }
     } catch {
-
       this.ctx.activity.notWritten(path);
       ports.diagnose("a draft could not be brought into a note");
       this.wait(path);
@@ -540,7 +487,6 @@ export class DraftInbound {
   private tellClosed(): void {
     if (this.closedNow.length === 0) return;
     const closed = this.closedNow.splice(0);
-
     this.ctx.ports.notify(DRAFT_SAID.closedElsewhere(closed.map((one) => one.name), closed.some((one) => one.unnamed) ? "unknown" : "someone else"), { label: DRAFT_SAID.closedElsewhereButton, run: () => this.ctx.ports.openStatus?.(), lasting: true });
   }
 
@@ -601,7 +547,6 @@ export class DraftInbound {
       this.offerNotice = null;
       return;
     }
-
     const aware = this.ctx.ports.aware();
     const words = aware ? DRAFT_SAID.offerTogether(count) : DRAFT_SAID.offerTogetherPlain(count);
     if (this.offerNotice?.shown()) {
@@ -609,13 +554,11 @@ export class DraftInbound {
       this.offerSaid = count;
       return;
     }
-
     if (this.offerNotice && count <= this.offerSaid) {
       this.offerSaid = count;
       return;
     }
     this.offerSaid = count;
-
     if (count <= (this.ctx.state.data.offerTold ?? 0)) return;
     this.ctx.state.data.offerTold = count;
     const action = aware ? { label: DRAFT_SAID.offerTogetherButton, run: () => this.ctx.ports.openStatus?.(), lasting: true } : { label: DRAFT_SAID.offerTogetherPlainButton, run: () => this.addAllOffered(), lasting: true };
@@ -643,7 +586,6 @@ export class DraftInbound {
   }
 
   addAllOffered(): void {
-
     if (this.ctx.ports.policy() !== "everyone") {
       for (const path of [...this.initialOffered]) this.settleNow(path);
       return;
@@ -679,11 +621,9 @@ export class DraftInbound {
     const mine = await ports.vault.read(path);
     if (mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
     let text = mine;
-
     if (toLf(mine) !== toLf(there.text)) {
       text = withEol(toLf(there.text), eolOf(mine));
       activity.ownWrite(path);
-
       const written = await ports.vault.process(path, (current) => (current === mine ? text : null));
       if (written !== "written") {
         activity.notWritten(path);
@@ -691,7 +631,6 @@ export class DraftInbound {
         return false;
       }
     }
-
     ports.agreed(path, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(text) });
     this.settled(path);
     this.clearConflict(path);
@@ -714,7 +653,6 @@ export class DraftInbound {
       this.wait(path);
       return false;
     }
-
     state.data.committed.push(changeKey({ kind: "new", path }));
     this.awaiting.set(path, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(there.text) });
     this.settled(path);
@@ -735,7 +673,6 @@ export class DraftInbound {
     }
     const mine = await ports.vault.read(path);
     if (mine === null) return false;
-
     const base = await ports.blobText(doc, entry.sent!);
     if (base === null) {
       this.wait(path);
@@ -759,9 +696,7 @@ export class DraftInbound {
       this.wait(path);
       return false;
     }
-
     if (main.kind === "absent") {
-
       if (this.renames.moving(looked, path, entry.sha)) {
         this.wait(path);
         return false;
@@ -777,7 +712,6 @@ export class DraftInbound {
       const base = await ports.blobText(doc, this.endedMemo.get(path)?.sent ?? entry.sent!);
       const joined = reconcile({ editor: toLf(mine), room: toLf(main.text), base: base === null ? null : toLf(base), baseIsGit: false, emptied: false, git: main.text, readOnly: false }, new Budget(400));
       if (joined.kind === "review") {
-
         if (!choose) {
           this.tellConflict(path, `ended|${main.sha}`);
           return false;
@@ -801,13 +735,11 @@ export class DraftInbound {
         return false;
       }
     }
-
     ports.recordBase(path, doc, toLf(main.text), main.text);
     ports.rebase(path, main.sha);
     if (state.data.seen) state.data.seen[path] = main.sha;
     ports.agreed(path, null);
     this.endedMemo.delete(path);
-
     if (kind === "end-own" && discarded) {
       (state.data.editsHeld ??= {})[path] = gitBlobShaOfText(same ? mine : text);
       (state.data.heldWhy ??= {})[path] = "ended";
@@ -819,7 +751,6 @@ export class DraftInbound {
   }
 
   private settleNow(path: string): void {
-
     this.dropOffer(path);
     const looked = this.looked;
     if (!looked || !this.ctx.current() || this.deciding.has(path)) return;
@@ -827,7 +758,6 @@ export class DraftInbound {
     const doc = this.ctx.ports.documentFor(path);
     if (!doc) return;
     if (!draft) {
-
       if (looked.files.get(path)?.sent === undefined && !this.endedMemo.has(path)) return;
       this.deciding.add(path);
       this.queue = this.queue.then(async () => {
@@ -853,7 +783,6 @@ export class DraftInbound {
         const entry = looked.files.get(path);
         const base = entry?.sent !== undefined ? await ports.blobText(doc, entry.sent) : null;
         const joined = reconcile({ editor: toLf(mine), room: toLf(there.text), base: base === null ? null : toLf(base), baseIsGit: false, emptied: false, git: there.text, readOnly: false }, new Budget(400));
-
         const clean = entry !== undefined && gitBlobShaOfText(mine) === entry.sha && isClean({ sha: entry.sha, ...(agreedOf(entry) !== undefined ? { agreed: agreedOf(entry)! } : {}), unchanged: unchangedHere(entry) });
         let chosen: string | null;
         if (clean) chosen = there.text;
@@ -863,7 +792,6 @@ export class DraftInbound {
           const request: ReviewRequest = { name: noteName(path), regions: joined.regions, fromBase: joined.fromBase, other, settle: () => null, signal: this.abort.signal };
           chosen = await ports.chooseWhatToKeep(request);
         } else return;
-
         if (chosen === null || !this.ctx.current()) return;
         const text = withEol(toLf(chosen), eolOf(mine));
         if (text !== mine) {

@@ -11,7 +11,6 @@ export interface TokenSourceOptions {
   version: string;
   auth: Bearer;
   transport: Transport;
-
   pendingSteps?: (doc: DocumentRef) => readonly AskedStep[];
 }
 
@@ -23,7 +22,6 @@ export class RoomTokenError extends AuthError {
     message: string,
     status: number,
     readonly reason: string | null,
-
     readonly deletedAt?: number,
   ) {
     super(code, message, status);
@@ -52,7 +50,6 @@ interface Answer {
 
 export class SpecgitTokenSource implements TokenSource {
   private readonly server: string;
-
   private readonly joinedAt = new Map<string, number>();
 
   constructor(private readonly options: TokenSourceOptions) {
@@ -69,9 +66,7 @@ export class SpecgitTokenSource implements TokenSource {
     const key = SpecgitTokenSource.keyOf(doc);
 
     const joinedAt = this.joinedAt.get(key);
-
     const asked = (this.options.pendingSteps?.(doc) ?? []).slice(-MOST_STEPS).map(({ id, sent }) => ({ id, sent }));
-
     const session = joinedAt !== undefined && asked.length > 0 && options.session ? { session: options.session } : {};
     const body = { provider: GIT_PROVIDER, owner, repo, branch: NOTE_BRANCH, path: doc.path, ...(joinedAt === undefined ? {} : { joinedAt }), ...(asked.length === 0 ? {} : { steps: asked.map((step) => step.id) }), ...session };
     const answer = await withBearer(this.options.auth, (token) => this.ask(token, body));
@@ -90,11 +85,9 @@ export class SpecgitTokenSource implements TokenSource {
     if (answer.status !== 200) throw this.failure(answer);
     const said = answer.body?.bridge;
     const waitS = typeof said === "object" && said !== null ? (said as { waitSeconds?: unknown }).waitSeconds : undefined;
-
     const old = typeof answer.body?.token === "string";
     const seconds = typeof waitS === "number" && waitS > 0 ? waitS : 0;
     const wait = old ? Math.max(seconds, OLD_SERVER_WAIT_S) : seconds;
-
     const failed = answer.body !== null && "steps" in answer.body && answer.body.steps === null;
     return { ...(asked.length === 0 ? {} : { steps: { asked, said: stepsOf(answer.body?.steps), ...(failed ? { failed: true as const } : {}) } }), ...(wait > 0 ? { bridgeWaitSeconds: wait } : {}) };
   }
@@ -121,7 +114,6 @@ export class SpecgitTokenSource implements TokenSource {
     return {
       status: response.status,
       body: parsed,
-
       reason: typeof error?.code === "string" ? error.code : typeof parsed?.code === "string" ? parsed.code : null,
       message: typeof error?.message === "string" ? error.message : null,
     };
@@ -132,19 +124,15 @@ export class SpecgitTokenSource implements TokenSource {
     if (typeof url !== "string" || typeof room !== "string" || typeof token !== "string") {
       throw new RoomTokenError("unexpected", "This version of specgit is out of date. Update it in Community plugins.", 200, null);
     }
-
     if (typeof joinedAt === "number") this.joinedAt.set(key, joinedAt);
-
     const failed = body !== null && "steps" in body && steps === null;
     return { url, room, token, ...(readOnly === true ? { readOnly: true } : {}), ...(asked.length === 0 ? {} : { steps: { asked, said: stepsOf(steps), ...(failed ? { failed: true as const } : {}) } }) };
   }
 
   private failure(answer: Answer): RoomTokenError {
-
     if (answer.reason === PLUGIN_OUTDATED_CODE) {
       return new RoomTokenError("plugin_outdated", answer.message ?? "This version of specgit is out of date. Update it in Community plugins.", answer.status, answer.reason);
     }
-
     if (answer.reason === DOCUMENT_DELETED_CODE) {
       const at = answer.body?.deletedAt;
       return new RoomTokenError("document_deleted", DELETED_WORDS.title, answer.status, answer.reason, typeof at === "number" && Number.isFinite(at) ? at : undefined);

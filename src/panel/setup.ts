@@ -6,7 +6,6 @@ import { PANEL_TYPE, PanelView } from "./view";
 
 export interface PanelHandle {
   model: PanelModel;
-
   reveal(tab?: TabId): Promise<void>;
 }
 
@@ -18,7 +17,6 @@ export function setUpPanel(plugin: Plugin, deps: PanelDeps, actions: PanelAction
   plugin.registerView(PANEL_TYPE, (leaf) => new PanelView(leaf, model, actions, comments));
 
   const show = async (): Promise<void> => {
-
     const [first, ...extra] = workspace.getLeavesOfType(PANEL_TYPE);
     for (const one of extra) one.detach();
     let leaf = first;

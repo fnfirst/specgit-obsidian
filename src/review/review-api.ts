@@ -47,17 +47,12 @@ export const reviewIsOpen = (status: ReviewStatus): boolean => {
   return state !== "merged" && state !== "closed" && (status.reviewBranch !== null || status.pr !== null);
 };
 
-export type GroupsRead = ({ kind: "groups";   overviews: Record<string, GroupOverview>; base: string; locked: boolean } | { kind: "off" } | { kind: "unknown" }) & {
-
+export type GroupsRead = ({ kind: "groups";  overviews: Record<string, GroupOverview>; base: string; locked: boolean } | { kind: "off" } | { kind: "unknown" }) & {
   paths?: InFlightMap;
   stale?: true;
-
   asOf?: number;
-
   saves?: SavesTo;
-
   canPush?: boolean;
-
   publishQuota?: PublishQuota;
 };
 
@@ -68,13 +63,10 @@ const isOverview = (value: unknown): value is GroupOverview => {
   const group = value as Partial<GroupOverview> | null;
   return typeof group === "object" && group !== null && typeof group.id === "string" && typeof group.name === "string" && typeof group.prNumber === "number" && strings(group.paths) && strings(group.holdPaths);
 };
-
 export const isLostAnswerResult = (result: StepResult): boolean => !result.ok && result.status === 0 && result.code === "network";
 
 export const MAIN_MOVED = "main_moved";
-
 export const ROOM_BEHIND = "room_behind";
-
 export const deletedAtOf = (result: StepResult): number | null => {
   if (result.ok || result.status !== 410 || result.code !== DOCUMENT_DELETED_CODE) return null;
   const at = result.body?.deletedAt ?? (typeof result.body?.error === "object" && result.body.error !== null ? (result.body.error as { deletedAt?: unknown }).deletedAt : undefined);
@@ -176,12 +168,12 @@ export class ReviewApi {
     }
   }
 
-  group(repo: string, action: GroupAction, body: { id?: string; paths?: readonly string[]; name?: string; resolve?: "mine" | "theirs";   unsent?: readonly { path: string; sha: string }[]; dryRun?: boolean; upload?: { uploadId: string; last: boolean; files: readonly BurstFile[]; attachments?: readonly { filePath: string; sha: string; size: number; base64?: string }[] } }): Promise<StepResult> {
+  group(repo: string, action: GroupAction, body: { id?: string; paths?: readonly string[]; name?: string; resolve?: "mine" | "theirs";  unsent?: readonly { path: string; sha: string }[]; dryRun?: boolean; upload?: { uploadId: string; last: boolean; files: readonly BurstFile[]; attachments?: readonly { filePath: string; sha: string; size: number; base64?: string }[] } }): Promise<StepResult> {
     const named = splitRepo(repo);
     return this.sendRaw("/api/docs/group", named && { provider: GIT_PROVIDER, ...named, branch: NOTE_BRANCH, action, ...body });
   }
 
-  save(doc: DocumentRef, source: string, expectMain?: string | null, options: {   attachments?: readonly { filePath: string; sha: string; size: number; base64?: string; expectSha?: string | null }[];   attachmentsKeepGoing?: true; toExistingReview?: boolean;   afresh?: boolean; expectBranch?: string;   hasReview?: boolean;   createOver?: number } = {}): Promise<StepResult> {
+  save(doc: DocumentRef, source: string, expectMain?: string | null, options: {  attachments?: readonly { filePath: string; sha: string; size: number; base64?: string; expectSha?: string | null }[];  attachmentsKeepGoing?: true; toExistingReview?: boolean;  afresh?: boolean; expectBranch?: string;  hasReview?: boolean;  createOver?: number } = {}): Promise<StepResult> {
     return this.send("/api/docs/save", doc, { source, ...claim(expectMain), ...(options.toExistingReview ? { toExistingReview: true } : {}), ...(options.afresh ? { afresh: true } : {}), ...(options.expectBranch === undefined ? {} : { expectBranch: options.expectBranch }), ...(options.attachments && options.attachments.length > 0 ? { attachments: options.attachments } : {}), ...(options.attachmentsKeepGoing ? { attachmentsKeepGoing: true } : {}), ...(options.createOver === undefined ? {} : { createOver: options.createOver }) });
   }
 
@@ -278,7 +270,6 @@ export class ReviewApi {
     try {
       const answer = await this.api.call("POST", path, { body });
       const answered = answer.status >= 200 && answer.status < 300;
-
       if (answered && !answer.body) return { ok: false, status: 0, code: "network", message: NETWORK_MESSAGE, body: null };
       return answered && answer.body ? { ok: true, body: answer.body } : failed(answer, fallback);
     } catch {

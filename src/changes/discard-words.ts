@@ -26,23 +26,14 @@ export function nothingToDiscard(phase: ChangesPhase): { title: string; descript
 }
 
 export interface DiscardCounts {
-
   edited: number;
-
   renamed: number;
-
   added: number;
-
   deleted: number;
-
   reviews: number;
-
   grouped: number;
-
   roomed: number;
-
   others: number;
-
   roomedNew: number;
 }
 
@@ -101,7 +92,6 @@ function restOfMany(counts: DiscardCounts, world: DiscardWorld): Point[] {
 
 function peopleLine(counts: DiscardCounts, one: boolean): string {
   const what = one ? "this note" : counts.roomed === 1 ? "1 of these notes" : `${counts.roomed} of these notes`;
-
   if (counts.roomedNew === counts.roomed) {
     const lose = counts.roomed === 1 ? "it" : "them";
     if (counts.others > 0) return `${plural(counts.others, "other person is", "other people are")} editing ${what} right now, and will lose ${lose} too`;
@@ -140,7 +130,6 @@ export interface Skipped {
   why: SkipReason;
   pr?: number;
   elsewhere?: boolean;
-
   grouped?: boolean;
 }
 
@@ -160,7 +149,6 @@ export function discardedWords(result: DiscardResult, world: DiscardWorld): { ti
   if (result.reviewsClosed > 0) done.push(`${plural(result.reviewsClosed, "review was", "reviews were")} closed`);
   const description = done.length ? `${listed(done)}.` : "";
   const did = result.restored + result.trashed + result.broughtBack > 0;
-
   const unchanged = result.skipped.some((one) => !replaced(one.why));
   const title = !unchanged ? "Discarded your changes" : did ? "Discarded some of your changes" : "Nothing was discarded";
   return { title, description, points: result.skipped.map((one) => ({ icon: replaced(one.why) ? ICON.review : ICON.left, text: sentence(one) })) };
@@ -174,7 +162,6 @@ const replaced = (why: SkipReason): boolean => why === "review" || why === "revi
 
 function sentence(one: Skipped): string {
   const { why, next } = SKIPPED[one.why];
-
   if (one.why === "reviewChanged") return `${one.name}: ${why}.`;
   if (one.why === "keptTyping") return `${one.name} was replaced with the version in GitHub. ${next}`;
   if (replaced(one.why) && one.grouped) {

@@ -13,9 +13,7 @@ export interface CommentRange {
 }
 
 export interface RenderedSources {
-
   peers(view: EditorView): readonly PeerCaret[];
-
   comments(state: EditorState): readonly CommentRange[];
   commentsChanged(update: ViewUpdate): boolean;
 }
@@ -27,10 +25,8 @@ export interface Cover {
 }
 
 const EDGE = 12;
-
 const GAP = 8;
 const STEP = 4;
-
 const FLIP = 200;
 
 const isWidgetBlock = (block: BlockInfo): boolean => block.type === BlockType.WidgetRange;
@@ -38,7 +34,6 @@ const isWidgetBlock = (block: BlockInfo): boolean => block.type === BlockType.Wi
 export function coverAt(view: EditorView, pos: number): Cover | null {
   const block = view.lineBlockAt(pos);
   if (isWidgetBlock(block)) return { kind: "block", from: block.from, to: block.to };
-
   let found: Cover | null = null;
   for (const source of view.state.facet(EditorView.decorations)) {
     const set = typeof source === "function" ? source(view) : source;
@@ -111,15 +106,12 @@ interface Drawn {
 }
 
 export class CoverMarker implements LayerMarker {
-
   constructor(
     readonly peer: PeerCaret,
     readonly cover: Cover,
     readonly box: Box,
     readonly step: number,
-
     readonly width: number,
-
     private readonly drawn: Map<number, Drawn> = new Map<number, Drawn>(),
   ) {}
 
@@ -141,7 +133,6 @@ export class CoverMarker implements LayerMarker {
   }
 
   update(dom: HTMLElement, old: LayerMarker): boolean {
-
     if (!(old instanceof CoverMarker) || old.peer.id !== this.peer.id || old.cover.kind !== this.cover.kind || !sameFields(old.peer, this.peer)) return false;
     this.keep(dom);
     return true;
@@ -158,12 +149,10 @@ export class CoverMarker implements LayerMarker {
     const caret = wrapper.querySelector<HTMLElement>(".specgit-caret");
     if (!caret) return;
     if (this.cover.kind === "block") {
-
       const out = this.box.left - GAP - this.step * STEP;
       const bar = out >= EDGE ? out : EDGE + this.step * STEP;
       caret.setCssProps({ left: px(bar - this.box.left) });
     } else {
-
       caret.style.removeProperty("left");
       caret.toggleClass("is-flipped", this.box.left > this.width - FLIP);
     }
@@ -175,7 +164,6 @@ export class TintMarker implements LayerMarker {
     readonly kind: "selection" | "comment",
     readonly block: { from: number; to: number },
     readonly box: Box,
-
     readonly look: string,
   ) {}
 
@@ -336,7 +324,6 @@ export function renderedMarkers(view: EditorView, sources: RenderedSources): Lay
     carets.push(new CoverMarker(peer, cover, box, step, width, drawn));
     covered.add(peer.id);
   }
-
   drawn.forEach((_, id) => covered.has(id) || drawn.delete(id));
   watchers.get(view)?.follow(seen);
   return [...spans, ...tints, ...carets];
@@ -382,7 +369,6 @@ export function renderedLayer(sources: RenderedSources) {
   return layer({
     above: true,
     class: "specgit-rendered-layer",
-
     update: (update) => update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged || update.transactions.some((transaction) => transaction.effects.some((effect) => effect.is(redrawCarets) || effect.is(redrawRendered))) || sources.commentsChanged(update),
     markers: (view) => renderedMarkers(view, sources),
     mount: (_, view) => void watchers.set(view, new Watch(view)),

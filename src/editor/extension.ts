@@ -19,19 +19,15 @@ export function liveEditor(services: EditorServices): Extension {
     readerField,
     deletedField,
     phaseField,
-
     Platform.isMobile ? phaseBadge : [],
     Prec.highest([
-
       keymap.of([
         { key: "Mod-z", run: (view) => history(view)?.undo(view) ?? false },
         { key: "Mod-Shift-z", run: (view) => history(view)?.redo(view) ?? false },
         { key: "Mod-y", run: (view) => history(view)?.redo(view) ?? false },
       ]),
-
       EditorView.domEventHandlers({
         beforeinput: (event, view) => {
-
           if (event.inputType.startsWith("insert")) view.plugin(plugin)?.tryTyping();
           const undo = event.inputType === "historyUndo";
           if (!undo && event.inputType !== "historyRedo") return false;
@@ -43,7 +39,6 @@ export function liveEditor(services: EditorServices): Extension {
       }),
     ]),
     plugin,
-
     renderedLayer({ peers: (view) => view.plugin(plugin)?.peers() ?? [], comments: markedRanges, commentsChanged: marksChanged }),
   ];
 }

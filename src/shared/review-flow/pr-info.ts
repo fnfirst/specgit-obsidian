@@ -2,11 +2,8 @@ export type PrReviewDecision = "approved" | "changes_requested" | "review_requir
 
 export interface PrReviewPolicy {
   reviewDecision: PrReviewDecision | null;
-
   approvals: number;
-
   requiredApprovals: number | null;
-
   requiresCodeOwnerReview: boolean;
 }
 
@@ -20,9 +17,7 @@ export interface GroupLabel {
 }
 
 export interface PrInfo {
-
   closedBy?: string | null;
-
   viewerWrote?: boolean | "unknown";
   number: number;
   url: string;
@@ -31,14 +26,9 @@ export interface PrInfo {
   baseRef?: string;
   mergeable?: boolean | null;
   mergeableState?: PrMergeableState | null;
-
   reviewPolicy?: PrReviewPolicy | null;
-
   authorLogin?: string | null;
-
   autoMergeEnabled?: boolean;
-
   requestedReviewers?: string[];
-
   group?: GroupLabel;
 }

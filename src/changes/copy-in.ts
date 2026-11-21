@@ -1,7 +1,7 @@
 import type { BlobsAnswer, AttachmentFile, MainFile } from "../auth/git-copy";
 import { type DocumentRef, isHiddenPath, noteName } from "../mapping";
 import { gitBlobSha, gitBlobShaOfText } from "./blob-sha";
-import { attachmentLinks, attachmentTarget } from "./attachment-links";
+import { attachmentTarget, fileAttachmentLinks } from "./attachment-links";
 import { type LeftOut, leftOutKinds, leftOutTotal } from "./left-out";
 import { leftOutWords } from "../pick/words";
 
@@ -12,78 +12,48 @@ export interface CopyInFile {
 }
 
 export interface CopyInOptions {
-
   commit?: string | null;
-
   others?: readonly string[];
-
   attachments?: ReadonlyMap<string, string>;
-
   top?: string;
 }
 
 export interface CopyInPorts {
-
   gitFile(doc: DocumentRef, at?: string | null): Promise<MainFile>;
-
   gitBlobs?(repo: string, commit: string, files: ReadonlyArray<{ sha: string; path: string }>): Promise<BlobsAnswer>;
-
   gitAttachment?(repo: string, at: string | null, path: string): Promise<AttachmentFile>;
-
   create(path: string, text: string): Promise<"created" | "exists" | "failed">;
-
   agreed?(repoPath: string, sha: string): void;
-
   createBinary?(path: string, bytes: ArrayBuffer): Promise<"created" | "exists" | "failed">;
-
   recordBase?(file: CopyInFile, text: string, sha: string): void;
-
   checkpoint?(): void;
-
   vaultPaths(): Iterable<string>;
-
   notWritten(path: string): void;
-
   during<T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T>;
-
   blockedFor(): number;
   pause(ms: number): Promise<void>;
   clock(): number;
-
   current(): boolean;
   progress(done: number, total: number): void;
 }
 
 export interface CopyInResult {
   created: number;
-
   attachments: number;
-
   existed: number;
-
   gone: number;
-
   left: number;
-
   unreadable: string[];
-
   skipped: string[];
-
   leftOut: LeftOut;
-
   stopped: "slow" | "unreadable" | "unloaded" | null;
 }
 
 export const COPY_AT_ONCE = 4;
-
 export const FILES_PER_BATCH = 50;
-
 export const BATCHES_AT_ONCE = 2;
-
 export const COPY_SLICE_MS = 12;
-
 export const PROGRESS_EVERY_MS = 250;
-
 export const CHECKPOINT_EVERY_MS = 5_000;
 
 export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], skipped: readonly string[] = [], options: CopyInOptions = {}): Promise<CopyInResult> {
@@ -93,14 +63,12 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
   let done = 0;
   let told = Number.NEGATIVE_INFINITY;
   let savedAt = ports.clock();
-
   const checkpoint = (final = false): void => {
     if (!final && ports.clock() - savedAt < CHECKPOINT_EVERY_MS) return;
     ports.checkpoint?.();
     savedAt = ports.clock();
   };
   let sliceStart = ports.clock();
-
   const shown: Array<{ note: string; links: string[] }> = [];
   const wantAttachments = (options.attachments?.size ?? 0) > 0 && ports.gitAttachment !== undefined && ports.createBinary !== undefined;
   const tell = (final = false): void => {
@@ -114,7 +82,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
       sliceStart = ports.clock();
     }
   };
-
   const mayGoOn = (): boolean => {
     if (result.stopped !== null) return false;
     if (!ports.current()) {
@@ -127,11 +94,9 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
     }
     return true;
   };
-
   const land = async (file: CopyInFile, key: string, main: MainFile): Promise<"done" | "skip" | "unloaded"> => {
     if (main.kind === "unreadable") {
       there.delete(key);
-
       if (main.outage) result.stopped = "unreadable";
       else result.unreadable.push(file.path);
       return "skip";
@@ -150,7 +115,10 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
     if (made === "created") {
       result.created++;
       ports.recordBase?.(file, main.text, main.sha);
-      if (wantAttachments) shown.push({ note: file.path, links: attachmentLinks(main.text) });
+      if (wantAttachments) {
+        const links = fileAttachmentLinks(file.path, main.text);
+        if (links.length > 0) shown.push({ note: file.path, links });
+      }
     } else {
       ports.notWritten(file.path);
       if (made === "exists") result.existed++;
@@ -161,11 +129,9 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
     }
     return "done";
   };
-
   const pending: CopyInFile[] = [];
   for (const file of files) {
     if (isHiddenPath(file.path)) {
-
       done++;
     } else if (there.has(file.path.toLowerCase())) {
       result.existed++;
@@ -173,7 +139,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
     } else pending.push(file);
   }
   tell();
-
   const alone: CopyInFile[] = [];
   const batchable = commit !== null && ports.gitBlobs !== undefined ? pending.filter((file) => file.sha) : [];
   const batched = new Set(batchable);
@@ -183,7 +148,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
     for (let i = 0; i < batchable.length; i += FILES_PER_BATCH) batches.push(batchable.slice(i, i + FILES_PER_BATCH));
     let nextBatch = 0;
     let routeMissing = false;
-
     let batchOutages = 0;
     const runBatches = async (): Promise<void> => {
       while (mayGoOn()) {
@@ -193,7 +157,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
           alone.push(...batch);
           continue;
         }
-
         const taken: Array<{ file: CopyInFile; key: string }> = [];
         for (const file of batch) {
           const key = file.path.toLowerCase();
@@ -208,7 +171,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
         if (taken.length === 0) continue;
         const answer = await ports.gitBlobs!(taken[0]!.file.doc.repo, commit!, taken.map(({ file }) => ({ sha: file.sha!, path: file.doc.path })));
         if (answer.kind === "outage") {
-
           for (const { key } of taken) there.delete(key);
           if (++batchOutages > 1) {
             result.stopped = "unreadable";
@@ -228,7 +190,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
         for (const { file, key } of taken) {
           const read = answer.files.get(file.sha!);
           if (read?.kind !== "text") {
-
             there.delete(key);
             alone.push(file);
             continue;
@@ -254,7 +215,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
         result.existed++;
         done++;
       } else {
-
         there.add(key);
         const landed = await land(file, key, await ports.gitFile(file.doc, commit));
         if (landed === "unloaded") return;
@@ -267,7 +227,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
     }
   };
   if (result.stopped === null) await Promise.all(Array.from({ length: Math.min(COPY_AT_ONCE, alone.length) }, work));
-
   const copiedAttachments = new Set<string>();
   if (wantAttachments && result.stopped === null && shown.length > 0) {
     const attachments = options.attachments!;
@@ -293,7 +252,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
         const read = await ports.gitAttachment!(files[0]?.doc.repo ?? "", commit, repoPath);
         if (read.kind !== "bytes") {
           there.delete(key);
-
           if (read.kind === "unreadable" && read.outage) result.stopped = "unreadable";
           continue;
         }
@@ -313,7 +271,6 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
   }
   checkpoint(true);
   result.leftOut = leftOutKinds((options.others ?? []).filter((path) => !copiedAttachments.has(path)));
-
   result.left = files.length - result.created - result.existed - result.gone - files.filter((file) => isHiddenPath(file.path)).length;
   tell(true);
   return result;

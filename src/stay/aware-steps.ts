@@ -22,18 +22,14 @@ export class FirstLook {
 }
 
 export interface OfferHost {
-
   draftIn(current: () => boolean): DraftInbound;
-
   existing(): DraftInbound | null;
-
   on(): boolean;
   looked(): Looked | null;
   phaseOf(path: string): string;
 }
 
 export class DraftOffers {
-
   private asked = false;
 
   constructor(private readonly host: OfferHost) {}

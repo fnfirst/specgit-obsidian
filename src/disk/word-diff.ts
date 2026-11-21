@@ -11,7 +11,6 @@ export function wordDiff(mine: string, theirs: string): { mine: WordPart[]; thei
   const a = tokens(mine);
   const b = tokens(theirs);
   if (a.length === 0 || b.length === 0 || a.length * b.length > MAX_PAIRS) return null;
-
   const width = b.length + 1;
   const length = new Uint32Array((a.length + 1) * width);
   for (let i = a.length - 1; i >= 0; i--) {
@@ -37,7 +36,6 @@ function runs(words: readonly string[], same: readonly boolean[]): WordPart[] {
   const parts: WordPart[] = [];
   words.forEach((word, at) => {
     const space = /^\s+$/.test(word);
-
     const changed = space ? (parts.at(-1)?.changed ?? false) && same[at + 1] === false : !same[at];
     const last = parts.at(-1);
     if (last && last.changed === changed) last.text += word;

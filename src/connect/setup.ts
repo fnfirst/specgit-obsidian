@@ -15,9 +15,7 @@ import type { Connections } from "./connections";
 import { NoteFlows } from "./flow";
 
 export interface ConnectDeps {
-
   placeOf: (path: string) => Place;
-
   server: () => string;
   connections: Connections;
   status: StatusBoard;
@@ -25,35 +23,20 @@ export interface ConnectDeps {
   account: SpecgitAccount;
   signedIn: () => boolean;
   signIn: () => Promise<void>;
-
   mapped: () => boolean;
-
   chooseRepository: () => void;
-
   onboard: () => void;
-
   continueUpload: () => void;
-
   onboarding: OnboardingWatch;
-
   repo: () => string;
-
   folder: () => string;
-
   stayConnected: () => boolean;
-
   setStayConnected: (on: boolean) => Promise<void>;
-
   peopleIn: (doc: DocumentRef) => Promise<number | null>;
-
   dialogs: Pick<Dialogs, "choose">;
-
   hasUnsentEdits: (path: string) => boolean;
-
   comments: PanelComments;
-
   disconnected?: () => void;
-
   tryNow?: () => void;
 }
 

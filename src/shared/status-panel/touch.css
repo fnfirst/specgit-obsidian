@@ -3,12 +3,10 @@
 .sp-coarse .sp-icon-button {
   min-height: 44px;
 }
-
 .sp-coarse .sp-name-input {
   min-height: 44px;
   font-size: 16px;
 }
-
 .sp-coarse .sp-row-one,
 .sp-coarse .sp-group-row {
   min-height: 52px;
@@ -17,7 +15,6 @@
 .sp-coarse .sp-member {
   min-height: 52px;
 }
-
 .sp-coarse .sp-row-one .sp-name,
 .sp-coarse .sp-group-row .sp-name,
 .sp-coarse .sp-member .sp-name-link {
@@ -28,7 +25,6 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
-
 .sp-coarse .sp-pinned-head {
   gap: 16px;
 }
@@ -45,7 +41,6 @@
   opacity: 1;
   color: var(--sp-muted);
 }
-
 .sp-coarse .sp-row-button::after,
 .sp-coarse .sp-more::after,
 .sp-coarse .sp-pill::after,
@@ -79,7 +74,6 @@
 .sp-coarse .sp-chip-btn::after {
   inset: -4px -3px;
 }
-
 .sp-coarse .sp-more::after {
   inset: -8px;
 }
@@ -92,7 +86,6 @@
 .sp-coarse .sp-chip::after {
   inset: -6px -3px;
 }
-
 .sp-coarse .sp-chip .sp-icon-button {
   width: 24px;
   height: 24px;
@@ -119,7 +112,6 @@
   inset: auto;
   transform: none;
 }
-
 .sp-coarse .sp-edge.sp-edge-no-more {
   padding-inline-end: 30px;
 }

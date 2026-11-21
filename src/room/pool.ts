@@ -11,7 +11,6 @@ export const RETRY_AFTER_MS = 5_000;
 interface Entry {
   room: Room;
   holders: number;
-
   closing: number | null;
   lastTried: number;
 }
@@ -22,9 +21,7 @@ export class RoomPool {
   constructor(
     private readonly open: OpenTransport,
     private readonly identity: () => Identity,
-
     private readonly closed: (ref: DocumentRef) => void,
-
     private readonly tokens: Pick<TokenSource, "askForBridge">,
     private readonly now: () => number = Date.now,
   ) {}
@@ -46,7 +43,6 @@ export class RoomPool {
   }
 
   release(room: Room, now = false): void {
-
     let current = room;
     while (current.successor) current = current.successor;
     const key = keyOf(current.ref);
@@ -96,14 +92,12 @@ export class RoomPool {
     const stop = room.subscribe(() => {
       if (!room.startOver) return;
       stop();
-
       void Promise.resolve().then(() => this.replace(key, entry, room));
     });
   }
 
   private replace(key: string, entry: Entry, old: Room): void {
     if (entry.room !== old || this.entries.get(key) !== entry) return;
-
     this.closed(old.ref);
     if (entry.holders === 0) {
       if (entry.closing !== null) window.clearTimeout(entry.closing);

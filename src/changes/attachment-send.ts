@@ -5,10 +5,8 @@ export const ATTACHMENT_REQUEST_BYTES = 4 * 1024 * 1024;
 export interface NamedAttachment {
   repoPath: string;
   base64: string;
-
   sha: string;
   size: number;
-
   expectSha?: string | null;
 }
 

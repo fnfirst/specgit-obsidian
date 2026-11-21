@@ -7,23 +7,16 @@ import { changeKey } from "./outbound";
 import { DRAFT_SAID } from "./words";
 
 export interface DeleteHost {
-
   wait(path: string): void;
-
   settled(path: string): void;
-
   forgetEnded(path: string): void;
 }
 
 export class DraftDeletes {
-
   private readonly known = new Map<string, number>();
-
   private readonly toTrash = new Map<string, { sha: string; name: string }>();
-
   private readonly released = new Set<string>();
   private announced = 0;
-
   private readonly keptNow: string[] = [];
 
   constructor(
@@ -45,7 +38,6 @@ export class DraftDeletes {
     }
     if (gone !== null) {
       this.known.set(path, gone.deletedAt);
-
       if (kind !== "end-own") this.toTrash.set(path, { sha, name: noteName(path) });
       else this.keep(looked, path, gone.deletedAt);
       return;
@@ -62,7 +54,6 @@ export class DraftDeletes {
     this.host.settled(path);
     const { data } = state;
     data.committed = data.committed.filter((key) => key !== changeKey({ kind: "new", path }) && !key.startsWith(`renamed|${path}|`));
-
     if (!looked.repo.has(path) && !data.held.includes(changeKey({ kind: "new", path }))) data.held.push(changeKey({ kind: "new", path }));
     if (entry) {
       (data.editsHeld ??= {})[path] = entry.sha;
@@ -109,7 +100,6 @@ export class DraftDeletes {
       if (!this.ctx.current()) break;
       const one = this.toTrash.get(path)!;
       activity.ownWrite(path);
-
       if (!(await ports.vault.trash(path, one.sha))) {
         activity.notWritten(path);
         this.toTrash.delete(path);

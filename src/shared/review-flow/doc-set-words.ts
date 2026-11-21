@@ -5,15 +5,10 @@ export const documentsIn = (entry: Pick<ChangeSetEntry, "group">): number => ent
 
 export interface DocSetCounts {
   thisIn: boolean;
-
   ownGroup: boolean;
-
   others: number;
-
   total: number;
-
   units: number;
-
   hasGroup: boolean;
 }
 

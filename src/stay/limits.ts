@@ -21,14 +21,10 @@ function readRecord(storage: LocalState, key: string): BudgetRecord {
 }
 
 export const BURST_FILES = 20;
-
 export const WRITES_PER_MINUTE = 60;
-
 export const GITHUB_WRITES_PER_HOUR = 500;
 export const PERSON_RESERVE = 100;
-
 export const WRITES_PER_HOUR = GITHUB_WRITES_PER_HOUR - PERSON_RESERVE;
-
 export const FIRST_BACKOFF_MS = 60_000;
 export const MAX_BACKOFF_MS = 15 * 60_000;
 
@@ -44,9 +40,7 @@ export class WriteBudget {
     spent: Array<[at: number, cost: number]> = [],
     private readonly now: () => number = Date.now,
     backoff: { until: number; strikes: number } | null = null,
-
     private readonly serverTakes: () => number = () => 0,
-
     private readonly keep: (record: BudgetRecord) => void = () => undefined,
   ) {
     this.spent = spent;
@@ -60,7 +54,9 @@ export class WriteBudget {
     return new WriteBudget(stored.spent, now, stored.backoff, serverTakes, (record) => {
       try {
         storage.save(key, record);
-      } catch { /* empty */ }
+      } catch {
+        void 0;
+      }
     });
   }
 
@@ -95,7 +91,6 @@ export class WriteBudget {
       const inSpan = this.spent.filter(([at]) => at > now - span);
       let total = inSpan.reduce((sum, [, spentCost]) => sum + spentCost, 0);
       if (total + need <= cap) continue;
-
       for (const [at, spentCost] of inSpan) {
         total -= spentCost;
         if (total + need <= cap) {
@@ -130,7 +125,6 @@ export class WriteBudget {
 }
 
 export const EDIT_QUIET_MS = 5_000;
-
 export const SAVE_GAP_MS = 15_000;
 export const SAVE_GAP_HALF_MS = 60_000;
 export const SAVE_GAP_MOST_MS = 5 * 60_000;

@@ -5,15 +5,10 @@ export type LiveEventKind = (typeof LIVE_EVENT_KINDS)[number];
 
 export interface LiveEvent {
   kind: LiveEventKind;
-
   branch?: string;
-
   path?: string;
-
   pr?: number;
-
   push?: true;
-
   sha?: string;
 }
 
@@ -29,7 +24,6 @@ export function readLiveEvent(value: unknown): LiveEvent | null {
   const event = value as Partial<LiveEvent> | null;
   if (typeof event !== "object" || event === null || !LIVE_EVENT_KINDS.includes(event.kind as LiveEventKind)) return null;
   const text = (field: unknown): string | undefined => (typeof field === "string" && field !== "" ? field : undefined);
-
   if (event.kind === "presence") return { kind: "presence" };
   return {
     kind: event.kind as LiveEventKind,
@@ -46,19 +40,13 @@ export function concernsDocument(event: LiveEvent, path: string): boolean {
 }
 
 export const LIVE_SETTLE_MS = 400;
-
 export const LIVE_PUSH_SETTLE_MS = 10_000;
-
 export const LIVE_RECHECK_MS = 4_000;
-
 export const RETURN_SECOND_READ_MS = 4_000;
-
 export const LIVE_ECHO_MS = 2_000;
-
 export const LIVE_CATCH_UP_FLOOR_MS = 5_000;
 
 export interface SettleDeps {
-
   later?: (run: () => void, ms: number) => () => void;
 }
 
@@ -82,7 +70,6 @@ export class SettledReload {
 
   heard(key = ""): boolean {
     if (this.stopRecheck !== null && key === this.readKey && Date.now() - this.readAt < LIVE_ECHO_MS) {
-
       this.stopRecheck();
       this.stopRecheck = this.later(() => {
         this.stopRecheck = null;
@@ -121,20 +108,16 @@ export class SettledReload {
 
 export interface ReactionSignals {
   hidden(): boolean;
-
   idle?(): boolean;
   onShown(cb: () => void): () => void;
   onFocused?(cb: () => void): () => void;
-
   onActive?(cb: () => void): () => void;
 }
 
 export interface EventReading {
   kinds: ReadonlySet<LiveEventKind>;
   push: boolean;
-
   recheck: boolean;
-
   expireReviews: boolean;
 }
 export type EventRead = (reading: EventReading) => void;
@@ -144,13 +127,10 @@ const expiresReviews = (kinds: ReadonlySet<LiveEventKind>, push: boolean): boole
 export class EventReload {
   private readonly settled: SettledReload;
   private readonly pushes: SettledReload;
-
   private cycle: { kinds: Set<LiveEventKind>; push: boolean; late: boolean } = { kinds: new Set(), push: true, late: false };
-
   private owed: { kinds: Set<LiveEventKind>; push: boolean } | null = null;
   private caughtUpAt = Number.NEGATIVE_INFINITY;
   private readonly later: (run: () => void, ms: number) => () => void;
-
   private stopSecond: (() => void) | null = null;
 
   constructor(
@@ -195,7 +175,6 @@ export class EventReload {
     this.note(event, this.cycle);
     const key = `${event.kind}|${event.pr ?? ""}`;
     if (event.push) this.pushes.heardOnce(key);
-
     else if (this.settled.heard(key) && event.kind === "review") this.cycle.late = true;
   }
 
@@ -217,7 +196,6 @@ export class EventReload {
       const owed = this.owed;
       this.owed = null;
       this.read({ kinds: owed.kinds, push: owed.push, recheck: false, expireReviews: expiresReviews(owed.kinds, owed.push) });
-
       this.stopSecond?.();
       this.stopSecond = this.later(() => {
         this.stopSecond = null;

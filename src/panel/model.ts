@@ -8,46 +8,29 @@ export type TabId = "status" | "comments";
 export const PEOPLE_FRESH_MS = 25_000;
 
 export interface PanelState {
-
   note: { path: string; name: string } | null;
-
   file: { path: string; name: string; kind: FileKind } | null;
-
   elsewhere: PathKind | null;
   signedIn: boolean;
-
   mapped: boolean;
-
   repo: string;
-
   folder: string;
-
   stay: boolean;
-
   status: NoteStatus | null;
-
   people: number | null;
-
   cameIn: number | null;
 }
 
 export interface PanelDeps {
-
   activeNote(): string | null;
-
   placeOf(path: string): Place;
   status: StatusBoard;
   cameIn: Board<Shown[]>;
   signedIn(): boolean;
-
   mapped(): boolean;
-
   repo?(): string;
-
   folder?(): string;
-
   stayConnected(): boolean;
-
   peopleIn(doc: DocumentRef): Promise<number | null>;
   now?: () => number;
 }
@@ -115,7 +98,6 @@ export class PanelModel {
 
   private read(): PanelState {
     const path = this.deps.activeNote();
-
     const vault: PanelState = {
       note: null,
       file: null,
@@ -134,10 +116,8 @@ export class PanelModel {
     switch (place.kind) {
       case "unlinked":
         return vault;
-
       case "outside":
         return { ...vault, elsewhere: place.file };
-
       case "board":
       case "base":
       case "other":
@@ -145,7 +125,6 @@ export class PanelModel {
       case "note": {
         const status = this.deps.status.get(path) ?? null;
         const shown = this.deps.cameIn.get(path);
-
         const people = status && status.phase !== "local" ? status.others : (this.asked.get(docKey(place.doc))?.people ?? null);
         return { ...vault, note: { path, name: noteName(path) }, status, people, cameIn: shown ? changesIn(shown) : null };
       }

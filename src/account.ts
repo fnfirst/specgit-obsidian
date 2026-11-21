@@ -11,14 +11,11 @@ export const WHO_ASK_PATIENCE_MS = 30_000;
 export class SpecgitAccount implements Account {
   private readonly loginListeners = new Set<() => void>();
   private readonly whoListeners = new Set<() => void>();
-
   private answeredFor: number | null = null;
-
   private asking: { signIn: number; at: number; done: Promise<void> } | null = null;
 
   constructor(
     private readonly auth: SpecgitAuth,
-
     readonly signIn: () => Promise<void>,
     private readonly host: AccountHost,
     private readonly now: () => number = Date.now,
@@ -98,7 +95,6 @@ export class SpecgitAccount implements Account {
     config.login = login;
     config.displayName = name;
     config.avatarUrl = avatarUrl;
-
     try {
       await this.host.saveConfig();
     } finally {

@@ -8,15 +8,10 @@ import { formBody, jsonObject, type Transport } from "./transport";
 export const REFRESH_MARGIN_MS = 60_000;
 
 export type AuthEvent =
-
   | { kind: "started" }
-
   | { kind: "signed_in"; over: boolean }
-
   | { kind: "signed_out"; reason: "chosen" | "refused" }
-
   | { kind: "declined" }
-
   | { kind: "failed"; error: AuthError };
 
 export interface Profile {
@@ -26,19 +21,13 @@ export interface Profile {
 }
 
 export interface AuthOptions {
-
   server: string;
-
   version: string;
-
   vaultName: string;
-
   installId?: string;
   storage: AuthStorage;
   transport: Transport;
-
   openBrowser: (url: string) => void;
-
   defer?: (work: () => void) => void;
   now?: () => number;
   pkce?: () => Promise<Pkce>;
@@ -57,17 +46,11 @@ export class SpecgitAuth {
   private readonly pkce: () => Promise<Pkce>;
   private readonly newState: () => string;
   private readonly listeners = new Set<(event: AuthEvent) => void>();
-
   private access: AccessToken | null = null;
-
   private renewing: Promise<string> | null = null;
-
   private signIns = 0;
-
   private claimed: string | null = null;
-
   private lastAddress: string | null = null;
-
   private trading = 0;
 
   constructor(private readonly options: AuthOptions) {
@@ -123,7 +106,6 @@ export class SpecgitAuth {
 
   handleLink(params: Readonly<Record<string, string>>): void {
     const link = parseAuthLink(params);
-
     if (link.kind !== "invalid" && link.state === this.claimed) return;
     const pending = this.options.storage.pending(this.now());
     if (link.kind === "invalid" || pending === null || pending.state !== link.state) {
@@ -156,7 +138,6 @@ export class SpecgitAuth {
     if (session === "") throw new AuthError("rejected", "Paste the code from specgit.com.");
     const pending = this.options.storage.pending(this.now());
     if (pending === null) throw new AuthError("rejected", NO_SIGN_IN_MESSAGE);
-
     if (pending.state === this.claimed) return;
     this.claimed = pending.state;
     await this.trade(session, pending.state);
@@ -205,7 +186,6 @@ export class SpecgitAuth {
         this.options.storage.clearPending();
         throw new AuthError("rejected", REJECTED_MESSAGE, result.status);
       }
-
       over = this.access !== null || this.isSignedIn();
       this.access = result.access;
       this.options.storage.setRefreshToken(result.refresh);
@@ -248,7 +228,6 @@ export class SpecgitAuth {
       if (response.status !== 200 || typeof login !== "string" || login === "") return null;
       const user = typeof answer?.user === "object" && answer.user !== null ? (answer.user as Record<string, unknown>) : {};
       const said = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
-
       if (this.signIns !== signIn) return null;
       return { login, name: said(user.displayName), avatarUrl: said(user.avatarUrl) };
     } catch {
@@ -265,12 +244,9 @@ export class SpecgitAuth {
     const refreshToken = this.options.storage.refreshToken();
     if (refreshToken === null) throw new AuthError("signed_out", SIGNED_OUT_MESSAGE);
     const result = await this.tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken });
-
     if (this.options.storage.refreshToken() !== refreshToken) throw new AuthError("signed_out", SIGNED_OUT_MESSAGE);
     if (!result.ok) {
-
       if (result.error === "invalid_grant") {
-
         if (this.trading > 0) throw new AuthError("signed_out", SIGNED_OUT_MESSAGE, result.status);
         this.forget();
         this.emit({ kind: "signed_out", reason: "refused" });
@@ -278,7 +254,6 @@ export class SpecgitAuth {
       }
       throw new AuthError("unexpected", "specgit didn't accept the plugin's request. Update specgit in Obsidian's Community plugins and try again.", result.status);
     }
-
     this.options.storage.setRefreshToken(result.refresh);
     this.access = result.access;
     return result.access.token;
@@ -317,6 +292,8 @@ export class SpecgitAuth {
         headers: this.headers(),
         body: formBody({ token: refreshToken, client_id: clientId(this.server) }),
       });
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }

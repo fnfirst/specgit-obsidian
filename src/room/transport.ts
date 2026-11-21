@@ -12,27 +12,16 @@ import { GuardedProvider, sameLineage } from "./lineage";
 export type Stop = "diverged" | "too_large" | "deleted";
 
 export interface Transport {
-
   readonly name: string;
-
   readonly steps: RoomSteps | null;
-
   setSteps(steps: RoomSteps | null): void;
-
   readonly synced: boolean;
-
   readonly acknowledged: boolean;
-
   readonly startOver: boolean;
-
   readonly stopped: Stop | null;
-
   readonly online: boolean;
-
   readonly refusal: string | null;
-
   readonly readOnly: boolean;
-
   subscribe(listener: () => void): () => void;
   destroy(): void;
 }
@@ -42,13 +31,9 @@ export type OpenTransport = (ref: DocumentRef, doc: Y.Doc, awareness: Awareness)
 const FIRST_TOKEN_MAX_AGE_MS = 60_000;
 
 interface TokenEvents {
-
   readOnly(readOnly: boolean): void;
-
   startOver(): void;
-
   deleted(): void;
-
   steps(steps: RoomSteps | null): void;
 }
 
@@ -74,7 +59,6 @@ function tokensFor(ref: DocumentRef, source: TokenSource, first: RoomToken, now:
       throw new Error("This note was connected under a different account.");
     }
     on.readOnly(fresh.readOnly === true);
-
     on.steps(fresh.steps ?? null);
     return fresh.token;
   };
@@ -85,7 +69,6 @@ class HocuspocusTransport implements Transport {
   startOver = false;
   stopped: Stop | null = null;
   private readonly listeners = new Set<() => void>();
-
   private rejoins = 0;
   private rejoining: number | null = null;
 
@@ -99,7 +82,6 @@ class HocuspocusTransport implements Transport {
   ) {
     provider.on("synced", () => {
       this.rejoins = 0;
-
       provider.guardReconnects((roomVector) => {
         if (sameLineage(doc, roomVector)) return true;
         this.restart();
@@ -113,12 +95,10 @@ class HocuspocusTransport implements Transport {
       this.refusal = null;
       this.changed();
     });
-
     provider.on("stateless", ({ payload }: { payload: string }) => {
       if (payload === ROOM_DIVERGED_MESSAGE) this.stop("diverged");
       else if (payload === ROOM_TOO_LARGE) this.stop("too_large");
     });
-
     provider.on("close", () => {
       this.changed();
       if (this.lease.socket.status === WebSocketStatus.Connected) this.rejoin();
@@ -175,7 +155,6 @@ class HocuspocusTransport implements Transport {
   destroy(): void {
     this.listeners.clear();
     this.stopRejoining();
-
     this.provider.destroy();
     this.lease.release();
   }
@@ -190,7 +169,6 @@ class HocuspocusTransport implements Transport {
 
   private refused(reason: string): void {
     if (!this.live) return;
-
     if (reason === ROOM_ENDED_REASON) return this.restart();
     if (reason === ROOM_TOO_LARGE) return this.stop("too_large");
     this.refusal = reason;
@@ -228,7 +206,6 @@ class HocuspocusTransport implements Transport {
 
 export function hocuspocusTransport(sockets: SocketPool, tokens: TokenSource, now: () => number = Date.now): OpenTransport {
   return async (ref, doc, awareness) => {
-
     const first = await tokens.roomToken(ref, { session: sessionSeedClaim(doc) });
     const lease = sockets.lease(first.url);
     let transport: HocuspocusTransport | null = null;

@@ -8,7 +8,6 @@ export const SEED_CLAIM_KEY = "seedClaim";
 
 export function sessionSeedClaim(doc: { getMap(name: string): { get(key: string): unknown } }): string | null {
   const claim = doc.getMap(MARKDOWN_META_ROOT).get(SEED_CLAIM_KEY);
-
   return typeof claim === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(claim) ? claim : null;
 }
 

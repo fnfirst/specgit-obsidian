@@ -19,12 +19,10 @@ function heldBy(answer: Record<string, unknown> | null | undefined): { text: str
 }
 
 export class SentMemory {
-
   constructor(
     private readonly host: SentMemoryHost,
     private readonly write: (path: string, text: string, expected: string) => Promise<boolean> = (path, text, expected) => host.deps.writeText(path, text, expected),
     private readonly sentText: Map<string, { text: string; to: ReviewKey | null; commit?: string }> = new Map(),
-
     private readonly acrossReviews = false,
   ) {}
 
@@ -49,7 +47,6 @@ export class SentMemory {
     const agreements = new Map<string, { agreed?: string; commit?: string }>();
     for (const [path, one] of held ?? []) {
       const text = texts.get(path);
-
       const holdsIt = text !== undefined && (one.same === true || toLf(one.held) === toLf(text));
       agreements.set(path, { ...(holdsIt ? { agreed: gitBlobShaOfText(one.held) } : {}), ...(one.commit === undefined ? {} : { commit: one.commit }) });
     }
@@ -66,11 +63,9 @@ export class SentMemory {
     const kept = this.sentText.get(path);
     const sha = kept === undefined ? this.host.model.sentSha(path) : null;
     if (kept === undefined && sha === null) return "never";
-
     const holds = kept !== undefined ? kept.text === there.text : sha === there.sha;
     if (!holds && !this.acrossReviews) {
       if (!sentToThis(kept !== undefined ? kept.to : this.host.model.sentTo(path), await this.reviewNow(row))) return "never";
-
       const held = await this.branchHolds(row, branch, kept !== undefined ? kept.commit : this.host.deps.sentCommit?.(path));
       if (held === null) return "unreadable";
       if (!held) {
@@ -112,7 +107,6 @@ export class SentMemory {
   async accepted(path: string, text: string, body: string, base: string | null = null, answer?: Record<string, unknown> | null): Promise<boolean> {
     const held = heldBy(answer);
     const commit = typeof answer?.commitSha === "string" && answer.commitSha !== "" ? answer.commitSha : undefined;
-
     const to = reviewKey(answer?.pr as { number?: unknown; group?: unknown } | null | undefined) ?? this.host.model.reviewOf(path);
     if (await this.writeAndRemember(path, text, body, held === null ? body : "text" in held ? held.text : null, base, to, commit, held !== null)) {
       if (held !== null && "sha" in held) {
@@ -128,10 +122,8 @@ export class SentMemory {
   async writeAndRemember(path: string, mine: string, merged: string, remembered: string | null, base: string | null = null, to?: ReviewKey | null, commit?: string, same = false): Promise<boolean> {
     if (toLf(merged) !== toLf(mine)) {
       if (!(await this.write(path, merged, mine))) return false;
-
       await this.host.deps.bringFor?.(path, merged).catch(() => undefined);
     }
-
     if (remembered !== null) await this.remember(path, remembered, to, toLf(merged) !== toLf(mine) ? merged : mine, commit, same);
     if (base !== null) this.host.model.rebased(path, base);
     return true;

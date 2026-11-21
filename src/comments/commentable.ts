@@ -22,12 +22,10 @@ export async function startCommentOn(hub: CommentsHub, view: EditorView | null, 
   const current = view.state.selection.main;
   const selection = current.empty ? offered : current;
   if (!selection || selection.from === selection.to) {
-
     lost?.();
     return;
   }
   const last = doc.lineAt(selection.to);
-
   const lineEnd = last.from === selection.to ? Math.max(doc.lineAt(selection.from).number, last.number - 1) : last.number;
   const started = await hub.startComment(path, { quote: doc.sliceString(selection.from, selection.to), from: selection.from, to: selection.to, lineStart: doc.lineAt(selection.from).number, lineEnd });
   const now = view.state.selection.main;

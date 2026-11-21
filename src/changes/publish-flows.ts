@@ -26,10 +26,8 @@ type Went =
   | { kind: "held" }
   | { kind: "unchanged" }
   | { kind: "done"; body: Record<string, unknown> }
-
   | { kind: "stopped" }
   | { kind: "failed"; message: string }
-
   | { kind: "refused"; result: Refused };
 
 export interface PublishHost {
@@ -52,7 +50,6 @@ export class PublishFlows {
       if ("held" in sent) return { kind: "held" };
       if (!sent.ok) return { kind: "failed", message: sent.message };
       if (sent.unchanged && !row.group) return { kind: "unchanged" };
-
       if (sent.attachments) return { kind: "failed", message: `${sent.attachments} ${inSet ? "This note was not published." : "Nothing was published."}` };
       if (!row.entry || row.entry.isDraft) {
         const ready = await this.deps.review.share(row.doc);
@@ -68,7 +65,6 @@ export class PublishFlows {
   }
 
   async single(row: ChangeRow): Promise<boolean | "unchanged"> {
-
     const went = await this.publishFile(row, COULD_NOT_PUBLISH, (result, expectMain) => this.decide(row, result, expectMain));
     switch (went.kind) {
       case "unchanged":
@@ -114,7 +110,6 @@ export class PublishFlows {
       await this.host.alert({ title: PUBLISH_FAILED, description: this.host.refusal(result, row.doc, COULD_NOT_PUBLISH) });
       return { kind: "stopped" };
     }
-
     const decision = decideBlocked(body, false);
     if (decision.kind === "merge") {
       if (!(await this.deps.dialogs.confirm({ title: decision.title, description: decision.description, confirmLabel: decision.confirm }))) return { kind: "stopped" };

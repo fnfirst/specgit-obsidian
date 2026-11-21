@@ -5,48 +5,29 @@ import { BURST_FILES } from "./limits";
 export const changeKey = (change: Pick<LocalChange, "kind" | "path" | "from">): string => `${change.kind}|${change.path}|${change.from ?? ""}`;
 
 export interface OutboundInput {
-
   atStart: boolean;
-
   editsAtStart?: boolean;
   rows: readonly ChangeRow[];
-
   baseline: ReadonlySet<string>;
-
   committed: ReadonlySet<string>;
-
   held: ReadonlySet<string>;
-
   kept: ReadonlySet<string>;
-
   suspect(path: string): boolean;
-
   allowed(row: ChangeRow): boolean;
-
   settling?: boolean;
-
   edits?: {
-
     own(row: ChangeRow): boolean;
-
     held(row: ChangeRow): boolean;
-
     wait(row: ChangeRow): number;
-
     typed?(row: ChangeRow): boolean;
-
     after?(row: ChangeRow): boolean;
   };
 }
 
 export interface OutboundPlan {
-
   send: ChangeRow[];
-
   hold: Array<{ key: string; path: string; edit?: true; atStart?: true }>;
-
   burst: number | null;
-
   wait: number | null;
 }
 
@@ -62,7 +43,6 @@ export function planOutbound(input: OutboundInput): OutboundPlan {
   });
   const wantedAll = edits ? input.rows.filter((row) => isEdit(row, input.committed) && edits.own(row) && !edits.held(row) && input.allowed(row)) : [];
   const editsAtStart = input.editsAtStart ?? input.atStart;
-
   const heldAtStart = editsAtStart ? wantedAll.filter((row) => edits?.typed?.(row) !== true && edits?.after?.(row) !== true) : [];
   const wanted = wantedAll.filter((row) => !heldAtStart.includes(row));
   const waits = edits ? wanted.map((row) => edits.wait(row)) : [];
@@ -71,7 +51,6 @@ export function planOutbound(input: OutboundInput): OutboundPlan {
   const wait = later.length > 0 ? Math.min(...later) : null;
   const flagged = (row: ChangeRow, edit: boolean, start = false): OutboundPlan["hold"][number] => ({ key: changeKey(row.change), path: row.change.path, ...(edit ? { edit: true as const } : {}), ...(start ? { atStart: true as const } : {}) });
   const byList = (pairs: Array<{ row: ChangeRow; edit: boolean }>): Array<{ row: ChangeRow; edit: boolean }> => pairs.sort((a, b) => input.rows.indexOf(a.row) - input.rows.indexOf(b.row));
-
   const atStart = byList([...(input.atStart ? created : []).map((row) => ({ row, edit: false })), ...heldAtStart.map((row) => ({ row, edit: true }))]).map(({ row, edit }) => flagged(row, edit, true));
   const pending = byList([...(input.atStart ? [] : created).map((row) => ({ row, edit: false })), ...ready.map((row) => ({ row, edit: true }))]);
   const soonest = wait;

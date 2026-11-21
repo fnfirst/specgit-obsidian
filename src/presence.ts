@@ -4,16 +4,12 @@ import { drawableAvatar, type OwnPlaces, ownPlaces, type RoomPerson, roomPerson 
 
 export interface Identity {
   name: string;
-
   login: string;
-
   color: string;
-
   avatarUrl: string;
 }
 
 const HEX = /^#[0-9a-f]{6}$/i;
-
 const PALETTE = ["#958DF1", "#F98181", "#FBBC88", "#FAF594", "#70CFF8", "#94FADB", "#B9F18D"];
 
 export function colorFor(identity: Identity): string {
@@ -48,7 +44,6 @@ export function otherPeople(awareness: Awareness): Here[] {
 
 export interface Here {
   name: string;
-
   login: string | null;
   initials: string;
   picture: string | null;

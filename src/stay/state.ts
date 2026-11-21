@@ -3,33 +3,19 @@ import { hashText } from "../hash";
 
 export interface StayData {
   v: 1;
-
   baseline: string[] | null;
-
   seen: Record<string, string> | null;
-
   guessed: string[];
-
   committed: string[];
-
   held: string[];
-
   kept: string[];
-
   burst: string[];
-
   editsHeld?: Record<string, string>;
-
   endedOwn?: Record<string, { sent: string; ended: "published" | "discarded" }>;
-
   typed?: Record<string, { sha: string; at: number }>;
-
   heldWhy?: Record<string, "closed" | "stopped" | "ended" | "closedElsewhere" | "flurry" | "github" | "tries" | "deleted">;
-
   deletedAt?: Record<string, number>;
-
   offerTold?: number;
-
   attachments?: Record<string, { problems: Array<{ name: string; why: string; server?: true }>; tries: number }>;
 }
 
@@ -77,9 +63,7 @@ function read(stored: unknown): StayData {
 export class StayState {
   data: StayData;
   private readonly key: string;
-
   private dead = false;
-
   private written: string;
 
   constructor(
@@ -102,7 +86,9 @@ export class StayState {
     try {
       this.state.save(this.key, this.data);
       this.written = json;
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 
   clear(): void {
@@ -110,6 +96,8 @@ export class StayState {
     this.data = empty();
     try {
       this.state.save(this.key, null);
-    } catch { /* empty */ }
+    } catch {
+      void 0;
+    }
   }
 }

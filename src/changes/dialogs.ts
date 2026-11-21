@@ -29,7 +29,6 @@ class AskModal extends SpecgitModal {
   override onOpen(): void {
     const { options } = this;
     if (options.description) this.contentEl.createEl("p", { text: options.description, cls: "specgit-dialog-text" });
-
     if (options.points?.length) {
       const list = this.contentEl.createEl("ul", { cls: "specgit-dialog-points" });
       for (const point of options.points) {
@@ -41,7 +40,6 @@ class AskModal extends SpecgitModal {
     if (options.note) this.contentEl.createEl("p", { text: options.note, cls: "specgit-dialog-note" });
     if (options.href) this.contentEl.createEl("a", { text: options.hrefLabel ?? "Open", href: options.href, cls: "specgit-dialog-link" });
     const row = buttonRow(this.contentEl);
-
     const { reportThis } = options;
     if (reportThis) {
       row.addButton((button) => {
@@ -167,7 +165,6 @@ class ReviewerModal extends SpecgitModal {
     contentEl.createEl("p", { text: this.description });
     for (const reviewer of this.candidates) {
       const row = new Setting(contentEl).setName(reviewer.login).addButton((button) => button.setButtonText("Ask").onClick(() => this.choose(reviewer)));
-
       row.nameEl.classList.add("specgit-reviewer-name");
       const face = row.nameEl.createSpan();
       row.nameEl.prepend(face);
@@ -181,7 +178,6 @@ class ReviewerModal extends SpecgitModal {
       .addButton((button) =>
         button.setButtonText("OK").setCta().onClick(() => {
           if (!LOGIN.test(typed)) error.setText(NOT_A_LOGIN);
-
           else this.choose({ login: typed, avatarUrl: null });
         }),
       );
@@ -200,7 +196,6 @@ class ReviewerModal extends SpecgitModal {
 
 export function obsidianDialogs(app: App, reportThis: (title: string, description?: string) => void): Dialogs {
   return {
-
     confirm: (options) => new Promise((resolve) => new AskModal(app, options, (answer) => resolve(answer === "confirm")).open()),
     choose: (options) => new Promise((resolve) => new AskModal(app, options, (answer) => resolve(answer === "closed" ? null : answer === "confirm")).open()),
     alert: (options) =>

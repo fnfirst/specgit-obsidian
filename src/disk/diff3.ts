@@ -46,7 +46,6 @@ function settle(base: readonly string[], mine: readonly string[], theirs: readon
   let tail = 0;
   while (tail < mine.length - head && tail < theirs.length - head && mine[mine.length - 1 - tail] === theirs[theirs.length - 1 - tail]) tail++;
   const [ours, there] = [mine.slice(head, mine.length - tail), theirs.slice(head, theirs.length - tail)];
-
   const [inMine, inTheirs] = [baseAt(diffTokens(base, mine, budget, gap), head, mine.length - tail), baseAt(diffTokens(base, theirs, budget, gap), head, theirs.length - tail)];
   const middle: Chunk = same(ours, base.slice(...inMine))
     ? { kind: "merged", tokens: there }
@@ -61,7 +60,6 @@ function settle(base: readonly string[], mine: readonly string[], theirs: readon
 }
 
 function baseAt(changes: readonly Hunk[], from: number, to: number): [number, number] {
-
   let delta = 0;
   let start: number | undefined;
   let end: number | undefined;
@@ -85,6 +83,5 @@ function sideOf(stretch: readonly Change[], side: Change["side"], text: readonly
   const own = stretch.filter((change) => change.side === side);
   const [firstOwn, lastOwn] = [own[0], own.at(-1)];
   if (!firstOwn || !lastOwn) return base.slice(from, to);
-
   return text.slice(firstOwn.bFrom - (firstOwn.aFrom - from), lastOwn.bTo + (to - lastOwn.aTo));
 }

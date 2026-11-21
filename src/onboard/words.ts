@@ -56,7 +56,6 @@ export const notEmpty = (name: string): string => `${name} already has files. Us
 export const UPLOADING_TITLE = "Uploading your vault";
 export const reading = (done: number, total: number): string => `Reading your vault… ${fmt(done)} of ${fmt(total)}`;
 export const uploading = (done: number, total: number): string => `Uploading your vault… ${fmt(done)} of ${fmt(total)}`;
-
 export const underWay = (phase: "reading" | "uploading", done: number, total: number): string => (phase === "reading" ? reading(done, total) : uploading(done, total));
 export const progressLine = (done: number, total: number): string => `${fmt(done)} of ${fmt(total)} files`;
 export const KEEP_OPEN = "Keep Obsidian open until it's done. You can close this window.";

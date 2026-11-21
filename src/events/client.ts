@@ -5,13 +5,10 @@ import { type LiveEvent, readLiveEvent } from "../shared/review-flow";
 
 export interface LiveEventsDeps {
   api: { call(method: "GET", path: string, input?: { query?: Record<string, string> }): Promise<ApiAnswer> };
-
   repo(): string;
   signedIn(): boolean;
   hidden(): boolean;
-
   onWake(cb: () => void): () => void;
-
   later(run: () => void, ms: number): () => void;
   random?(): number;
 }
@@ -19,24 +16,17 @@ export interface LiveEventsDeps {
 export const WAIT_S = 25;
 export const FIRST_RETRY_MS = 3_000;
 export const MAX_RETRY_MS = 60_000;
-
 export const UNSUPPORTED_RETRY_MS = 5 * 60_000;
-
 export const MIN_ASK_GAP_MS = 2_000;
-
 export const RATE_LIMITED_WAIT_MS = 15_000;
-
 export const HUNG_AFTER_MS = (WAIT_S + 15) * 1000;
-
 const LOOK_AGAIN_MS = 30_000;
 
 export class LiveEvents {
   private readonly events = new Set<(event: LiveEvent) => void>();
   private readonly connects = new Set<(reconnected: boolean) => void>();
   private isConnected = false;
-
   private hadEvents = false;
-
   private generation = 0;
   private cursor: string | null = null;
   private place = "";
@@ -113,7 +103,6 @@ export class LiveEvents {
     while (generation === this.generation) {
       const named = this.active();
       if (!named) {
-
         this.setConnected(false);
         await this.sleep(LOOK_AGAIN_MS, generation, true);
         continue;
@@ -135,7 +124,6 @@ export class LiveEvents {
       }
       this.askedAt = null;
       if (generation !== this.generation) return;
-
       if (answer?.status === 429) {
         await this.sleep(RATE_LIMITED_WAIT_MS, generation);
         continue;
@@ -144,7 +132,6 @@ export class LiveEvents {
       const cursor = typeof body?.cursor === "string" ? body.cursor : null;
       if (!answer || !body || cursor === null || !Array.isArray(body.events)) {
         this.setConnected(false);
-
         if (answer && (answer.status === 404 || answer.status === 403)) {
           this.failures = 0;
           await this.sleep(UNSUPPORTED_RETRY_MS, generation);
@@ -169,7 +156,6 @@ export class LiveEvents {
         const event = readLiveEvent(raw);
         if (event) this.events.forEach((listener) => listener(event));
       }
-
       const early = MIN_ASK_GAP_MS - (Date.now() - startedAt);
       if (early > 0) await this.sleep(early, generation);
     }

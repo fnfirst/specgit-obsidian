@@ -4,30 +4,19 @@ import { mergeRegions, twoWayRegions } from "./merge";
 import { conflictsIn, type Region, theirsStanding } from "./regions";
 
 export interface Meeting {
-
   editor: string;
-
   room: string;
-
   base: string | null;
-
   emptied: boolean;
-
   git: string | null | undefined;
-
   baseIsGit: boolean;
-
   readOnly: boolean;
 }
 
 export type Joined =
-
   | { kind: "text"; text: string }
-
   | { kind: "review"; regions: Region[]; fromBase: boolean }
-
   | { kind: "apart" }
-
   | { kind: "needs-git" };
 
 const text = (words: string): Joined => ({ kind: "text", text: words });

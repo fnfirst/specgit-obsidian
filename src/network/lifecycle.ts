@@ -2,13 +2,10 @@ import { WebSocketStatus } from "@hocuspocus/provider";
 
 export interface Reconnectable {
   readonly status: WebSocketStatus;
-
   shouldConnect: boolean;
-
   readonly lastMessageReceived: number;
   connect(): Promise<unknown> | void;
   disconnect(): void;
-
   onClose(closed: { event: { code: number; reason: string } }): void;
 }
 
@@ -18,7 +15,6 @@ export class ConnectionLifecycle {
   constructor(
     private readonly sockets: () => Iterable<Reconnectable>,
     private readonly mobile: boolean,
-
     private readonly onResume: () => void = () => undefined,
     private readonly now: () => number = Date.now,
   ) {}
@@ -26,7 +22,6 @@ export class ConnectionLifecycle {
   resumed(): void {
     for (const socket of this.sockets()) {
       if (socket.status === WebSocketStatus.Connected && !this.isStale(socket)) {
-
         socket.shouldConnect = true;
       } else this.restart(socket);
     }

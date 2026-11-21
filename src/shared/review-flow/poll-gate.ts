@@ -2,13 +2,10 @@ import { type EventRead, EventReload, RETURN_SECOND_READ_MS, type SettleDeps } f
 import { timeout } from "./timer";
 
 export const THREADS_POLL_MS = 15_000;
-
 export const SAFETY_POLL_MS = 5 * 60_000;
 export const TYPING_POLL_MS = 180_000;
 export const IDLE_AFTER_MS = 120_000;
-
 export const IDLE_FOCUSED_AFTER_MS = 30 * 60_000;
-
 export const FOCUS_POLL_FLOOR_MS = 10_000;
 
 let drawn: number | null = null;
@@ -16,7 +13,6 @@ export function clientPollOffset(periodMs: number, random: () => number = Math.r
   drawn ??= random();
   return Math.floor(drawn * periodMs);
 }
-
 export function resetClientPollOffset(random?: () => number): void {
   drawn = random ? random() : null;
 }
@@ -24,41 +20,27 @@ export function resetClientPollOffset(random?: () => number): void {
 export interface PollSignals {
   now(): number;
   hidden(): boolean;
-
   lastInputAt(): number;
-
   lastActivityAt(): number;
-
   focused?(): boolean;
-
   live?(): boolean;
-
   onShown(cb: () => void): () => void;
-
   onFocused?(cb: () => void): () => void;
-
   onActive?(cb: () => void): () => void;
 }
 
 export interface PollGate {
-
   due(): boolean;
-
   ran(): void;
-
   onShown(poll: () => void, deps?: SettleDeps): () => void;
-
   onFocused(poll: () => void, deps?: SettleDeps): () => void;
-
   reaction(read: EventRead, deps?: SettleDeps): EventReload;
 }
 
 export function createPollGateFor(signals: PollSignals): PollGate {
   let lastPollAt = Number.NEGATIVE_INFINITY;
   const reactions = new Set<EventReload>();
-
   const idle = (): boolean => signals.now() - signals.lastActivityAt() >= (signals.focused?.() ? IDLE_FOCUSED_AFTER_MS : IDLE_AFTER_MS);
-
   const returnRead = (poll: () => void, deps: SettleDeps | undefined): { read(): void; stop(): void } => {
     const later = deps?.later ?? timeout;
     let cancel: (() => void) | null = null;
@@ -83,7 +65,6 @@ export function createPollGateFor(signals: PollSignals): PollGate {
       if (signals.hidden()) return false;
       const t = signals.now();
       if (idle()) return false;
-
       if (signals.live?.()) return t - lastPollAt >= SAFETY_POLL_MS;
       if (t - signals.lastInputAt() < TYPING_POLL_MS) return t - lastPollAt >= TYPING_POLL_MS;
       return true;

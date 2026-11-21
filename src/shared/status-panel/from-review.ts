@@ -26,7 +26,6 @@ export interface ReviewFacts {
   isDraft: boolean;
   state: "open" | "closed" | "merged";
   mergeableState: PrMergeableState | null;
-
   behind?: boolean;
   reviewDecision: PrReviewDecision | null;
   requestedReviewers: readonly string[];
@@ -64,19 +63,12 @@ export function factsFromDetail(detail: ReviewDetail): ReviewFacts {
 }
 
 export interface PillInput {
-
   deleted?: boolean;
-
   edited?: boolean;
-
   changedInBoth?: boolean;
-
   held?: string | null;
-
   behind?: boolean;
-
   facts?: ReviewFacts | null;
-
   without?: "draft" | "in-review" | "published";
 }
 
@@ -96,7 +88,6 @@ export function pillOf(input: PillInput): StatusPillState {
 }
 
 const basename = (path: string): string => path.split("/").pop() ?? path;
-
 const titleOf = (path: string): string => basename(path).replace(/\.[^./]+$/, "");
 
 export function asksYouOf(entry: ChangeSetEntry, facts: ReviewFacts | null | undefined, viewer: string): boolean {
@@ -121,18 +112,14 @@ export interface DocExtra {
   renamedFrom?: string;
   hasChanges?: boolean;
   bringIn?: boolean;
-
   reason?: string;
   folder?: string;
 }
 
 export interface DocItemInput {
   entry: ChangeSetEntry;
-
   branch?: InFlightBranch | null;
-
   facts?: ReviewFacts | null;
-
   here?: readonly StatusPerson[];
   viewer: string;
   now: number;
@@ -192,20 +179,16 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
 
 export interface GroupItemInput {
   overview: GroupOverview;
-
   entries: readonly InFlightBranch[];
   facts?: ReviewFacts | null;
-
   rooms?: ReadonlyMap<string, readonly StatusPerson[]>;
   viewer: string;
   now: number;
-
   editing?: boolean;
 }
 
 export function groupItemOf({ overview, entries, facts = null, rooms, viewer, now, editing }: GroupItemInput): StatusGroup {
   const unit = groupEntry(overview);
-
   const own: ReviewFacts = { isDraft: overview.isDraft, state: "open", mergeableState: overview.mergeableState, reviewDecision: null, requestedReviewers: [], authorLogin: null, reviewers: [] };
   const merged: ReviewFacts = facts ? { ...facts, mergeableState: overview.mergeableState } : own;
   const held = groupHeld(overview);
@@ -226,7 +209,6 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
     state,
     ...(lastCommitAt ? { when: timeAgo(lastCommitAt, now), changed: Date.parse(lastCommitAt) } : {}),
     ...(words ? { reason: words } : {}),
-
     ...(heldKind(overview.hold) || overview.ending ? { button: "choose" as const } : {}),
     ...(overview.ending ? { ending: true } : {}),
     people: asYous(people, viewer),
@@ -242,13 +224,10 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
 
 export interface ItemsInput {
   inFlight: InFlightResponse;
-
   facts: ReadonlyMap<number, ReviewFacts>;
-
   rooms: ReadonlyMap<string, readonly StatusPerson[]>;
   viewer: string;
   now: number;
-
   exclude?: ReadonlySet<string>;
 }
 
