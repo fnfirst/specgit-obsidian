@@ -2,8 +2,8 @@ import { changesBetween } from "../disk/merge";
 import { toLf } from "../disk/line-endings";
 import { BURST_FROM } from "./burst";
 import type { Shown } from "../disk/regions";
-import { type DocumentRef, noteName, pathKind } from "../mapping";
-import type { BranchFile, MainFile } from "../auth/git-copy";
+import { type DocumentRef, noteName } from "../mapping";
+import type { MainFile } from "../auth/git-copy";
 import { DELETED_WORDS } from "../deleted-words";
 import { deletedAtOf, isLostAnswerResult, MAIN_MOVED, type ReviewApi, reviewIsOpen, type Reviewer, type StepResult } from "../review/review-api";
 import {
@@ -21,8 +21,6 @@ import {
   setOpenCommentsWarning,
   MOVED_BACK,
   publishConfirm,
-  sameCanvasText,
-  sameDocumentText,
   BUSY_WORDS,
   LOST_ANSWER_DESCRIPTION,
   LOST_ANSWER_TITLE,
@@ -36,7 +34,6 @@ import {
   type CatchUpPreview,
   ASK_REVIEW_FAILED,
   type GroupPlan,
-  isGroupBranch,
   groupPublishWords,
   unitKey,
   unitLabel,
@@ -48,14 +45,15 @@ import {
 } from "../shared/review-flow";
 import { ATTACHMENT_LATER, ATTACHMENT_NOT_SENT, ATTACHMENTS_SAID, attachmentName, toldOf } from "./attachment-memory";
 import { carriesAttachments } from "./attachment-links";
-import { gitBlobShaOfText, isTextOfBytes } from "./blob-sha";
+import { isTextOfBytes } from "./blob-sha";
+import { AutoCommitFlows, type FileRow, type SendOptions } from "./auto-commit";
 import { type Behind, behindOf, type BranchHead, deletedOnGitHub, lastMatched, levelWith, sameAsVault, sendThroughBranch } from "./branch-send";
 import { type CatchUpAsked, CatchUpFlows } from "./catch-up-flows";
 import { attachmentAnswer, attachmentEntry, attachmentsToCarry, nameAttachments, type NamedAttachment } from "./attachment-send";
 import { linksKeptWords, MoveFlows } from "./move-flows";
 import { PublishFlows } from "./publish-flows";
 import { ADD_REVIEWER_HERE, CHANGES_VIEW, DELETE_CONFIRM, DELETE_HELD_BACK, GONE_FROM_VAULT, partialReview, PUBLISHED_HERE, readOnlyRepo, REVIEW_REQUESTED_HERE, NOT_LIVE } from "../review/words";
-import { type Carried, DELETED_ON_GITHUB, failure, isDenied, isLimited, mapLimit, MOVED_AGAIN, MOVED_ATTEMPTS, names, NO_CHANGE_TITLE, noChangeWords, REVIEW_UNCHECKED, REVIEW_UNCHECKED_TITLE, type Sent, UNREADABLE } from "./flow-helpers";
+import { type AutoCommit, type Carried, DELETED_ON_GITHUB, failure, isDenied, isLimited, mapLimit, MOVED_AGAIN, MOVED_ATTEMPTS, names, NO_CHANGE_TITLE, noChangeWords, REVIEW_UNCHECKED, REVIEW_UNCHECKED_TITLE, type Sent, transientFailure, UNREADABLE } from "./flow-helpers";
 import { type GroupChange, GroupFlows, groupableRows } from "./group-flows";
 import { Discard } from "./discard";
 import { StopReview } from "./stop-review";
@@ -79,19 +77,7 @@ const READS: ReadonlySet<string> = new Set(["status", "groups", "mergePreview", 
 
 export type Since = { kind: "same" } | { kind: "unreadable" } | { kind: "gone" } | { kind: "changes"; shown: Shown[] };
 
-export type AutoCommit = "committed" | "held" | "limited" | "retry" | "unsure" | "later" | "conflict" | "deleted";
-
-interface SendOptions {
-  toReview?: boolean;
-  quiet?: boolean;
-  afresh?: boolean;
-  carried?: Carried;
-  auto?: { deps: FlowDeps; memory: SentMemory };
-  edit?: boolean;
-  branch?: string;
-  found?: BranchFile;
-  viaGroup?: true;
-}
+export type { AutoCommit };
 
 const refusedAttachment = (result: StepResult): boolean => !result.ok && [400, 409, 413, 415, 422].includes(result.status);
 
@@ -109,8 +95,6 @@ function attachmentNotSent(result: StepResult): { why: string; server?: true } {
   if (!result.ok && (result.code === "file_exists" || result.code === "file_changed" || result.status === 413)) return { why: attachmentRefusal(result) };
   return { why: failure(result as Extract<StepResult, { ok: false }>, ATTACHMENT_NOT_SENT), server: true };
 }
-
-type FileRow = Pick<ChangeRow, "doc" | "review"> & { change: { path: string } };
 
 export interface SubmitPlan {
   key: string;
@@ -141,6 +125,7 @@ export class ChangesFlows {
   private readonly discarding: Discard;
   private readonly stopping: StopReview;
   private readonly approving: ApproveFlows;
+  private readonly auto: AutoCommitFlows;
 
   constructor(deps: FlowDeps) {
     this.deps = { ...deps, review: this.watched(deps.review, deps.model) };
@@ -190,6 +175,16 @@ export class ChangesFlows {
       syncAll: (rows, group) => this.members.syncAll(rows, group),
       memory: this.memory,
       takeBranchText: (row) => this.members.takeBranchText(row),
+    });
+    this.auto = new AutoCommitFlows({
+      deps: this.deps,
+      model: this.deps.model,
+      backs: this.backs,
+      memory: this.memory,
+      meter: this.meter,
+      goneAt: this.goneAt,
+      sendOnce: (row, options) => this.sendOnce(row, options),
+      sendAttachmentsAlone: (row, deps) => this.sendAttachmentsAlone(row, deps),
     });
   }
 
@@ -349,7 +344,9 @@ export class ChangesFlows {
           problems.push({ name: attachmentName(attachment.repoPath), why: attachmentRefusal(uploaded) });
           continue;
         }
-        return isLostAnswerResult(uploaded) ? { ok: false, unsure: true, message: failure(uploaded, COULDNT_FINISH) } : isLimited(uploaded) ? { ok: false, limited: true, message: failure(uploaded, COULDNT_FINISH) } : { ok: false, message: failure(uploaded, COULDNT_FINISH) };
+        const transient = transientFailure(uploaded, COULDNT_FINISH);
+        if (transient !== null) return transient;
+        return { ok: false, message: failure(uploaded, COULDNT_FINISH) };
       }
       const at = (uploaded.body as { reviewBranch?: unknown }).reviewBranch;
       this.uploaded.set(attachment.key, typeof at === "string" ? at : (row.review?.reviewBranch ?? null));
@@ -387,7 +384,7 @@ export class ChangesFlows {
       }
       if (lenient) deps.attachmentProblems?.(change.path, problems);
       if (saved.body.unchanged === true && expectMain !== null && saved.body.contentSha === expectMain && body === text) {
-        const ours = main.kind === "file" && (pathKind(change.path) === "board" ? sameCanvasText(main.text, text) : /\.md$/i.test(change.path) && sameDocumentText(main.text, text));
+        const ours = main.kind === "file" && sameAsVault(change.path, main.text, text);
         if (isTextOfBytes(text, change.sha)) deps.model.learnSame(change.path, change.sha, expectMain, ours ? undefined : "server");
         return { ok: true, expectMain, unchanged: true };
       }
@@ -397,8 +394,8 @@ export class ChangesFlows {
     }
     const deleted = deletedAtOf(saved);
     if (deleted !== null) return this.gone(change.path, deleted);
-    if (isLostAnswerResult(saved)) return { ok: false, unsure: true, message: failure(saved, COULDNT_FINISH) };
-    if (isLimited(saved)) return { ok: false, message: failure(saved, COULDNT_FINISH), limited: true };
+    const transient = transientFailure(saved, COULDNT_FINISH);
+    if (transient !== null) return transient;
     if (isDenied(saved)) return { ok: false, message: this.refusal(saved, doc, COULDNT_FINISH), decide: true };
     const behind = behindOf(saved, COULDNT_FINISH);
     if (behind) return behind;
@@ -502,17 +499,10 @@ export class ChangesFlows {
     if (target.kind === "file") return { ok: false, decide: true, message: `${noteName(change.path)} already exists on GitHub, so ${noteName(fromPath)} wasn't renamed to it.` };
     const renamed = await this.deps.review.rename(from, doc.path, old.sha);
     if (renamed.ok) return { ok: true, expectMain: null };
-    if (isLostAnswerResult(renamed)) return { ok: false, unsure: true, message: failure(renamed, COULDNT_FINISH) };
-    if (isLimited(renamed)) return { ok: false, message: failure(renamed, COULDNT_FINISH), limited: true };
+    const transient = transientFailure(renamed, COULDNT_FINISH);
+    if (transient !== null) return transient;
     if (isDenied(renamed)) return { ok: false, message: this.refusal(renamed, doc, COULDNT_FINISH), decide: true };
     return renamed.code === MAIN_MOVED ? { ok: false, message: failure(renamed, COULDNT_FINISH), moved: true } : { ok: false, message: failure(renamed, COULDNT_FINISH) };
-  }
-
-  async autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<{ result: AutoCommit; writes: number; deletedAt?: number }> {
-    const before = this.meter.writes;
-    this.goneAt.delete(row.change.path);
-    const result = hooks?.edit ? (this.model.groupOf(row.change.path) ? await this.autoMember(row, isCurrent, hooks) : await this.autoEdited(row, isCurrent, hooks)) : await this.autoCommitted(row, isCurrent);
-    return { result, writes: this.meter.writes - before, ...(result === "deleted" && this.goneAt.has(row.change.path) ? { deletedAt: this.goneAt.get(row.change.path)! } : {}) };
   }
 
   private readonly goneAt = new Map<string, number>();
@@ -523,131 +513,16 @@ export class ChangesFlows {
     return { ok: false, message: DELETED_WORDS.title, deleted: at };
   }
 
-  async autoAttachments(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<{ result: "done" | "later" | "limited"; writes: number }> {
-    const { deps } = this.quiet(hooks);
-    const before = this.meter.writes;
-    const result = await this.sendLeftBehind(row, isCurrent, deps);
-    return { result, writes: this.meter.writes - before };
+  autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<{ result: AutoCommit; writes: number; deletedAt?: number; retryAfterMs?: number }> {
+    return this.auto.autoCommit(row, isCurrent, hooks);
   }
 
-  private async sendLeftBehind(row: ChangeRow, isCurrent: () => boolean, deps: FlowDeps): Promise<"done" | "later" | "limited"> {
-    if (!isCurrent()) return "later";
-    const status = await this.deps.review.status(row.doc);
-    if (status === null) return "later";
-    if (!reviewIsOpen(status)) return "done";
-    const sent = await this.sendAttachmentsAlone({ ...row, review: status }, deps);
-    if (sent === null) return "done";
-    return "limited" in sent && sent.limited ? "limited" : "later";
+  autoAttachments(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<{ result: "done" | "later" | "limited"; writes: number; retryAfterMs?: number }> {
+    return this.auto.autoAttachments(row, isCurrent, hooks);
   }
 
   forgetSent(path: string): void {
     this.memory.forget(path);
-  }
-
-  private async autoCommitted(row: ChangeRow, isCurrent: () => boolean): Promise<AutoCommit> {
-    for (let attempt = 1; attempt <= MOVED_ATTEMPTS; attempt++) {
-      if (!isCurrent()) return "retry";
-      const sent = await this.sendOnce(row, { quiet: true });
-      if (sent.ok) return "committed";
-      if ("held" in sent) return "held";
-      if (sent.deleted !== undefined) return "deleted";
-      if (sent.limited) return "limited";
-      if (sent.unsure) return "unsure";
-      if (sent.unreadable) return "later";
-      if (sent.decide) return "held";
-      if (!sent.moved) return "retry";
-    }
-    return "retry";
-  }
-
-  private quiet(hooks: SendHooks): { deps: FlowDeps; memory: SentMemory; conflicted: () => boolean } {
-    let conflicted = false;
-    const deps: FlowDeps = {
-      ...this.deps,
-      chooseWhatToKeep: async () => {
-        conflicted = true;
-        return null;
-      },
-    };
-    const memory = this.memory.writingWith(async (path, text, expected) => {
-      const written = (await hooks.during([path], () => this.deps.vault.process(path, (current) => (current === expected ? text : null)), (result) => (result === "written" ? { [path]: gitBlobShaOfText(text) } : null))) === "written";
-      if (!written) hooks.notWritten(path);
-      return written;
-    });
-    return { deps, memory, conflicted: () => conflicted };
-  }
-
-  private async autoMember(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<AutoCommit> {
-    const { deps, memory, conflicted } = this.quiet(hooks);
-    if (!isCurrent()) return "retry";
-    if (!hooks.memberBranch) return "held";
-    if (isGroupBranch(hooks.memberBranch)) return this.autoViaGroup(row, isCurrent, hooks, hooks.memberBranch);
-    const status = await this.deps.review.status(row.doc);
-    if (status === null) return "later";
-    if (status.reviewBranch !== hooks.memberBranch || !reviewIsOpen(status)) return "held";
-    const attachments = await this.sendAttachmentsAlone({ ...row, review: status }, deps);
-    if (attachments !== null && "deleted" in attachments && attachments.deleted !== undefined) return "deleted";
-    if (attachments !== null) return "unsure" in attachments && attachments.unsure ? "unsure" : "limited" in attachments && attachments.limited ? "limited" : "retry";
-    const members = new MemberSync({ deps, backs: this.backs, memory, send: async () => ({ ok: false, held: true }) });
-    const sent = await members.syncAll([{ ...row, review: status }], "its group");
-    if (sent.ok) return "committed";
-    if ("held" in sent) return conflicted() ? "conflict" : "held";
-    if (sent.deleted !== undefined) return "deleted";
-    if (sent.limited) return "limited";
-    if (sent.unsure) return "unsure";
-    if (sent.unreadable) return "later";
-    if (sent.decide) return "held";
-    return "retry";
-  }
-
-  private async autoViaGroup(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks, groupBranch: string): Promise<AutoCommit> {
-    const { deps, memory, conflicted } = this.quiet(hooks);
-    for (let attempt = 1; attempt <= MOVED_ATTEMPTS; attempt++) {
-      if (!isCurrent()) return "retry";
-      const status = await this.deps.review.status(row.doc);
-      if (status === null) return "later";
-      if (!reviewIsOpen(status)) return "held";
-      const found = await this.deps.branchFile(row.doc, groupBranch);
-      if (found.kind === "unreadable") return "later";
-      if (found.kind === "absent") return "held";
-      const sent = await this.sendOnce({ ...row, review: status }, { quiet: true, auto: { deps, memory }, toReview: true, branch: groupBranch, found, viaGroup: true });
-      if (sent.ok) return "committed";
-      if ("held" in sent) return conflicted() ? "conflict" : "held";
-      if (sent.deleted !== undefined) return "deleted";
-      if (sent.limited) return "limited";
-      if (sent.unsure) return "unsure";
-      if (sent.unreadable) return "later";
-      if (sent.decide) return "held";
-      if (!sent.moved) return "retry";
-    }
-    return "retry";
-  }
-
-  private async autoEdited(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<AutoCommit> {
-    const { deps, memory, conflicted } = this.quiet(hooks);
-    for (let attempt = 1; attempt <= MOVED_ATTEMPTS; attempt++) {
-      if (!isCurrent()) return "retry";
-      const status = await this.deps.review.status(row.doc);
-      if (status === null) return "later";
-      const draft = reviewIsOpen(status) ? status.reviewBranch : null;
-      if (draft === null && (hooks.ended === true || this.model.sentSha(row.change.path) !== null)) return "later";
-      let found: BranchFile | undefined;
-      if (draft !== null) {
-        found = await this.deps.branchFile(row.doc, draft);
-        if (found.kind === "unreadable") return "later";
-        if (found.kind === "absent") return "held";
-      }
-      const sent = await this.sendOnce(row, { quiet: true, auto: { deps, memory }, ...(draft !== null ? { toReview: true, branch: draft, found: found! } : { edit: row.change.kind === "edited" }) });
-      if (sent.ok) return "committed";
-      if ("held" in sent) return conflicted() ? "conflict" : "held";
-      if (sent.deleted !== undefined) return "deleted";
-      if (sent.limited) return "limited";
-      if (sent.unsure) return "unsure";
-      if (sent.unreadable) return "later";
-      if (sent.decide) return "held";
-      if (!sent.moved) return "retry";
-    }
-    return "retry";
   }
 
   private expand(rows: readonly ChangeRow[]): ChangeRow[] {

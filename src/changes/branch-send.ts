@@ -1,12 +1,12 @@
 import { toLf } from "../disk/line-endings";
-import { noteName, pathKind } from "../mapping";
-import { sameCanvasText, sameDocumentText } from "../shared/review-flow";
+import { noteName } from "../mapping";
 import { ROOM_BEHIND, type StepResult } from "../review/review-api";
 import { BRANCH_MOVED_AGAIN, DELETED_ON_GITHUB, headOf, MOVED_ATTEMPTS, type Sent, UNREADABLE } from "./flow-helpers";
 import type { MainFile } from "../auth/git-copy";
 import type { FlowDeps } from "./flow-deps";
 import type { ChangeRow } from "./model";
 import { mergedWith } from "./note-merge";
+import { sameFileText } from "./same-text";
 import type { SentMemory } from "./sent-memory";
 
 export interface BranchHead {
@@ -22,10 +22,7 @@ export function behindOf(refused: Extract<StepResult, { ok: false }>, fallback: 
   return refused.code === ROOM_BEHIND ? { behind: { head: headOf(refused.body), message: refused.message || fallback } } : null;
 }
 
-export function sameAsVault(path: string, branch: string, vault: string): boolean {
-  if (toLf(branch) === toLf(vault)) return true;
-  return pathKind(path) === "board" ? sameCanvasText(branch, vault) : /\.md$/i.test(path) && sameDocumentText(branch, vault);
-}
+export const sameAsVault = (path: string, branch: string, vault: string): boolean => toLf(branch) === toLf(vault) || sameFileText(path, branch, vault);
 
 async function forkText(deps: FlowDeps, row: ChangeRow, known: string | undefined): Promise<string | null> {
   const branch = known ?? (await deps.review.status(row.doc))?.reviewBranch;

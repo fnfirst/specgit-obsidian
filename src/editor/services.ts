@@ -39,6 +39,7 @@ export interface EditorServices {
   vault: VaultPort;
   bases: BaseStore;
   gitBases: Pick<GitBases, "opened" | "underway">;
+  isLocalOnlyNew?(path: string): boolean;
   mainMoved?(path: string): boolean;
   ownRestarts: Pick<OwnRestarts, "pending" | "own" | "settle">;
   joined?(path: string): void;

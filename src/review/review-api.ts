@@ -7,7 +7,11 @@ import { TRY_AGAIN } from "../shared/review-flow";
 import { DOCUMENT_DELETED_CODE } from "../deleted-words";
 import type { DocumentRef } from "../mapping";
 
-export type StepResult<Body = Record<string, unknown>> = { ok: true; body: Body } | { ok: false; status: number; code: string | null; message: string; body: Record<string, unknown> | null };
+export type StepResult<Body = Record<string, unknown>> =
+  | { ok: true; body: Body }
+  | { ok: false; status: number; code: string | null; message: string; body: Record<string, unknown> | null; retryAfterMs?: number };
+
+export type DetailsResult = Map<number, PrDetail> | null | "failed" | { limited: true; retryAfterMs?: number };
 
 export interface ReviewStatus {
   reviewBranch: string | null;
@@ -77,7 +81,14 @@ const claim = (expectMain: string | null | undefined): Record<string, unknown> =
 
 const GITHUB_DID_NOT_ACCEPT_REVIEW = "GitHub didn't accept this review.";
 
-const failed = (answer: ApiAnswer, fallback: string): StepResult<never> => ({ ok: false, status: answer.status, code: answer.code, message: answer.message ?? fallback, body: answer.body });
+const failed = (answer: ApiAnswer, fallback: string): StepResult<never> => ({
+  ok: false,
+  status: answer.status,
+  code: answer.code,
+  message: answer.message ?? fallback,
+  body: answer.body,
+  ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }),
+});
 
 export interface Reviewer {
   login: string;
@@ -92,12 +103,13 @@ export class ReviewApi {
     return this.sendRaw(path, params && { ...params, ...extra }, fallback);
   }
 
-  async details(repo: string, numbers: readonly number[]): Promise<Map<number, PrDetail> | null | "failed"> {
+  async details(repo: string, numbers: readonly number[]): Promise<DetailsResult> {
     const named = splitRepo(repo);
     if (!named || numbers.length === 0) return new Map();
     try {
       const answer = await this.api.call("POST", "/api/docs/pr/details", { body: { provider: GIT_PROVIDER, owner: named.owner, repo: named.repo, numbers } });
       if (answer.status === 404 || answer.status === 405 || answer.status === 501) return null;
+      if (answer.status === 429 || answer.code === "rate_limited") return { limited: true, ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }) };
       const prs = answer.status === 200 ? answer.body?.prs : undefined;
       if (!Array.isArray(prs)) return "failed";
       return new Map(prs.flatMap((one: unknown) => (typeof one === "object" && one !== null && typeof (one as PrInfo).number === "number" ? [[(one as PrInfo).number, parseDetail(one as PrInfo)] as const] : [])));

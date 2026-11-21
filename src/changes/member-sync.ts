@@ -4,7 +4,7 @@ import { noteName } from "../mapping";
 import { deletedAtOf } from "../review/review-api";
 import type { BranchFile } from "../auth/git-copy";
 import { COULDNT_FINISH } from "../shared/review-flow";
-import { BRANCH_MOVED_AGAIN, failure, MOVED_ATTEMPTS, type Sent, UNREADABLE } from "./flow-helpers";
+import { BRANCH_MOVED_AGAIN, failure, MOVED_ATTEMPTS, type Sent, transientFailure, UNREADABLE } from "./flow-helpers";
 import { behindOf, levelWith, sendThroughBranch } from "./branch-send";
 import type { FlowDeps } from "./flow-deps";
 import type { ChangeRow } from "./model";
@@ -56,7 +56,7 @@ export class MemberSync {
     if (text === null) return { ok: false, message: COULDNT_FINISH };
     const status = row.review ?? (await deps.review.status(doc));
     const there: BranchFile = status === null ? { kind: "unreadable" } : status.reviewBranch === null ? { kind: "absent" } : await deps.branchFile(doc, status.reviewBranch);
-    if (there.kind === "unreadable") return { ok: false, message: UNREADABLE(name) };
+    if (there.kind === "unreadable") return { ok: false, unreadable: true, message: UNREADABLE(name) };
     if (there.kind === "absent") return this.host.send(row);
     if (there.text === text) {
       await memory.remember(change.path, text, undefined, text);
@@ -74,6 +74,8 @@ export class MemberSync {
         deps.deleted?.(change.path, gone);
         return { ok: false, message: DELETED_WORDS.title, deleted: gone };
       }
+      const transient = transientFailure(saved, COULDNT_FINISH);
+      if (transient !== null) return transient;
       return behindOf(saved, COULDNT_FINISH) ?? { ok: false, message: failure(saved, COULDNT_FINISH) };
     }, { branch: status?.reviewBranch ?? undefined, level: async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) });
   }

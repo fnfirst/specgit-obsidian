@@ -10,6 +10,7 @@ export type Phase = "off" | NotePhase;
 export const setPhase = StateEffect.define<Phase>();
 export const setReader = StateEffect.define<boolean>();
 export const setDeleted = StateEffect.define<boolean>();
+export const setJoiningEditable = StateEffect.define<boolean>();
 
 export const deletedField = StateField.define<boolean>({
   create: () => false,
@@ -27,7 +28,17 @@ export const readerField = StateField.define<boolean>({
   },
 });
 
-const HELD: readonly Phase[] = ["joining", "locked"];
+export const joiningEditableField = StateField.define<boolean>({
+  create: () => false,
+  update: (editable, transaction) => {
+    let next = editable;
+    for (const effect of transaction.effects) {
+      if (effect.is(setJoiningEditable)) next = effect.value;
+      else if (effect.is(setPhase) && effect.value !== "joining") next = false;
+    }
+    return next;
+  },
+});
 
 export const phaseField = StateField.define<Phase>({
   create: () => "off",
@@ -36,7 +47,16 @@ export const phaseField = StateField.define<Phase>({
     return phase;
   },
   provide: (field) => [
-    Prec.highest(EditorState.readOnly.computeN([field, readerField], (state) => (HELD.includes(state.field(field)) || state.field(readerField) ? [true] : []))),
+    joiningEditableField,
+    Prec.highest(
+      EditorState.readOnly.computeN([field, readerField, joiningEditableField], (state) => {
+        if (state.field(readerField)) return [true];
+        const phase = state.field(field);
+        if (phase === "locked") return [true];
+        if (phase === "joining" && !state.field(joiningEditableField)) return [true];
+        return [];
+      }),
+    ),
     EditorView.editorAttributes.compute([field], (state): Record<string, string> => {
       const phase = state.field(field);
       return phase === "off" ? {} : { "data-specgit-room": phase };

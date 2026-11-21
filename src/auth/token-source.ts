@@ -1,3 +1,4 @@
+import { retryAfterFromResponse } from "../api/retry-after";
 import type { DocumentRef } from "../mapping";
 import type { AskedStep, RoomSteps, RoomToken, TokenSource } from "../token-source";
 import { type Bearer, withBearer } from "./bearer";
@@ -23,6 +24,7 @@ export class RoomTokenError extends AuthError {
     status: number,
     readonly reason: string | null,
     readonly deletedAt?: number,
+    readonly retryAfterMs?: number,
   ) {
     super(code, message, status);
     this.name = "RoomTokenError";
@@ -46,6 +48,7 @@ interface Answer {
   body: Record<string, unknown> | null;
   reason: string | null;
   message: string | null;
+  retryAfterMs?: number;
 }
 
 export class SpecgitTokenSource implements TokenSource {
@@ -111,11 +114,14 @@ export class SpecgitTokenSource implements TokenSource {
     }
     const parsed = jsonObject(response.text);
     const error = typeof parsed?.error === "object" && parsed.error !== null ? (parsed.error as Record<string, unknown>) : null;
+    const reason = typeof error?.code === "string" ? error.code : typeof parsed?.code === "string" ? parsed.code : null;
+    const retryAfterMs = response.status === 429 || reason === "rate_limited" ? retryAfterFromResponse(response.headers, parsed) : undefined;
     return {
       status: response.status,
       body: parsed,
-      reason: typeof error?.code === "string" ? error.code : typeof parsed?.code === "string" ? parsed.code : null,
+      reason,
       message: typeof error?.message === "string" ? error.message : null,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     };
   }
 
@@ -139,7 +145,7 @@ export class SpecgitTokenSource implements TokenSource {
     }
     if (answer.reason === ROOM_ENDED) return new RoomTokenError("room_ended", ROOM_ENDED_MESSAGE, answer.status, answer.reason);
     if (answer.status === 401) return new RoomTokenError("signed_out", SIGNED_OUT_MESSAGE, 401, answer.reason);
-    if (answer.status >= 500 || answer.status === 429) return new RoomTokenError("network", answer.message ?? NETWORK_MESSAGE, answer.status, answer.reason);
+    if (answer.status >= 500 || answer.status === 429 || answer.reason === "rate_limited") return new RoomTokenError("network", answer.message ?? NETWORK_MESSAGE, answer.status, answer.reason, undefined, answer.retryAfterMs);
     return new RoomTokenError("unexpected", answer.message ?? "specgit couldn't connect that note live just now.", answer.status, answer.reason);
   }
 }

@@ -69,6 +69,7 @@ export class DraftInbound {
   }
   private ends = new Map<string, End | "unknown">();
   private endsAsked = new Set<string>();
+  private endsRetryAfterMs: number | undefined = undefined;
   private texts = new Map<string, string>();
   private draftTexts = new Map<string, string>();
   private draftsDeferred = new Set<string>();
@@ -179,6 +180,7 @@ export class DraftInbound {
   private forgetReads(): void {
     this.ends = new Map();
     this.endsAsked = new Set();
+    this.endsRetryAfterMs = undefined;
     this.texts = new Map();
     this.draftTexts = new Map();
     this.draftsDeferred = new Set();
@@ -276,6 +278,7 @@ export class DraftInbound {
     const { ports } = this.ctx;
     this.ends = new Map();
     this.endsAsked = new Set();
+    this.endsRetryAfterMs = undefined;
     this.texts = new Map();
     if (!ports.reviewEnds || !drafts.level) return;
     const asked: Array<{ path: string; doc: DocumentRef; number: number; group: boolean }> = [];
@@ -291,9 +294,10 @@ export class DraftInbound {
     }
     if (asked.length === 0) return;
     const answer = await ports.reviewEnds(asked.map(({ doc, number, group }) => ({ doc, number, ...(group ? { group: true } : {}) })));
-    if (!this.ctx.current() || answer === null) return;
+    if (!this.ctx.current() || answer.kind === "unsupported") return;
+    this.endsRetryAfterMs = answer.retryAfterMs;
     for (const { path, number } of asked) {
-      const end = answer.get(number);
+      const end = answer.ends.get(number);
       if (end === undefined) this.endsAsked.add(path);
       else this.ends.set(path, end);
     }
@@ -365,10 +369,11 @@ export class DraftInbound {
     this.waiting.set(path, { strikes, until: this.ctx.ports.now() + Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** strikes) });
   }
 
-  private waitEnd(path: string): void {
+  private waitEnd(path: string, retryAfterMs?: number): void {
     const before = this.endWaiting.get(path);
     const strikes = before ? before.strikes + 1 : 0;
-    this.endWaiting.set(path, { strikes, until: this.ctx.ports.now() + Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** strikes) });
+    const wait = retryAfterMs ?? Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** strikes);
+    this.endWaiting.set(path, { strikes, until: this.ctx.ports.now() + wait });
   }
 
   private settled(path: string): void {
@@ -420,7 +425,7 @@ export class DraftInbound {
       const end = together ?? (this.endsAsked.has(path) ? "unknown" : await ports.reviewEnd(doc, entry?.sentTo?.startsWith("group:") === true));
       if (!this.ctx.current()) return false;
       if (end === "unknown" || end === "open") {
-        this.waitEnd(path);
+        this.waitEnd(path, end === "unknown" && this.endsAsked.has(path) ? this.endsRetryAfterMs : undefined);
         return false;
       }
       if (end === "closed" || end === "closedUnnamed") return this.keepClosed(looked, path, end === "closedUnnamed");

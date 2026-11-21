@@ -540,7 +540,7 @@ export class StayConnected {
     const made = await this.ports.createGroup([...files]);
     if (made.writes > 0) this.budget.spend(made.writes);
     if (made.outcome === "limited") {
-      this.budget.limited();
+      this.budget.limited(made.retryAfterMs);
     }
     this.state.save();
     if (made.outcome !== "made" || !this.on) return { grouped: 0, left: files.length };
@@ -682,7 +682,7 @@ export class StayConnected {
         if (sent.result === "done" && sent.writes > 0) this.budget.succeeded();
         this.retried(path, generation, sent.result);
         if (sent.result === "limited") {
-          this.budget.limited();
+          this.budget.limited(sent.retryAfterMs);
           this.wakeAttachments(Math.max(0, this.budget.backoff().until - this.ports.now()), generation);
           return;
         }
@@ -835,7 +835,7 @@ export class StayConnected {
       }
       const key = changeKey(row.change);
       const edit = isEdit(row, committed);
-      const { result, writes, deletedAt } = await this.ports.commit(row, () => this.current(generation), edit ? { edit: true as const, ...(this.draftIn?.pending(row.change.path) ? { ended: true as const } : {}), ...(this.looked?.drafts?.byPath.get(row.change.path)?.inGroup ? { memberBranch: this.looked.drafts.byPath.get(row.change.path)!.branch } : {}), notWritten: (path) => this.activity.notWritten(path), during: (paths, run, left) => this.activity.during(paths, run, left) } : undefined);
+      const { result, writes, deletedAt, retryAfterMs } = await this.ports.commit(row, () => this.current(generation), edit ? { edit: true as const, ...(this.draftIn?.pending(row.change.path) ? { ended: true as const } : {}), ...(this.looked?.drafts?.byPath.get(row.change.path)?.inGroup ? { memberBranch: this.looked.drafts.byPath.get(row.change.path)!.branch } : {}), notWritten: (path) => this.activity.notWritten(path), during: (paths, run, left) => this.activity.during(paths, run, left) } : undefined);
       if (writes > 0) this.budget.spend(writes);
       if (!this.current(generation)) break;
       if (result === "committed" || result === "held" || result === "conflict") delete this.state.data.typed?.[row.change.path];
@@ -853,8 +853,8 @@ export class StayConnected {
         this.conflicts.set(row.change.path, this.conflictKey(looked, row.change.path));
         this.draftIn?.tellConflict(row.change.path, looked.drafts?.byPath.get(row.change.path)?.blob ?? null);
       } else if (result === "limited") {
-        this.budget.limited();
-        this.later("outbound", this.budget.backoff().until - this.ports.now(), () => this.ports.lookAgain());
+        this.budget.limited(retryAfterMs);
+        this.later("outbound", Math.max(0, this.budget.backoff().until - this.ports.now()), () => this.ports.lookAgain());
         this.state.save();
         break;
       } else if (result === "unsure" || result === "later") {

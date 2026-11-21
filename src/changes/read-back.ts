@@ -1,8 +1,7 @@
 import type { BranchFile } from "../auth/git-copy";
 import type { DocumentRef } from "../mapping";
-import { pathKind } from "../mapping";
-import { sameCanvasText } from "../shared/review-flow";
 import { isLostAnswerResult, type ReviewApi, type ReviewStatus, type StepResult } from "../review/review-api";
+import { sameStructuredText } from "./same-text";
 
 const READ_BACK_WAITS_MS = [1_000, 2_000, 3_000, 4_000];
 
@@ -20,7 +19,7 @@ export interface ReadBackDeps {
   pause: (ms: number) => Promise<void>;
 }
 
-const holdsText = (path: string, held: string, text: string): boolean => held === text || (pathKind(path) === "board" && sameCanvasText(held, text));
+const holdsText = (path: string, held: string, text: string): boolean => held === text || sameStructuredText(path, held, text);
 
 export async function reviewHolds(deps: ReadBackDeps, doc: DocumentRef, text: string, status?: ReviewStatus | null): Promise<boolean | null> {
   const read = status ?? (await deps.review.status(doc));

@@ -13,7 +13,7 @@ import { type DocumentRef, fileFor, normalizeFolder, underFolder } from "../mapp
 import { bringInDraft, bringInNewer, type BroughtDraft, type BroughtNewer } from "../changes/bring-in";
 import { copiedWords, copyIn, FILES_PER_BATCH, type CopyInFile, type CopyInOptions, type CopyInPorts, type CopyInResult } from "../changes/copy-in";
 
-import { type End, endOf } from "./ends";
+import { endOf, readReviewEnds } from "./ends";
 import { fileAttachmentLinks } from "../changes/attachment-links";
 import { type BringPorts, AttachmentLooks, draftElseMain } from "../changes/bring-attachments";
 import { isAttachmentPath } from "../shared/review-flow";
@@ -311,7 +311,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     recordBase: (path, doc, _text, raw) => recordMainBase(deps.bases, path, doc, raw),
     rebase: (path, sha) => deps.model.rebased(path, sha),
     chooseWhatToKeep: deps.chooseWhatToKeep,
-    commit: (row: ChangeRow, isCurrent, hooks): Promise<{ result: Committed; writes: number; deletedAt?: number }> => deps.flows.autoCommit(row, isCurrent, hooks),
+    commit: (row: ChangeRow, isCurrent, hooks): Promise<{ result: Committed; writes: number; deletedAt?: number; retryAfterMs?: number }> => deps.flows.autoCommit(row, isCurrent, hooks),
     retryAttachments: (row, isCurrent, hooks) => deps.flows.autoAttachments(row, isCurrent, hooks),
     hidden: appHidden,
     offline: () => deps.model.offline(),
@@ -329,21 +329,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       }
       return endOf(read.pr, deps.login(), group);
     },
-    reviewEnds: async (files) => {
-      const ended = new Map<number, End | "unknown">();
-      const byRepo = new Map<string, number[]>();
-      const groups = new Set(files.filter((one) => one.group === true).map((one) => one.number));
-      for (const { doc, number } of files) byRepo.set(doc.repo, [...(byRepo.get(doc.repo) ?? []), number]);
-      for (const [repo, numbers] of byRepo) {
-        for (let at = 0; at < numbers.length; at += FILES_PER_BATCH) {
-          const details = await deps.review.details?.(repo, numbers.slice(at, at + FILES_PER_BATCH));
-          if (details === undefined || details === null) return null;
-          if (details === "failed") continue;
-          for (const [number, pr] of details) ended.set(number, reviewIsOpen({ reviewBranch: null, pr }) ? "open" : endOf(pr, deps.login(), groups.has(pr.number)));
-        }
-      }
-      return ended;
-    },
+    reviewEnds: (files) => readReviewEnds(files, deps.review.details ? (repo, numbers) => deps.review.details!(repo, numbers) : undefined, deps.login, FILES_PER_BATCH),
     agreed: (path, agreement) => {
       deps.flows.forgetSent(path);
       if (agreement === null) deps.model.learnSent(path, null);
@@ -369,7 +355,11 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     inGroup: (path) => deps.model.groupOf(path) !== undefined,
     createGroup: async (rows) => {
       const made = await deps.flows.createGroup(rows);
-      return { outcome: made.ok ? "made" : made.limited === true ? "limited" : "failed", writes: made.writes ?? 0 };
+      return {
+        outcome: made.ok ? "made" : made.limited === true ? "limited" : "failed",
+        writes: made.writes ?? 0,
+        ...(!made.ok && made.retryAfterMs !== undefined ? { retryAfterMs: made.retryAfterMs } : {}),
+      };
     },
     diagnose: (what) => console.debug(`specgit: stay connected: ${what}`),
     later: (fn, ms) => {

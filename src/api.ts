@@ -1,6 +1,7 @@
 import { type Bearer, withBearer } from "./auth/bearer";
 import { GIT_PROVIDER, NOTE_BRANCH, normalizeServer, VERSION_HEADER } from "./auth/config";
 import { jsonObject, type Transport } from "./auth/transport";
+import { retryAfterFromResponse } from "./api/retry-after";
 import type { DocumentRef } from "./mapping";
 
 export interface ApiAnswer {
@@ -8,6 +9,7 @@ export interface ApiAnswer {
   body: Record<string, unknown> | null;
   message: string | null;
   code: string | null;
+  retryAfterMs?: number;
 }
 
 export interface ApiOptions {
@@ -46,11 +48,14 @@ export class SpecgitApi {
     );
     const body = jsonObject(response.text);
     const error = body && typeof body.error === "object" && body.error !== null ? (body.error as Record<string, unknown>) : null;
+    const code = typeof error?.code === "string" ? error.code : typeof body?.code === "string" ? body.code : null;
+    const retryAfterMs = response.status === 429 || code === "rate_limited" ? retryAfterFromResponse(response.headers, body) : undefined;
     return {
       status: response.status,
       body,
       message: typeof error?.message === "string" ? error.message : null,
-      code: typeof error?.code === "string" ? error.code : typeof body?.code === "string" ? body.code : null,
+      code,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     };
   }
 }

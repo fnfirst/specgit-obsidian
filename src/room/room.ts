@@ -1,5 +1,6 @@
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
+import { retryAfterFromError } from "../api/retry-after";
 import { TreeIndex } from "../cursors/tree-index";
 import { RoomUndo } from "../editor/undo";
 import type { DocumentRef } from "../mapping";
@@ -202,13 +203,14 @@ export class Room {
     } catch (error) {
       this.failure = error instanceof Error ? error.message : "Couldn't reach specgit.";
       this.failedWith = error instanceof AuthError ? error.code : null;
-      if (this.failedWith !== "signed_out" && this.failedWith !== "document_deleted") this.retryLater();
+      if (this.failedWith !== "signed_out" && this.failedWith !== "document_deleted") this.retryLater(retryAfterFromError(error));
     }
     this.refresh();
   }
 
-  private retryLater(): void {
-    const wait = RETRY_WAITS_MS[Math.min(this.failedTries, RETRY_WAITS_MS.length - 1)] ?? 0;
+  private retryLater(retryAfterMs?: number): void {
+    const base = RETRY_WAITS_MS[Math.min(this.failedTries, RETRY_WAITS_MS.length - 1)] ?? 0;
+    const wait = retryAfterMs === undefined ? base : Math.max(base, retryAfterMs);
     this.failedTries += 1;
     this.retryAtMs = Date.now() + wait;
     this.retryTimer = window.setTimeout(() => {
@@ -225,19 +227,23 @@ export class Room {
 
   private recheck(tries = 0): void {
     if (tries === 0 && !askAgain(this.transport?.steps)) return;
-    const again = (): void => {
+    const again = (retryAfterMs?: number): void => {
       if (this.destroyed) return;
-      const wait = RECHECK_WAITS_MS[Math.min(tries, RECHECK_WAITS_MS.length - 1)] ?? 0;
+      const base = RECHECK_WAITS_MS[Math.min(tries, RECHECK_WAITS_MS.length - 1)] ?? 0;
+      const wait = retryAfterMs === undefined ? base : Math.max(base, retryAfterMs);
       this.recheckTimer = window.setTimeout(() => {
         this.recheckTimer = null;
         this.recheck(tries + 1);
       }, wait);
     };
-    this.ask().then((answer) => {
-      const steps = stepsIn(answer);
-      if (steps?.failed) again();
-      else if (askAgain(steps) && tries + 1 < RECHECK_BEFORE_TRIES) again();
-    }, again);
+    this.ask().then(
+      (answer) => {
+        const steps = stepsIn(answer);
+        if (steps?.failed) again();
+        else if (askAgain(steps) && tries + 1 < RECHECK_BEFORE_TRIES) again();
+      },
+      (error) => again(retryAfterFromError(error)),
+    );
   }
 
   private dropTransport(): void {
