@@ -14,7 +14,7 @@ export interface HttpResponse {
   headers?: Record<string, string>;
 }
 
-export const headerOf = (response: HttpResponse, name: string): string | undefined => {
+export const headerOf = (response: Pick<HttpResponse, "headers">, name: string): string | undefined => {
   const wanted = name.toLowerCase();
   return Object.entries(response.headers ?? {}).find(([key]) => key.toLowerCase() === wanted)?.[1];
 };

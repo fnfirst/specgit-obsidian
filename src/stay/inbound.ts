@@ -14,7 +14,7 @@ import type { ReviewRequest } from "../editor/services";
 import { type DocumentRef, noteName } from "../mapping";
 import type { Activity } from "./activity";
 import { BURST_FILES } from "./limits";
-import { CHOICE_WORDS } from "./words";
+import { CHOICE_WORDS, DRAFT_SAID } from "./words";
 import type { StayState } from "./state";
 import type { StayPorts } from "./types";
 
@@ -26,6 +26,7 @@ export const TEXTS_PER_PASS = 200;
 export const FIRST_WAIT_MS = 20_000;
 export const MAX_WAIT_MS = 5 * 60_000;
 export const STUCK_MS = 60_000;
+export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 
 export interface InboundContext {
   ports: StayPorts;
@@ -62,6 +63,8 @@ export class Inbound {
   private cut = false;
   private readonly releasedDeletes = new Set<string>();
   private announcedDeletes = 0;
+  private readonly pendingRenames = new Map<string, { to: string; sha: string }>();
+  private readonly renameTold = new Set<string>();
 
   constructor(private readonly ctx: InboundContext) {}
 
@@ -85,6 +88,7 @@ export class Inbound {
     const removed = Object.entries(seen).filter(([path]) => !looked.repo.has(path));
     const moves = this.pairMoves(looked, added, removed);
     const inMove = new Set(moves.flatMap((move) => [move.from, move.to]));
+    this.notePendingRenames(looked, added, removed, inMove);
     this.noteCues(looked, added);
     this.texts = await this.fetchTexts(looked, added, inMove);
     for (const move of moves) if (this.ready(move.from, move.sha)) await this.guarded(move.from, move.sha, () => this.move(move, said));
@@ -206,6 +210,7 @@ export class Inbound {
     this.cues.delete(path);
     this.announced.delete(path);
     this.reviewTold.delete(path);
+    this.pendingRenames.delete(path);
     const guessed = this.ctx.state.data.guessed;
     if (guessed.includes(path)) this.ctx.state.data.guessed = guessed.filter((one) => one !== path);
     const seen = this.ctx.state.data.seen;
@@ -290,6 +295,29 @@ export class Inbound {
       }
       this.opening.delete(path);
     })();
+  }
+
+  private notePendingRenames(looked: Looked, added: Array<[string, string]>, removed: Array<[string, string]>, inMove: ReadonlySet<string>): void {
+    const seen = this.ctx.state.data.seen!;
+    for (const path of [...this.pendingRenames.keys()]) if (looked.repo.has(path)) this.pendingRenames.delete(path);
+    const removedBySha = new Map<string, string[]>();
+    for (const [from, sha] of removed) {
+      if (inMove.has(from) || sha === "" || sha === EMPTY_BLOB) continue;
+      const entry = looked.files.get(from);
+      if (!entry || entry.sha === sha || unchangedHere(entry)) continue;
+      removedBySha.set(sha, [...(removedBySha.get(sha) ?? []), from]);
+    }
+    const addedBySha = new Map<string, string[]>();
+    for (const [path, sha] of added) {
+      if (inMove.has(path) || seen[path] !== undefined || sha === "" || sha === EMPTY_BLOB) continue;
+      addedBySha.set(sha, [...(addedBySha.get(sha) ?? []), path]);
+    }
+    for (const [sha, froms] of removedBySha) {
+      if (froms.length !== 1) continue;
+      const tos = addedBySha.get(sha);
+      if (!tos || tos.length !== 1) continue;
+      this.pendingRenames.set(froms[0]!, { to: tos[0]!, sha });
+    }
   }
 
   private pairMoves(looked: Looked, added: Array<[string, string]>, removed: Array<[string, string]>): Array<{ from: string; to: string; sha: string; held: string }> {
@@ -501,6 +529,14 @@ export class Inbound {
     if (!entry || !doc) return this.settled(path, null);
     if (entry.sha !== sha && !unchangedHere(entry)) {
       if (!state.data.kept.includes(path)) state.data.kept.push(path);
+      const moved = this.pendingRenames.get(path);
+      if (moved !== undefined && moved.sha === sha) {
+        const key = `${path}|${moved.to}|${sha}`;
+        if (!this.renameTold.has(key)) {
+          this.renameTold.add(key);
+          ports.notify(DRAFT_SAID.renameKept(noteName(path), noteName(moved.to)));
+        }
+      }
       return this.settled(path, null);
     }
     if (!(await this.free(path, doc, sha))) return;

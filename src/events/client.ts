@@ -124,8 +124,8 @@ export class LiveEvents {
       }
       this.askedAt = null;
       if (generation !== this.generation) return;
-      if (answer?.status === 429) {
-        await this.sleep(RATE_LIMITED_WAIT_MS, generation);
+      if (answer?.status === 429 || answer?.code === "rate_limited") {
+        await this.sleep(Math.max(MIN_ASK_GAP_MS, answer.retryAfterMs ?? RATE_LIMITED_WAIT_MS), generation);
         continue;
       }
       const body = answer?.status === 200 ? answer.body : null;

@@ -96,6 +96,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     });
 
     let repoShaOf = (_path: string): string | null => null;
+    let isLocalOnlyNew = (_path: string): boolean => false;
     let mainMoved = (_path: string): boolean => false;
     let draftBy = (_path: string): Promise<string | null> => Promise.resolve(null);
     let liveJoined = (_path: string): void => undefined;
@@ -108,6 +109,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     this.registerEditorExtension(
       liveEditor({
         reading,
+        isLocalOnlyNew: (path) => isLocalOnlyNew(path),
         mainMoved: (path) => mainMoved(path),
         documentFor: (path) => documentFor(this.config, path),
         onMapping: (listener) => this.settingsSaved.subscribe(listener),
@@ -259,6 +261,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     });
 
     repoShaOf = (path) => changes.model.vault()?.files.get(path)?.repoSha ?? null;
+    isLocalOnlyNew = (path) => disk.bases.read(path).status === "none" && changes.model.isLocalOnlyNew(path);
     this.register(this.settingsSaved.subscribe(changes.settingsChanged));
     this.stay = setUpStay(this, {
       settings: () => this.config,

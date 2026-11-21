@@ -114,6 +114,9 @@ export class StatusController {
   private readAt = 0;
   private retry: unknown = null;
   private retryMs = FACTS_RETRY_MS;
+  private limitedUntil = 0;
+  private fullRefreshPending = false;
+  private pendingRefresh = new Set<number>();
   private wasBusy = false;
   private reading: Promise<void> | null = null;
   private again = false;
@@ -141,6 +144,9 @@ export class StatusController {
 
   dispose(): void {
     this.disposed = true;
+    this.limitedUntil = 0;
+    this.fullRefreshPending = false;
+    this.pendingRefresh.clear();
     this.cancelRetry();
     this.stops.forEach((stop) => stop());
     this.listeners.clear();
@@ -182,16 +188,20 @@ export class StatusController {
     this.retry = null;
   }
 
-  private retryLater(): void {
+  private scheduleRetry(wait: number): void {
     this.cancelRetry();
-    const wait = this.retryMs;
-    this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
     const run = (): void => {
       this.retry = null;
       if (this.disposed) return;
       void this.read(true);
     };
     this.retry = (this.env.timers?.set ?? ((fn, ms) => window.setTimeout(fn, ms)))(run, wait);
+  }
+
+  private retryLater(): void {
+    const wait = this.retryMs;
+    this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
+    this.scheduleRetry(wait);
   }
 
   private modelChanged(): void {
@@ -215,6 +225,13 @@ export class StatusController {
   }
 
   private read(retrying = false): Promise<void> {
+    const remaining = this.limitedUntil - this.now();
+    if (remaining > 0) {
+      if (!retrying) this.fullRefreshPending = true;
+      if (this.retry === null) this.scheduleRetry(remaining);
+      return this.reading ?? Promise.resolve();
+    }
+    this.limitedUntil = 0;
     if (this.reading) {
       this.again = true;
       return this.reading;
@@ -223,23 +240,41 @@ export class StatusController {
     const numbers = this.ordered();
     this.asked = this.numbers().join(",");
     this.readAt = this.now();
-    const wanted = retrying ? numbers.filter((number) => !this.facts.has(number)) : numbers;
+    const full = !retrying || this.fullRefreshPending;
+    this.fullRefreshPending = false;
+    const pending = this.pendingRefresh;
+    this.pendingRefresh = new Set();
+    const wanted = full ? numbers : numbers.filter((number) => !this.facts.has(number) || pending.has(number));
     this.reading = (async () => {
       const next = new Map<number, ReviewFacts>();
       let complete = true;
       let refused = false;
+      let limited: { limited: true; retryAfterMs?: number } | null = null;
+      let stoppedAt = wanted.length;
       for (let at = 0; at < wanted.length; at += FACTS_PER_REQUEST) {
         const answer = await this.env.review.details(this.env.repo(), wanted.slice(at, at + FACTS_PER_REQUEST));
-        if (answer === null || answer === "failed") {
+        if (!(answer instanceof Map)) {
           complete = false;
-          refused = answer === "failed";
+          stoppedAt = at;
+          if (answer === "failed") refused = true;
+          else if (answer !== null) limited = answer;
           break;
         }
         for (const [number, detail] of answer) next.set(number, factsOf(detail));
       }
       if (this.disposed) return;
-      if (complete) this.retryMs = FACTS_RETRY_MS;
-      else if (refused) this.retryLater();
+      if (complete) {
+        this.retryMs = FACTS_RETRY_MS;
+        this.limitedUntil = 0;
+      } else if (limited !== null || refused) {
+        for (const number of wanted.slice(stoppedAt)) this.pendingRefresh.add(number);
+        if (limited !== null) {
+          const wait = limited.retryAfterMs ?? this.retryMs;
+          if (limited.retryAfterMs === undefined) this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
+          this.limitedUntil = this.now() + wait;
+          this.scheduleRetry(wait);
+        } else this.retryLater();
+      }
       if (complete || next.size > 0) {
         const kept = new Map<number, ReviewFacts>();
         for (const number of numbers) {

@@ -6,7 +6,7 @@ import { toLf } from "../disk/line-endings";
 import { isTextOfBytes } from "./blob-sha";
 import { BURST_FROM, leftOutWords, newUploadId, planBurst, planBurstParts, sendBurst } from "./burst";
 import { attachmentAnswer, nameAttachments, type NamedAttachment } from "./attachment-send";
-import { isLostAnswerResult } from "../review/review-api";
+import { isLostAnswerResult, type StepResult } from "../review/review-api";
 import { isLimited } from "./flow-helpers";
 import type { Sent } from "./flow-helpers";
 import { type ChangeRow, type ChangesModel, type Doing } from "./model";
@@ -36,7 +36,7 @@ import {
 
 const fileNameOf = (path: string): string => path.split("/").pop() ?? path;
 
-export type GroupChange = { ok: true; id?: string; ungrouped?: UngroupAnswer; writes?: number } | { ok: false; limited?: true; writes?: number };
+export type GroupChange = { ok: true; id?: string; ungrouped?: UngroupAnswer; writes?: number } | { ok: false; limited?: true; retryAfterMs?: number; writes?: number };
 
 export interface GroupHost {
   readonly deps: FlowDeps;
@@ -60,15 +60,21 @@ export class GroupFlows {
     return groupPlan(selected.map((row) => row.unit), { entitled: !this.host.model.state().groupsLocked, cannotJoin: (entry) => (deleted.has(entry.path) ? DELETE_CANT_JOIN : null), noun: "note" });
   }
 
-  private async groupFailed(message: string, code?: string | null, body?: Record<string, unknown> | null): Promise<GroupChange> {
+  private async groupFailed(message: string, code?: string | null, body?: Record<string, unknown> | null): Promise<{ ok: false }> {
     const written = typeof body?.written === "number" ? body.written : undefined;
     const retry = typeof body?.retry === "boolean" ? body.retry : undefined;
     await this.host.alert({ title: GROUP_FAILED_TITLE, description: groupFailedWords(message || "Something went wrong.", code, { ...(written === undefined ? {} : { written }), ...(retry === undefined ? {} : { retry }) }) });
     return { ok: false };
   }
 
-  private refused(answer: { message: string; code: string | null; body?: Record<string, unknown> | null }): Promise<GroupChange> {
+  private refused(answer: { message: string; code: string | null; body?: Record<string, unknown> | null }): Promise<{ ok: false }> {
     return this.groupFailed(answer.message, answer.code, answer.body);
+  }
+
+  private async limitedRefusal(answer: Extract<StepResult, { ok: false }>): Promise<GroupChange> {
+    const failed = await this.refused(answer);
+    if (!isLimited(answer)) return failed;
+    return { ...failed, limited: true, ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }) };
   }
 
   private leftOutWords(rows: readonly ChangeRow[], same: ReadonlySet<string>, answer: Record<string, unknown>): string | null {
@@ -76,12 +82,12 @@ export class GroupFlows {
     return sameAsGitHubWords(rows.filter((row) => same.has(row.change.path) || server.has(row.doc.path)).map((row) => fileNameOf(row.change.path)));
   }
 
-  private async sendAll(rows: readonly ChangeRow[], group: string): Promise<ReadonlySet<string> | false | "limited"> {
+  private async sendAll(rows: readonly ChangeRow[], group: string): Promise<ReadonlySet<string> | false | { limited: true; retryAfterMs?: number }> {
     const sent = await this.host.syncAll(rows, group);
     if ("held" in sent) return false;
     if (!sent.ok) {
       await this.groupFailed(sent.message);
-      return "limited" in sent && sent.limited === true ? "limited" : false;
+      return "limited" in sent && sent.limited === true ? { limited: true, ...(sent.retryAfterMs === undefined ? {} : { retryAfterMs: sent.retryAfterMs }) } : false;
     }
     return new Set("same" in sent ? sent.same : []);
   }
@@ -126,8 +132,8 @@ export class GroupFlows {
     const read = await this.host.model.read(asked);
     if (await this.unchecked(read)) return { ok: false };
     const same = await this.sendAll(read, "the new group");
-    if (same === "limited") return { ok: false, limited: true };
     if (same === false) return { ok: false };
+    if ("limited" in same) return { ok: false, limited: true, ...(same.retryAfterMs === undefined ? {} : { retryAfterMs: same.retryAfterMs }) };
     const files = await this.remaining(read, same, 2);
     if (files === null) return { ok: false };
     const repo = files[0]!.doc.repo;
@@ -140,7 +146,7 @@ export class GroupFlows {
     }
     const landed = await this.host.backs.group(made, repo, paths);
     if (landed !== null) return { ok: true, id: landed };
-    return { ...(await this.refused(made)), ...(isLimited(made) ? { limited: true as const } : {}) };
+    return this.limitedRefusal(made);
   }
 
   private readonly uploads = new Map<string, string>();
@@ -181,9 +187,9 @@ export class GroupFlows {
       let said: Record<string, unknown> | null = null;
       const asked = await sendBurst(upload, [{ files: [], named: unique }], uploadId, pause, { last: false, onAnswer: (body) => void (said = body) });
       const echo = said === null ? null : attachmentAnswer(said);
-      if (!asked.ok && isLostAnswerResult(asked.result)) return { ...(await this.groupFailed(asked.result.message, asked.result.code, asked.result.body)) };
+      if (!asked.ok && isLostAnswerResult(asked.result)) return this.refused(asked.result);
       if (!asked.ok || echo === null) {
-        if (!asked.ok && asked.result.status !== 400) return { ...(await this.groupFailed(asked.result.message, asked.result.code, asked.result.body)), ...(isLimited(asked.result) ? { limited: true as const } : {}) };
+        if (!asked.ok && asked.result.status !== 400) return this.limitedRefusal(asked.result);
         const withAttachments = send.filter((pick) => attachmentsOf.has(pick.row.doc.path)).map((pick) => pick.row);
         const without = send.filter((pick) => !attachmentsOf.has(pick.row.doc.path)).map((pick) => pick.row);
         this.uploads.delete(key);
@@ -199,7 +205,7 @@ export class GroupFlows {
     }
     const parts = planBurstParts(burst, wanted);
     const done = await sendBurst(upload, parts, uploadId, pause);
-    if (!done.ok) return { ...(await this.groupFailed(done.result.message, done.result.code, done.result.body)), ...(isLimited(done.result) ? { limited: true as const } : {}) };
+    if (!done.ok) return this.limitedRefusal(done.result);
     this.uploads.delete(key);
     const leftOnServer = new Set(done.left.map((one) => one.path));
     await this.host.memory.rememberMany(send.flatMap((pick, i) => (texts[i] !== null && !leftOnServer.has(pick.row.doc.path) ? [[pick.row.change.path, toLf(texts[i]!)] as const] : [])));
@@ -225,7 +231,8 @@ export class GroupFlows {
     const read = await this.host.model.read(asked);
     if (await this.unchecked(read)) return { ok: false };
     const same = await this.sendAll(read, name);
-    if (same === false || same === "limited") return { ok: false };
+    if (same === false) return { ok: false };
+    if ("limited" in same) return { ok: false, limited: true, ...(same.retryAfterMs === undefined ? {} : { retryAfterMs: same.retryAfterMs }) };
     if (quiet && read.every((row) => same.has(row.change.path))) return { ok: true };
     const files = await this.remaining(read, same, 1);
     if (files === null) return { ok: false };
@@ -237,7 +244,7 @@ export class GroupFlows {
       return { ok: true };
     }
     if ((await this.host.backs.group(added, repo, paths, id)) !== null) return { ok: true };
-    return this.refused(added);
+    return this.limitedRefusal(added);
   }
 
   async takeOut(group: ChangeRow, path: string): Promise<GroupChange> {

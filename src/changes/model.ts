@@ -149,6 +149,7 @@ export class ChangesModel {
   private readonly lookListeners = new Set<(looked: Looked | null) => void>();
   private looked: { rows: ChangeRow[]; groups: ChangeRow[]; maps: Lookups } | null = null;
   private states: VaultStates | null = null;
+  private repoFiles: ReadonlyMap<string, string> | null = null;
 
   constructor(private readonly deps: ChangesDeps) {}
 
@@ -494,6 +495,7 @@ export class ChangesModel {
       this.notHere = [];
       this.notHereSkipped = [];
       this.states = null;
+      this.repoFiles = null;
       this.theirs = undefined;
       this.awareness.reset();
       this.watched = null;
@@ -506,6 +508,7 @@ export class ChangesModel {
     if (!this.deps.signedIn()) {
       this.lookListeners.forEach((listener) => listener(null));
       this.states = null;
+      this.repoFiles = null;
       return this.set({ phase: "signed-out", rows: [] });
     }
     const everyFile = this.deps.listFiles();
@@ -532,10 +535,12 @@ export class ChangesModel {
       return;
     }
     if (repo.kind === "not_installed") {
+      this.repoFiles = null;
       this.lookListeners.forEach((listener) => listener(null));
       return this.set({ phase: "not-installed" });
     }
     if (repo.kind !== "files") {
+      this.repoFiles = null;
       this.lookListeners.forEach((listener) => listener(null));
       const retry = RETRY_AFTER_FAILED_MS[Math.min(this.failedLooks, RETRY_AFTER_FAILED_MS.length - 1)] ?? 0;
       this.failedLooks += 1;
@@ -583,6 +588,7 @@ export class ChangesModel {
     const rows = await this.rowsFor(localChanges(states));
     if (this.movedFrom(place)) return;
     this.states = states;
+    this.repoFiles = repoFiles;
     this.set({ phase: "ready", rows, missing: this.notHere.length, hidden, leftOut: leftOutKinds(others) });
     if (unread > 0) {
       const again = this.unreadAsking.after({ unread: true });
@@ -650,6 +656,27 @@ export class ChangesModel {
     return this.states;
   }
 
+  isLocalOnlyNew(path: string): boolean {
+    if (this.place === null || this.place !== (this.deps.place?.() ?? "")) return false;
+    if (this.current.phase !== "ready" || this.states === null || this.repoFiles === null || this.flight === null) return false;
+    if (this.deps.documentFor(path) === null || this.deps.deletedOnMain?.(path) === true) return false;
+    const lower = path.toLowerCase();
+    for (const repoPath of this.repoFiles.keys()) if (repoPath.toLowerCase() === lower) return false;
+    for (const [overPath, over] of this.overlay) if (overPath.toLowerCase() === lower && over.sha !== null) return false;
+    for (const [repoPath, entries] of Object.entries(this.flight.paths)) {
+      if (entries.length > 0 && this.vaultPathFor(repoPath).toLowerCase() === lower) return false;
+    }
+    const cached = this.deps.cache.get(path);
+    if (cached !== undefined && (cached.base !== null || cached.sent !== undefined)) return false;
+    for (const [knownPath, file] of this.states.files) {
+      if (knownPath.toLowerCase() !== lower) continue;
+      if (file.state.kind !== "here" || file.state.change !== "new") return false;
+      const entry = this.deps.cache.get(knownPath);
+      if (entry !== undefined && (entry.base !== null || entry.sent !== undefined)) return false;
+    }
+    return true;
+  }
+
   missingFiles(): readonly CopyInFile[] {
     return this.notHere;
   }
@@ -712,7 +739,7 @@ export class ChangesModel {
       const details = await this.deps.review.details!(run[0]!.repo, run.map((one) => one.light.number));
       if ((this.deps.place?.() ?? "") !== place || this.disposed) return failedReads;
       if (details === null) break;
-      if (details === "failed") {
+      if (!(details instanceof Map)) {
         if (mode === "look") for (const { change } of numbered) given.add(change.path);
         break;
       }

@@ -18,7 +18,7 @@ import { Join, type Outcome, TOO_LARGE_MESSAGE } from "./join";
 import { isNoteEditor } from "./kind";
 import { OwnWrites } from "./own-write";
 import { NoteNotices } from "./note-notices";
-import { type Phase, setDeleted, setReader, setPhase } from "./phase";
+import { type Phase, setDeleted, setJoiningEditable, setReader, setPhase } from "./phase";
 import { NoteRegistry } from "./registry";
 import { Review } from "./review";
 import type { EditorServices } from "./services";
@@ -58,6 +58,7 @@ export class NoteEditor implements PluginValue {
   private carets: CaretLayer | null = null;
   private textVersion = 0;
   private phase: Phase = "off";
+  private joiningEditable = false;
   private stops: Array<() => void> = [];
   private watching: Array<() => void> = [];
   private patience: number | null = null;
@@ -135,7 +136,9 @@ export class NoteEditor implements PluginValue {
 
   takeLead(): void {
     this.tellReading();
+    if (this.phase === "joining" && this.patience === null && !this.review.open) this.waitForRoom();
     later(() => this.bindIfReady());
+    for (const editor of this.registry.editorsOf(this.path)) if (editor !== this) later(() => editor.bindIfReady());
   }
 
   private whenAttached(run: () => void, frames = 0): void {
@@ -181,9 +184,10 @@ export class NoteEditor implements PluginValue {
 
   private connect(ref: DocumentRef): void {
     this.announce = true;
+    const editable = this.leads() && this.services.isLocalOnlyNew?.(this.path) === true;
     this.joinRoom(this.services.rooms.acquire(ref));
     this.waitForRoom();
-    this.moveTo("joining");
+    this.moveTo("joining", editable);
     later(() => this.roomChanged());
   }
 
@@ -313,7 +317,6 @@ export class NoteEditor implements PluginValue {
   private meet(): void {
     if (this.destroyed || !this.room) return;
     if (!this.room.bridgeHere) return this.pause();
-    this.clearPatience();
     this.bindIfReady();
   }
 
@@ -419,6 +422,8 @@ export class NoteEditor implements PluginValue {
   }
 
   private async chooseWhatToKeep(outcome: Extract<Outcome, { kind: "review" }>): Promise<void> {
+    this.setAll("joining");
+    for (const editor of this.registry.editorsOf(this.path)) editor.clearPatience();
     const verdict = await this.review.ask(outcome);
     const room = this.room;
     if (verdict === "withdrawn" || !room) return;
@@ -427,13 +432,22 @@ export class NoteEditor implements PluginValue {
   }
 
   private stayLocal(why: string): void {
+    this.clearPatience();
     if (this.ref) this.services.connections.choose(this.ref, false, false);
     this.services.notify(why);
   }
 
   private bindToLead(room: Room): void {
     const lead = this.registry.editorsOf(this.path)[0];
-    if (!lead?.binding) return this.moveTo(lead && lead.phase !== "off" && lead.phase !== "local" ? lead.phase : "joining");
+    if (!lead?.binding) {
+      const next = lead && lead.phase !== "off" && lead.phase !== "local" ? lead.phase : "joining";
+      this.moveTo(next);
+      if (next === "joining") {
+        if (lead?.review.open) this.clearPatience();
+        else if (this.patience === null) this.waitForRoom();
+      }
+      return;
+    }
     const binding = Binding.follow(this.view, room, () => later(() => this.lost(binding)));
     this.binding = binding;
     this.join.bound();
@@ -553,11 +567,14 @@ export class NoteEditor implements PluginValue {
     for (const editor of this.registry.editorsOf(this.path)) editor.moveTo(phase);
   }
 
-  private moveTo(phase: Phase): void {
-    if (this.phase !== phase) {
+  private moveTo(phase: Phase, joiningEditable = false): void {
+    const editable = phase === "joining" && joiningEditable;
+    if (phase !== "joining") this.clearPatience();
+    if (this.phase !== phase || this.joiningEditable !== editable) {
       this.phase = phase;
+      this.joiningEditable = editable;
       later(() => {
-        if (!this.destroyed) this.view.dispatch({ effects: setPhase.of(phase) });
+        if (!this.destroyed) this.view.dispatch({ effects: [setJoiningEditable.of(editable), setPhase.of(phase)] });
       });
     }
     this.report();

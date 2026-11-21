@@ -2,6 +2,7 @@ import { withEol } from "../disk/line-endings";
 import { type DocumentRef, pathKind } from "../mapping";
 import { opensUnclosedFence, sameCanvasText, sameDocumentText } from "../shared/review-flow";
 import { gitBlobSha, gitBlobShaOfText } from "./blob-sha";
+import { sameBaseText } from "./same-base";
 import { unchangedHere } from "./unchanged-here";
 import type { CacheEntry, FileCache } from "./cache";
 
@@ -29,22 +30,34 @@ export interface SameTextDeps {
   readBlob(doc: DocumentRef, sha: string): Promise<string | null>;
 }
 
+export function sameStructuredText(path: string, theirs: string, ours: string): boolean {
+  const kind = pathKind(path);
+  return kind === "board" ? sameCanvasText(theirs, ours) : kind === "base" && sameBaseText(theirs, ours);
+}
+
+export function sameFileText(path: string, theirs: string, ours: string): boolean {
+  const kind = pathKind(path);
+  if (kind === "board") return sameCanvasText(theirs, ours);
+  if (kind === "base") return sameBaseText(theirs, ours);
+  return kind === "note" && sameDocumentText(theirs, ours);
+}
+
 export async function sameAsRepo(deps: SameTextDeps, path: string, doc: DocumentRef, sha: string, repoSha: string, mayRead: boolean): Promise<Sameness> {
   const kind = pathKind(path);
-  const board = kind === "board";
-  if (!board && !/\.md$/i.test(path)) return "differs";
-  if (board && !mayRead) return "needs-read";
+  const structured = kind === "board" || kind === "base";
+  if (!structured && kind !== "note") return "differs";
+  if (structured && !mayRead) return "needs-read";
   const bytes = await deps.readBytes(path);
   if (bytes === null || (await gitBlobSha(bytes)) !== sha) return "unknown";
   const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-  if (!board) {
+  if (!structured) {
     if (layoutShas(text).has(repoSha)) return "same";
     if (!hasFrontMatter(text)) return "differs";
   }
   if (!mayRead) return "needs-read";
   const theirs = await deps.readBlob(doc, repoSha);
   if (theirs === null) return "unknown";
-  return (board ? sameCanvasText(theirs, text) : sameDocumentText(theirs, text)) ? "same" : "differs";
+  return sameFileText(path, theirs, text) ? "same" : "differs";
 }
 
 export const SAME_PER_LOOK = 12;

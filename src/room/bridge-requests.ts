@@ -1,3 +1,5 @@
+import { retryAfterFromError } from "../api/retry-after";
+
 export const BRIDGE_ASK_WAITS_MS: readonly number[] = [8_000, 2_000, 5_000, 10_000, 10_000, 10_000, 10_000, 10_000, 60_000];
 
 export const LEAVE_WAIT_MIN_MS = 500;
@@ -63,8 +65,8 @@ export class BridgeRequests {
     this.told = 0;
     try {
       this.told = waitFrom(await this.ask());
-    } catch {
-      void 0;
+    } catch (error) {
+      this.told = retryAfterFromError(error, MOST_TOLD_S * 1000) ?? 0;
     } finally {
       this.asking = false;
     }

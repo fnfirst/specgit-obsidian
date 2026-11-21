@@ -44,6 +44,7 @@ export * from "./threads-ledger";
 export * from "./threads-store";
 export * from "./resolve-pause";
 export * from "./canvas-sides";
+export * from "./same-base";
 export * from "./same-canvas";
 export * from "./same-document";
 export * from "./people";

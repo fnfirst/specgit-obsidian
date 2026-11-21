@@ -4,13 +4,11 @@ import { unchangedHere } from "../changes/unchanged-here";
 import { noteName } from "../mapping";
 import type { DraftContext } from "./draft-inbound";
 import { type Draft, draftKey, follows, isClean, type LeftAlone } from "./draft-state";
-import { READS_PER_PASS } from "./inbound";
+import { EMPTY_BLOB, READS_PER_PASS } from "./inbound";
 import { changeKey } from "./outbound";
 import { DRAFT_SAID } from "./words";
 
 export const RENAME_HOLD_MS = 120_000;
-
-const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 
 const isPublishedBytes = (entry: Pick<CacheEntry, "base">, blob: string | null): boolean => blob !== null && blob !== EMPTY_BLOB && entry.base === blob;
 

@@ -1,5 +1,8 @@
+import { MIN_RETRY_AFTER_MS } from "../api/retry-after";
 import type { LocalState } from "../disk/bases";
 import { hashText } from "../hash";
+
+export { MIN_RETRY_AFTER_MS };
 
 export interface BudgetRecord {
   spent: Array<[number, number]>;
@@ -114,11 +117,19 @@ export class WriteBudget {
 
   succeeded(): void {
     this.strikes = 0;
+    if (this.blockedUntil <= this.now()) this.blockedUntil = 0;
     this.persist();
   }
 
-  limited(): void {
-    this.blockedUntil = this.now() + Math.min(MAX_BACKOFF_MS, FIRST_BACKOFF_MS * 2 ** this.strikes);
+  limited(retryAfterMs?: number): void {
+    const now = this.now();
+    if (this.strikes > 0 && this.blockedUntil > 0 && now >= this.blockedUntil + MAX_BACKOFF_MS) this.strikes = 0;
+    const fallback = Math.min(MAX_BACKOFF_MS, FIRST_BACKOFF_MS * 2 ** this.strikes);
+    const wait =
+      typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+        ? Math.min(MAX_BACKOFF_MS, Math.max(MIN_RETRY_AFTER_MS, Math.ceil(retryAfterMs)))
+        : fallback;
+    this.blockedUntil = Math.max(this.blockedUntil, now + wait);
     this.strikes++;
     this.persist();
   }
