@@ -8,11 +8,11 @@ export function tiedTo(ports: StayPorts, identity: string, now: () => string, do
   const own = <T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T> => activity.during(paths, run, left);
   const vault: StayVault = {
     ...ports.vault,
-    process: (path, edit) => {
+    process: (path, edit, options) => {
       let text: string | null = null;
       return own(
         [path],
-        () => ports.vault.process(path, (current) => (text = live() ? edit(current) : null)),
+        () => ports.vault.process(path, (current) => (text = live() ? edit(current) : null), options),
         (result) => (result === "written" && text !== null ? { [path]: gitBlobShaOfText(text) } : null),
       );
     },

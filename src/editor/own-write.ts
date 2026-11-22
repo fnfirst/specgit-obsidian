@@ -29,7 +29,7 @@ export class OwnWrites {
     if (typeof written === "string" && this.holds(written)) mine.lastSavedData = written;
   }
 
-  private holds(text: string): boolean {
+  holds(text: string): boolean {
     return this.texts.some((held) => held.length === text.length && held.toString() === text);
   }
 

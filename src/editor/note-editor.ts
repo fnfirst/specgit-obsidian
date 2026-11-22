@@ -2,9 +2,10 @@ import { Decoration, type DecorationSet, type EditorView, type PluginValue, type
 import { editorInfoField } from "obsidian";
 import { CaretLayer, type PeerCaret, redrawCarets } from "../cursors/carets";
 import { onLines } from "../cursors/reading";
+import { Budget } from "../disk/diff";
 import { eolOf, toLf } from "../disk/line-endings";
-import { changesBetween, unpublishedPlaces } from "../disk/merge";
-import { cameInNow, changesIn, joinedWords } from "../disk/regions";
+import { changesBetween, mergeRegions, unpublishedPlaces } from "../disk/merge";
+import { cameInNow, changesIn, conflictsIn, joinedWords, theirsStanding } from "../disk/regions";
 import { within } from "../patience";
 import { type DocumentRef, docKey, noteName } from "../mapping";
 import { lineageOf } from "../room/lineage";
@@ -12,7 +13,7 @@ import { joinFailedWords } from "../status";
 import type { Room } from "../room/room";
 import type { RoomSteps } from "../token-source";
 import type { Stop } from "../room/transport";
-import { Binding } from "./binding";
+import { Binding, fromRoom } from "./binding";
 import { DELETED_WORDS } from "../deleted-words";
 import { Join, type Outcome, TOO_LARGE_MESSAGE } from "./join";
 import { isNoteEditor } from "./kind";
@@ -41,11 +42,20 @@ const SAID = {
       ? `A change to ${name} couldn't be kept because specgit.com can't show it. It was put back.`
       : `A change to ${name} couldn't be kept because Obsidian can't show it. It was put back.`,
   mainMoved: "The published version has changed since you started. Open the Status tab to catch up.",
+  joining: "Connecting to specgit. Wait a moment before typing.",
+  followerReplaced: "Another pane had different text while connecting, so it now matches the live note.",
 };
 
 const DRAFT_AUTHOR_PATIENCE_MS = 5_000;
 
 const later = (run: () => void): void => void Promise.resolve().then(run);
+
+interface BoundSession {
+  readonly boundFrom: string;
+  readonly boundBase: string | null;
+  diskText: string | null;
+  recorded: string | null;
+}
 
 export class NoteEditor implements PluginValue {
   private path = "";
@@ -57,13 +67,13 @@ export class NoteEditor implements PluginValue {
   private binding: Binding | null = null;
   private carets: CaretLayer | null = null;
   private textVersion = 0;
+  private locallyEdited = false;
   private phase: Phase = "off";
   private joiningEditable = false;
   private stops: Array<() => void> = [];
   private watching: Array<() => void> = [];
   private patience: number | null = null;
   private readonly join: Join;
-  private recorded: string | null = null;
   private reading = false;
   private rebinds = 0;
   private mayOnlyRead = false;
@@ -73,6 +83,11 @@ export class NoteEditor implements PluginValue {
   private readonly ownWrites: OwnWrites;
   private destroyed = false;
   private documentDeleted = false;
+  private attached = false;
+  private waitLayout: (() => void) | null = null;
+  private session: BoundSession | null = null;
+  private restoreFocus = false;
+  private shownNote = true;
 
   constructor(
     private readonly view: EditorView,
@@ -116,14 +131,19 @@ export class NoteEditor implements PluginValue {
     if (update.docChanged) {
       this.ownWrites.remember(update.state.doc);
       this.textVersion += 1;
+      if (!this.binding && update.transactions.some((tr) => tr.docChanged && tr.annotation(fromRoom) === undefined && !tr.isUserEvent("set"))) {
+        this.locallyEdited = true;
+      }
     }
     this.binding?.update(update);
     this.carets?.update(update);
-    if (this.phase === "local" && this.ref && !this.destroyed) this.matchChoice();
+    if (this.phase === "local" && this.ref && !this.destroyed && !this.shownNote && this.showsItsNote()) this.matchChoice();
   }
 
   destroy(): void {
     this.destroyed = true;
+    this.waitLayout?.();
+    this.waitLayout = null;
     this.watching.splice(0).forEach((stop) => stop());
     this.leave();
   }
@@ -142,10 +162,17 @@ export class NoteEditor implements PluginValue {
   }
 
   private whenAttached(run: () => void, frames = 0): void {
-    if (this.destroyed) return;
-    if (this.view.dom.isConnected) {
+    const tryAttach = (): boolean => {
+      if (this.destroyed || this.attached || !this.view.dom.isConnected) return false;
+      this.attached = true;
+      this.waitLayout?.();
+      this.waitLayout = null;
       if (isNoteEditor(this.view.dom)) run();
-    } else if (frames < 30) window.requestAnimationFrame(() => this.whenAttached(run, frames + 1));
+      return true;
+    };
+    if (this.destroyed || this.attached || tryAttach()) return;
+    if (frames < 30) window.requestAnimationFrame(() => this.whenAttached(run, frames + 1));
+    else if (this.waitLayout === null && this.services.onLayout) this.waitLayout = this.services.onLayout(() => void tryAttach());
   }
 
   private attach(): void {
@@ -171,7 +198,10 @@ export class NoteEditor implements PluginValue {
 
   private matchChoice(): void {
     const { ref } = this;
-    if (this.destroyed || !ref || !this.showsItsNote()) return;
+    if (this.destroyed || !ref) return;
+    const shown = this.showsItsNote();
+    this.shownNote = shown;
+    if (!shown) return;
     const wanted = this.services.connections.wants(ref);
     if (wanted && this.phase === "local") this.connect(ref);
     else if (!wanted && this.phase !== "local" && this.phase !== "off") this.disconnect();
@@ -224,6 +254,8 @@ export class NoteEditor implements PluginValue {
     this.clearPatience();
     this.stops.splice(0).forEach((stop) => stop());
     this.unbind();
+    this.session = null;
+    this.restoreFocus = false;
     this.carets?.destroy();
     this.carets = null;
     const other = this.registry.editorsOf(this.path).find((editor) => editor !== this && editor.carets !== null);
@@ -310,8 +342,13 @@ export class NoteEditor implements PluginValue {
   }
 
   tryTyping(): void {
-    if (!this.documentDeleted || this.phase !== "locked") return;
-    if (this.told.typingDue(this.path, Date.now())) this.services.notify(DELETED_WORDS.typing);
+    if (this.documentDeleted && this.phase === "locked") {
+      if (this.told.typingDue(this.path, Date.now())) this.services.notify(DELETED_WORDS.typing);
+      return;
+    }
+    if (this.phase === "joining" && !this.joiningEditable && !this.mayOnlyRead) {
+      if (this.told.typingDue(this.path, Date.now())) this.services.notify(SAID.joining);
+    }
   }
 
   private meet(): void {
@@ -384,19 +421,26 @@ export class NoteEditor implements PluginValue {
       case "review":
         return void this.chooseWhatToKeep(outcome);
       case "bind":
-        return this.bindTo(room, outcome.text, outcome.notice, outcome.kept, outcome.git);
+        return this.bindTo(room, outcome.text, outcome.notice, outcome.kept, outcome.git, outcome.base);
     }
   }
 
-  private bindTo(room: Room, text: string, notice: string | null, kept = false, git?: string | null): void {
+  private bindTo(room: Room, text: string, notice: string | null, kept = false, git?: string | null, base: string | null = null): void {
     const before = this.view.state.doc.toString();
     const roomBefore = toLf(room.text.toJSON());
+    this.session = {
+      boundFrom: toLf(before),
+      boundBase: base !== null ? toLf(base) : null,
+      diskText: null,
+      recorded: null,
+    };
+    this.locallyEdited = false;
     const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), text);
     this.binding = binding;
     this.join.bound();
     if (this.answered !== null) this.services.ownRestarts.settle(this.answered.key, this.answered.steps, true);
     this.answered = null;
-    this.setAll("live");
+    this.moveTo("live");
     this.services.joined?.(this.path);
     if (notice !== null) this.services.notify(notice);
     this.tellWhatCameIn(before, text, kept, git, roomBefore);
@@ -428,7 +472,7 @@ export class NoteEditor implements PluginValue {
     const room = this.room;
     if (verdict === "withdrawn" || !room) return;
     if (verdict === "closed") return this.stayLocal(SAID.declined);
-    this.bindTo(room, verdict.applied, null);
+    this.bindTo(room, verdict.applied, null, false, undefined, outcome.base);
   }
 
   private stayLocal(why: string): void {
@@ -448,8 +492,36 @@ export class NoteEditor implements PluginValue {
       }
       return;
     }
+    const followerText = toLf(this.view.state.doc.toString());
+    const roomText = toLf(room.text.toJSON());
+    const peers = this.registry.editorsOf(this.path);
+    const session = lead.session;
+    this.session = session;
+    const knownSnapshot =
+      followerText === roomText ||
+      followerText === session?.boundFrom ||
+      (!this.locallyEdited &&
+        (followerText === session?.boundBase ||
+          followerText === session?.recorded ||
+          followerText === session?.diskText ||
+          peers.some((editor) => editor !== this && editor.ownWrites.holds(followerText))));
+    if (!knownSnapshot) {
+      const ancestor = session?.boundBase ?? null;
+      const base = ancestor !== null && (ancestor !== roomText || this.locallyEdited) ? ancestor : null;
+      const merged = !room.readOnly && base !== null ? mergeRegions(base, followerText, roomText, new Budget(250)) : null;
+      if (merged !== null && conflictsIn(merged) === 0) {
+        const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), theirsStanding(merged));
+        this.binding = binding;
+        this.locallyEdited = false;
+        this.join.bound();
+        this.moveTo("live");
+        return;
+      }
+      this.services.notify(SAID.followerReplaced, this.path);
+    }
     const binding = Binding.follow(this.view, room, () => later(() => this.lost(binding)));
     this.binding = binding;
+    this.locallyEdited = false;
     this.join.bound();
     this.moveTo("live");
   }
@@ -505,15 +577,16 @@ export class NoteEditor implements PluginValue {
 
   private async record(): Promise<void> {
     const { binding, room } = this;
-    if (!binding || !room || this.endsSoon(room) || !this.leads() || this.reading || this.view.state.doc.toString() === this.recorded) return;
+    if (!binding || !room || this.endsSoon(room) || !this.leads() || this.reading || this.view.state.doc.toString() === this.session?.recorded) return;
     this.reading = true;
     try {
       const file = await this.services.vault.read(this.path);
+      if (file !== null && this.session) this.session.diskText = toLf(file);
       const text = this.view.state.doc.toString();
       if (file === null || room.name === null || this.binding !== binding || toLf(file) !== text || !room.acknowledged) return;
       if (this.endsSoon(room)) return;
       this.services.bases.write(this.path, { room: room.name, text, eol: eolOf(file), lineage: lineageOf(room.doc) });
-      this.recorded = text;
+      if (this.session) this.session.recorded = text;
     } catch {
       void 0;
     } finally {
@@ -539,6 +612,7 @@ export class NoteEditor implements PluginValue {
     }
     const old = this.ref;
     this.leave();
+    this.locallyEdited = false;
     this.join.forget();
     this.answered = null;
     if (old) this.services.connections.move(old, next);
@@ -570,11 +644,22 @@ export class NoteEditor implements PluginValue {
   private moveTo(phase: Phase, joiningEditable = false): void {
     const editable = phase === "joining" && joiningEditable;
     if (phase !== "joining") this.clearPatience();
+    const wasHeldJoining = this.phase === "joining" && !this.joiningEditable && !this.mayOnlyRead;
     if (this.phase !== phase || this.joiningEditable !== editable) {
+      const doc = this.view.dom.ownerDocument;
+      const focused = this.view.hasFocus || this.view.dom.contains(doc.activeElement);
+      if (!wasHeldJoining && phase === "joining" && !editable && !this.mayOnlyRead) this.restoreFocus = focused;
+      const refocus =
+        wasHeldJoining &&
+        phase === "live" &&
+        (focused || (this.restoreFocus && (doc.activeElement === null || doc.activeElement === doc.body)));
+      if (phase !== "joining") this.restoreFocus = false;
       this.phase = phase;
       this.joiningEditable = editable;
       later(() => {
-        if (!this.destroyed) this.view.dispatch({ effects: [setJoiningEditable.of(editable), setPhase.of(phase)] });
+        if (this.destroyed) return;
+        this.view.dispatch({ effects: [setJoiningEditable.of(editable), setPhase.of(phase)] });
+        if (refocus) this.view.focus();
       });
     }
     this.report();

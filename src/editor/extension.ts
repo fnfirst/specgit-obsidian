@@ -10,6 +10,11 @@ import { NoteRegistry } from "./registry";
 import type { EditorServices } from "./services";
 import type { RoomUndo } from "./undo";
 
+function isEditKey(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  return event.key.length === 1 || event.key === "Backspace" || event.key === "Delete" || event.key === "Enter" || event.key === "Tab";
+}
+
 export function liveEditor(services: EditorServices): Extension {
   const registry = new NoteRegistry<NoteEditor>();
   const told = new NoteNotices();
@@ -28,13 +33,21 @@ export function liveEditor(services: EditorServices): Extension {
       ]),
       EditorView.domEventHandlers({
         beforeinput: (event, view) => {
-          if (event.inputType.startsWith("insert")) view.plugin(plugin)?.tryTyping();
+          if (event.inputType.startsWith("insert") || event.inputType.startsWith("delete")) view.plugin(plugin)?.tryTyping();
           const undo = event.inputType === "historyUndo";
           if (!undo && event.inputType !== "historyRedo") return false;
           const handler = history(view);
           if (!handler) return false;
           event.preventDefault();
           return undo ? handler.undo(view) : handler.redo(view);
+        },
+        keydown: (event, view) => {
+          if (isEditKey(event)) view.plugin(plugin)?.tryTyping();
+          return false;
+        },
+        paste: (_event, view) => {
+          view.plugin(plugin)?.tryTyping();
+          return false;
         },
       }),
     ]),

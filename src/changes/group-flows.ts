@@ -1,11 +1,11 @@
-import { withBytes } from "./attachment-memory";
+import { type Attachment, withBytes } from "./attachment-memory";
 import { carriesAttachments } from "./attachment-links";
 import { noteName } from "../mapping";
 import { REVIEW_UNCHECKED, REVIEW_UNCHECKED_TITLE } from "./flow-helpers";
 import { toLf } from "../disk/line-endings";
 import { isTextOfBytes } from "./blob-sha";
 import { BURST_FROM, leftOutWords, newUploadId, planBurst, planBurstParts, sendBurst } from "./burst";
-import { attachmentAnswer, nameAttachments, type NamedAttachment } from "./attachment-send";
+import { attachmentAnswer, BURST_ATTACHMENT_MAX_RAW, nameAttachments, type NamedAttachment } from "./attachment-send";
 import { isLostAnswerResult, type StepResult } from "../review/review-api";
 import { isLimited } from "./flow-helpers";
 import type { Sent } from "./flow-helpers";
@@ -152,13 +152,34 @@ export class GroupFlows {
   private readonly uploads = new Map<string, string>();
 
   private async burstGroup(files: readonly ChangeRow[], usual: readonly ChangeRow[] = [], attachments: "ask" | "none" = "ask"): Promise<GroupChange> {
-    const { send, left } = planBurst(files);
+    const { send: planned, left } = planBurst(files);
     const words = leftOutWords(left);
-    if (send.length < 2) {
+    if (planned.length < 2) {
       await this.groupFailed(`A group needs at least two files, and fewer than two of these can be grouped. ${words ?? ""}`.trim());
       return { ok: false };
     }
-    const texts = await Promise.all(send.map((pick) => this.host.deps.readText(pick.row.change.path)));
+    const plannedTexts = await Promise.all(planned.map((pick) => this.host.deps.readText(pick.row.change.path)));
+    const collected = new Map<string, Attachment[]>();
+    const send: typeof planned = [];
+    const texts: Array<string | null> = [];
+    const extraUsual: ChangeRow[] = [];
+    for (const [i, pick] of planned.entries()) {
+      const text = plannedTexts[i] ?? null;
+      if (attachments !== "none" && text !== null && carriesAttachments(pick.row.change.path)) {
+        const list = await this.host.deps.attachments(pick.row.change.path);
+        if (list.some((one) => !("skipped" in one) && one.size !== undefined && one.size > BURST_ATTACHMENT_MAX_RAW)) {
+          extraUsual.push(pick.row);
+          continue;
+        }
+        collected.set(pick.row.doc.path, list);
+      }
+      send.push(pick);
+      texts.push(text);
+    }
+    const allUsual = extraUsual.length > 0 ? [...usual, ...extraUsual] : usual;
+    if (extraUsual.length > 0 && send.length < 2) {
+      return this.usualGroup([...files, ...usual]);
+    }
     const burst = send.flatMap((pick, i) => (texts[i] === null ? [] : [{ path: pick.row.doc.path, content: toLf(texts[i]!), base: pick.base }]));
     if (burst.length < 2) {
       await this.groupFailed("specgit couldn't read those files in your vault just now. Try again in a moment.");
@@ -170,17 +191,17 @@ export class GroupFlows {
     this.uploads.set(key, uploadId);
     const name = newGroupName(this.host.model.state().units);
     const attachmentsOf = new Map<string, NamedAttachment[]>();
-    for (const [i, pick] of send.entries()) {
-      if (attachments === "none") break;
-      if (texts[i] === null || !carriesAttachments(pick.row.change.path)) continue;
-      const have = await withBytes(await this.host.deps.attachments(pick.row.change.path));
+    for (const pick of send) {
+      const list = collected.get(pick.row.doc.path);
+      if (!list) continue;
+      const have = await withBytes(list);
       this.host.deps.attachmentTold?.(pick.row.change.path, have.told);
       const found = await nameAttachments(have.attachments);
       if (found.length > 0) attachmentsOf.set(pick.row.doc.path, found);
     }
     const pause = (ms: number): Promise<void> => this.host.deps.pause?.(ms) ?? new Promise((resume) => window.setTimeout(resume, ms));
     const upload = (part: { uploadId: string; last: boolean; files: readonly BurstFile[]; attachments?: readonly NamedAttachment[]; named?: readonly NamedAttachment[] }) =>
-      this.host.deps.review.group(repo, "burst", { name, upload: { uploadId: part.uploadId, last: part.last, files: part.files, ...(part.attachments || part.named ? { attachments: [...(part.attachments ?? []).map((attachment) => ({ filePath: attachment.repoPath, sha: attachment.sha, size: attachment.size, base64: attachment.base64 })), ...(part.named ?? []).map((attachment) => ({ filePath: attachment.repoPath, sha: attachment.sha, size: attachment.size }))] } : {}) } });
+      this.host.deps.review.group(repo, "burst", { name, upload: { uploadId: part.uploadId, last: part.last, files: part.files, ...(part.attachments || part.named ? { attachments: [...(part.attachments ?? []).map((attachment) => ({ filePath: attachment.repoPath, sha: attachment.sha, size: attachment.size, ...(attachment.base64 === undefined ? {} : { base64: attachment.base64 }) })), ...(part.named ?? []).map((attachment) => ({ filePath: attachment.repoPath, sha: attachment.sha, size: attachment.size }))] } : {}) } });
     let needed: ReadonlySet<string> | null = null;
     if (attachmentsOf.size > 0) {
       const unique = [...new Map([...attachmentsOf.values()].flat().map((attachment) => [`${attachment.repoPath}\n${attachment.sha}`, attachment])).values()];
@@ -193,7 +214,7 @@ export class GroupFlows {
         const withAttachments = send.filter((pick) => attachmentsOf.has(pick.row.doc.path)).map((pick) => pick.row);
         const without = send.filter((pick) => !attachmentsOf.has(pick.row.doc.path)).map((pick) => pick.row);
         this.uploads.delete(key);
-        if (without.length >= 2) return this.burstGroup(without, [...usual, ...withAttachments], "none");
+        if (without.length >= 2) return this.burstGroup(without, [...allUsual, ...withAttachments], "none");
         return this.usualGroup([...files, ...usual]);
       }
       needed = echo.needed;
@@ -216,8 +237,8 @@ export class GroupFlows {
     for (const { pick, text, comparedWith } of level) if (text !== null && comparedWith !== undefined && comparedWith === pick.row.change.repoSha && isTextOfBytes(text, pick.row.change.sha)) this.host.model.learnSame(pick.row.change.path, pick.row.change.sha, comparedWith, "server");
     const leftOut = [sameAsGitHubWords(level.map(({ pick }) => fileNameOf(pick.row.change.path))), leftOutWords([...left, ...done.left.filter((one) => one.why !== "same")])].filter((words) => words !== null).join(" ");
     if (leftOut) this.host.deps.dialogs.toast(`Grouped ${burst.length - done.left.length} files`, leftOut);
-    if (usual.length > 0 && done.id) {
-      const added = await this.addRows(repo, done.id, name, usual, true);
+    if (allUsual.length > 0 && done.id) {
+      const added = await this.addRows(repo, done.id, name, allUsual, true);
       if (!added.ok) return added;
     }
     return { ok: true, ...(done.id ? { id: done.id } : {}) };

@@ -10,6 +10,7 @@ export interface StayData {
   held: string[];
   kept: string[];
   burst: string[];
+  heldShas?: Record<string, string>;
   editsHeld?: Record<string, string>;
   endedOwn?: Record<string, { sent: string; ended: "published" | "discarded" }>;
   typed?: Record<string, { sha: string; at: number }>;
@@ -34,6 +35,8 @@ function read(stored: unknown): StayData {
   const record = stored as Record<string, unknown>;
   if (record.v !== 1) return empty();
   const seen = typeof record.seen === "object" && record.seen !== null && !Array.isArray(record.seen) && Object.values(record.seen).every((sha) => typeof sha === "string") ? (record.seen as Record<string, string>) : null;
+  const shas = record.heldShas;
+  const heldShas = typeof shas === "object" && shas !== null && !Array.isArray(shas) && Object.values(shas).every((sha) => typeof sha === "string") ? { heldShas: shas as Record<string, string> } : {};
   const held = record.editsHeld;
   const editsHeld = typeof held === "object" && held !== null && !Array.isArray(held) && Object.values(held).every((sha) => typeof sha === "string") ? { editsHeld: held as Record<string, string> } : {};
   const ended = record.endedOwn;
@@ -57,7 +60,7 @@ function read(stored: unknown): StayData {
   const isProblem = (one: unknown): boolean => typeof one === "object" && one !== null && typeof (one as { name?: unknown }).name === "string" && (one as { name: string }).name.length <= WORDS_MAX && typeof (one as { why?: unknown }).why === "string" && (one as { why: string }).why.length <= WORDS_MAX && ((one as { server?: unknown }).server === undefined || (one as { server?: unknown }).server === true);
   const isKept = (one: unknown): boolean => typeof one === "object" && one !== null && Array.isArray((one as { problems?: unknown }).problems) && (one as { problems: unknown[] }).problems.length > 0 && (one as { problems: unknown[] }).problems.length <= ATTACHMENTS_PER_NOTE && (one as { problems: unknown[] }).problems.every(isProblem) && Number.isInteger((one as { tries?: unknown }).tries) && (one as { tries: number }).tries >= 0 && (one as { tries: number }).tries <= 20;
   const attachments = typeof left === "object" && left !== null && !Array.isArray(left) && Object.keys(left).length <= ATTACHMENTS_KEPT && Object.values(left).every(isKept) ? { attachments: left as NonNullable<StayData["attachments"]> } : {};
-  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...deletedAt, ...offerTold, ...attachments };
+  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...deletedAt, ...offerTold, ...attachments };
 }
 
 export class StayState {

@@ -1,6 +1,8 @@
 export type AttachmentKind = "image" | "audio" | "video" | "pdf" | "file";
 
-export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 100_000_000;
+
+export const JSON_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
 const SHOWN: Readonly<Record<string, { kind: Exclude<AttachmentKind, "file">; mime: string }>> = {
   png: { kind: "image", mime: "image/png" },
@@ -44,6 +46,6 @@ export function attachmentType(path: string): { kind: AttachmentKind; mime: stri
 }
 
 export const ATTACHMENT_WORDS = {
-  tooLarge: "Uses a file over 20 MB, not sent.",
+  tooLarge: "Uses a file over 100 MB, not sent.",
   outsideFolder: "Uses a file outside the linked folder.",
 } as const;

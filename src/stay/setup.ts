@@ -6,6 +6,7 @@ import type { Connections } from "../connect/connections";
 import type { BaseStore, LocalState } from "../disk/bases";
 import { withEol } from "../disk/line-endings";
 import { guardedBinaryCreate, guardedVault } from "../disk/guarded-vault";
+import { guardedBinaryCreateStream, hashVaultBinary, replaceAttachmentStream } from "../disk/vault-binary";
 import type { BlobsAnswer, BranchFile, AttachmentFile, MainFile } from "../auth/git-copy";
 import type { ReviewKey } from "../changes/review-key";
 import { showChanges } from "../review/modals";
@@ -57,7 +58,7 @@ export interface StayDeps {
   gitBlobs?: (repo: string, commit: string, files: ReadonlyArray<{ sha: string; path: string }>) => Promise<BlobsAnswer>;
   gitExist?: (repo: string, paths: ReadonlyArray<string>) => Promise<{ kind: "answered"; files: Map<string, boolean> } | { kind: "missing" } | { kind: "outage" }>;
   gitBlobsByOid?: (repo: string, files: ReadonlyArray<{ sha: string; path: string }>) => Promise<BlobsAnswer>;
-  gitAttachment?: (repo: string, at: string, path: string) => Promise<AttachmentFile>;
+  gitAttachment?: (repo: string, at: string, path: string, options?: { ifNoneMatch?: string }) => Promise<AttachmentFile>;
   gitFindAttachment?: (repo: string, branch: string, notePath: string, embed: string) => Promise<AttachmentFile>;
   listing?: (repo: string) => Promise<{ commit: string | null; files: ReadonlyMap<string, string> } | null>;
   gitBlob: (doc: DocumentRef, sha: string) => Promise<string | null>;
@@ -73,6 +74,7 @@ export interface StayDeps {
 
 export interface StayHandle {
   settingsChanged(): void;
+  flush(): void;
   offer(): Promise<void>;
   groupHeld(): Promise<void>;
   isKept(path: string): boolean;
@@ -158,6 +160,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
           ...(deps.gitAttachment ? { gitAttachment: (from, at, path) => deps.gitAttachment!(from, at ?? NOTE_BRANCH, path) } : {}),
           create: (path, text) => vault.create(path, text),
           createBinary: guardedBinaryCreate(app),
+          createBinaryStream: guardedBinaryCreateStream(app),
           agreed: (repoPath, sha) => deps.attachmentMemory?.().agree(repoPath, sha),
           recordBase: (file, _text, sha) => deps.model.copiedFrom(file.path, sha),
           checkpoint: () => deps.model.checkpoint(),
@@ -253,19 +256,27 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       vaultPathOf: (repoPath) => (repoPath.split("/").includes("..") ? null : folder === "" ? repoPath : `${folder}/${repoPath}`),
       findAttachment: (link) => deps.gitFindAttachment!(doc.repo, branch, doc.path, link),
       told: (path, words) => deps.model.attachmentTold(path, words, "bring"),
-      draftAttachment: branch === NOTE_BRANCH ? (repoPath) => deps.gitAttachment!(doc.repo, NOTE_BRANCH, repoPath) : draftElseMain((repoPath) => deps.gitAttachment!(doc.repo, branch, repoPath), (repoPath) => deps.gitAttachment!(doc.repo, NOTE_BRANCH, repoPath)),
+      draftAttachment:
+        branch === NOTE_BRANCH
+          ? (repoPath, ifNoneMatch) => deps.gitAttachment!(doc.repo, NOTE_BRANCH, repoPath, ifNoneMatch ? { ifNoneMatch } : undefined)
+          : draftElseMain(
+              (repoPath, ifNoneMatch) => deps.gitAttachment!(doc.repo, branch, repoPath, ifNoneMatch ? { ifNoneMatch } : undefined),
+              (repoPath, ifNoneMatch) => deps.gitAttachment!(doc.repo, NOTE_BRANCH, repoPath, ifNoneMatch ? { ifNoneMatch } : undefined),
+            ),
       vaultSha: (file) => {
         const target = app.vault.getFileByPath(file.path);
-        return memory && target ? memory.hash(file.path, file, async () => gitBlobSha(await app.vault.readBinary(target))) : Promise.resolve("");
+        return memory && target ? memory.hash(file.path, file, () => hashVaultBinary(app, file.path, file.size)) : Promise.resolve("");
       },
       shaOf: (bytes) => gitBlobSha(bytes),
       notWritten: (path) => activity.notWritten(path),
       during: (paths, run, left) => activity.during(paths, run, left),
       replace: (path, bytes, expectedSha) => replaceAttachment(app.vault, path, bytes, expectedSha),
+      replaceStream: replaceAttachmentStream(app),
       create: async (path, bytes) => {
         const made = await guardedBinaryCreate(app)(path, bytes);
         return made;
       },
+      createStream: guardedBinaryCreateStream(app),
     };
     await attachmentLooks.bring(ports, memory, branch, notePath, text, said, options);
   };
@@ -288,7 +299,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     signedIn: deps.signedIn,
     documentFor: mapped,
     phaseOf: (path) => deps.status.phaseOf(path),
-    disconnected: (doc) => !deps.connections.wants(doc),
+    disconnected: (doc) => deps.connections.isDisconnected(doc),
     gitFile: deps.gitFile,
     wasDeleted: deps.wasDeleted,
     ...(deps.gitBlobs ? { blobTexts: blobTexts } : {}),
@@ -311,7 +322,11 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     recordBase: (path, doc, _text, raw) => recordMainBase(deps.bases, path, doc, raw),
     rebase: (path, sha) => deps.model.rebased(path, sha),
     chooseWhatToKeep: deps.chooseWhatToKeep,
-    commit: (row: ChangeRow, isCurrent, hooks): Promise<{ result: Committed; writes: number; deletedAt?: number; retryAfterMs?: number }> => deps.flows.autoCommit(row, isCurrent, hooks),
+    commit: async (row: ChangeRow, isCurrent, hooks): Promise<{ result: Committed; writes: number; deletedAt?: number; retryAfterMs?: number }> => {
+      const done = await deps.flows.autoCommit(row, isCurrent, hooks);
+      if (done.result === "committed" && (row.change.kind === "new" || row.change.kind === "renamed")) deps.connections.defaultsChanged();
+      return done;
+    },
     retryAttachments: (row, isCurrent, hooks) => deps.flows.autoAttachments(row, isCurrent, hooks),
     hidden: appHidden,
     offline: () => deps.model.offline(),
@@ -410,10 +425,12 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         touched(file.path);
       }),
     );
+    plugin.registerEvent(app.workspace.on("active-leaf-change", () => engine?.panesChanged()));
+    plugin.registerEvent(app.workspace.on("layout-change", () => engine?.panesChanged()));
   });
 
   let wasHidden = false;
-  watchWindows(plugin, (win, on) =>
+  watchWindows(plugin, (win, on) => {
     on(win.document, "visibilitychange", () => {
       if (appHidden()) {
         wasHidden = true;
@@ -422,8 +439,10 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         wasHidden = false;
         engine?.returned();
       }
-    }),
-  );
+    });
+    on(win, "beforeunload", () => engine?.flush());
+    on(win, "pagehide", () => engine?.flush());
+  });
 
   const git = new GitWatch(() => locateGit(app), activity);
   plugin.registerInterval(window.setInterval(() => void (engine?.isOn() ? git.poll().catch(() => undefined) : undefined), 1_000));
@@ -473,6 +492,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
 
   return {
     settingsChanged,
+    flush: () => engine?.flush(),
     groupHeld: async () => void (await engine?.groupHeld()),
     isKept: (path) => engine?.isKept(path) === true,
     stopped: (path) => void engine?.holdStopped(path),

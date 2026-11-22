@@ -1,3 +1,4 @@
+import type { SpecgitBinaryFetch } from "../auth/binary-fetch";
 import type { BlobsAnswer } from "../auth/git-copy";
 import { clientPollOffset, createPollGateFor, GROUP_PRO_ONLY, type LiveEvent } from "../shared/review-flow";
 import { Platform, type Plugin, TFile } from "obsidian";
@@ -6,6 +7,7 @@ import { NOTE_BRANCH } from "../auth/config";
 import { giveAccessUrl } from "../links";
 import type { BaseStore } from "../disk/bases";
 import { guardedVault } from "../disk/guarded-vault";
+import { hashVaultBinary, readVaultBinaryBlob } from "../disk/vault-binary";
 import { trashOption } from "../disk/obsidian-config";
 import type { NotePhase } from "../status";
 import { changesBetween } from "../disk/merge";
@@ -31,7 +33,6 @@ import { DISCARD } from "./discard-words";
 import type { Dialogs } from "./flow-deps";
 import { ChangesFlows } from "./flows";
 import { FILES_PER_BATCH } from "./copy-in";
-import { gitBlobSha } from "./blob-sha";
 import { collectAttachments } from "./collect-attachments";
 import { attachmentRenamed, RENAME_LOOKS_AFTER_MS } from "./attachment-rename";
 import { LiveFiles } from "./live-files";
@@ -46,6 +47,7 @@ import { appHidden, watchWindows } from "../windows";
 
 export interface ChangesSetup {
   api: SpecgitApi;
+  binary?: Pick<SpecgitBinaryFetch, "uploadAttachment">;
   settings: () => MappingSettings;
   bases: BaseStore;
   gitCopy: (doc: DocumentRef) => Promise<string | null>;
@@ -97,7 +99,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   const repo = (): string => deps.settings().repo;
   const folder = (): string => normalizeFolder(deps.settings().folder);
   const mapped = (path: string): DocumentRef | null => fileFor(deps.settings(), path);
-  const review = new ReviewApi(deps.api);
+  const review = new ReviewApi(deps.api, deps.binary);
   const placeKey = (): string => `${repo()}\n${folder()}`;
   let lookedAt = placeKey();
   let current: { key: string; cache: FileCache; mirror: MirrorClient; attachments: AttachmentMemory } | null = null;
@@ -186,7 +188,8 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
           return target ? { path: target.path, mtime: target.stat.mtime, size: target.stat.size } : null;
         },
         repoPathOf,
-        sha: (one) => memory.hash(one.path, { mtime: one.mtime, size: one.size }, async () => gitBlobSha(await bytesOf(one))),
+        sha: (one) => memory.hash(one.path, { mtime: one.mtime, size: one.size }, () => hashVaultBinary(app, one.path, one.size)),
+        binary: (one) => readVaultBinaryBlob(app, one.path),
         base64: async (one) => base64Of(await bytesOf(one)),
         agreedOf: (repoPath) => memory.agreedOf(repoPath),
         publishedSha: (vaultPath) => model.attachmentSha(vaultPath),

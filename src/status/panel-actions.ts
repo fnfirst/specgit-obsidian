@@ -81,6 +81,13 @@ function pinnedUnit(ports: StatusPorts): ChangeRow | undefined {
   return units.rows.get(path) ?? [...units.rows.values()].find((row) => row.group?.files.some((file) => file.path === path));
 }
 
+function pinnedNote(ports: StatusPorts): ChangeRow | undefined {
+  const path = ports.active();
+  if (path === null) return undefined;
+  const units = ports.units();
+  return units.rows.get(path) ?? units.members.get(path);
+}
+
 function noticeOf(did: NonNullable<StatusNotice["did"]>, results: ReadonlyArray<{ id: string; ok: boolean }>): StatusNotice {
   const needs = results.filter((one) => !one.ok).map((one) => one.id);
   return { done: results.length - needs.length, did, needs: needs.length, ...(needs.length > 0 ? { ids: needs } : {}) };
@@ -208,15 +215,16 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
     case "pinned": {
       const path = ports.active();
       const row = pinnedUnit(ports);
+      const note = pinnedNote(ports);
       switch (action.action) {
         case "add-reviewer":
           return row ? flows.addReviewer([row]) : undefined;
         case "ask-changes":
           return row ? void (await flows.askForChanges([row])) : undefined;
         case "choose":
-          return path === null ? undefined : chooseForNote(ports, path, row);
+          return path === null ? undefined : chooseForNote(ports, path, note);
         case "catch-up":
-          return catchUp(ports, row);
+          return catchUp(ports, note);
         case "connect-live":
           return path === null ? undefined : ports.connect(path);
         case "disconnect":

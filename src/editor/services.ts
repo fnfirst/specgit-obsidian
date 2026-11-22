@@ -40,6 +40,7 @@ export interface EditorServices {
   bases: BaseStore;
   gitBases: Pick<GitBases, "opened" | "underway">;
   isLocalOnlyNew?(path: string): boolean;
+  onLayout?(listener: () => void): () => void;
   mainMoved?(path: string): boolean;
   ownRestarts: Pick<OwnRestarts, "pending" | "own" | "settle">;
   joined?(path: string): void;

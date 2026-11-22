@@ -22,6 +22,7 @@ import {
   LEAD,
   LOOK_AGAIN,
   LOOKING,
+  moreSkippedFiles,
   NAME,
   NOT_HEARD,
   notSeen,
@@ -51,6 +52,8 @@ import {
 } from "./words";
 
 type NameView = Extract<OnboardView, { step: "name" }>;
+
+export const MAX_SHOWN_TOO_LARGE = 5;
 
 export function mainLabel(view: Pick<NameView, "signedIn" | "account" | "unread">): string {
   if (view.unread) return TRY_AGAIN;
@@ -213,10 +216,10 @@ export class OnboardModal extends SpecgitModal {
       if (!view.unread) step.points.createEl("p", { text: LOOKING, cls: "specgit-hint" });
     } else {
       const { plan } = view;
-      const points: Array<{ icon: string; text: string }> = [
+      const points: Array<{ icon: string; text: string; skipped?: readonly string[] }> = [
         { icon: "file-text", text: filesLine(plan.notes, plan.others, plan.othersAndNotesBytes) },
         { icon: "settings", text: SETTINGS_LINE },
-        ...(plan.tooLarge.length > 0 ? [{ icon: "alert-triangle", text: tooLargeLine(plan.tooLarge.length) }] : []),
+        ...(plan.tooLarge.length > 0 ? [{ icon: "alert-triangle", text: tooLargeLine(plan.tooLarge.length), skipped: plan.tooLarge }] : []),
         ...(view.account?.freeInUse ? [{ icon: "info", text: FREE_IN_USE }] : []),
       ];
       const list = step.points.createEl("ul", { cls: "specgit-dialog-points" });
@@ -224,6 +227,16 @@ export class OnboardModal extends SpecgitModal {
         const line = list.createEl("li");
         setIcon(line.createSpan({ cls: "specgit-dialog-point-icon" }), point.icon);
         line.createSpan({ text: point.text });
+        if (point.skipped) {
+          const skipped = line.createEl("ul", { cls: "specgit-onboard-skipped" });
+          for (const path of point.skipped.slice(0, MAX_SHOWN_TOO_LARGE)) {
+            skipped.createEl("li", { text: path });
+          }
+          const extra = point.skipped.length - MAX_SHOWN_TOO_LARGE;
+          if (extra > 0) {
+            skipped.createEl("li", { text: moreSkippedFiles(extra), cls: "specgit-onboard-skipped-more" });
+          }
+        }
       }
     }
     for (const line of [view.problem, limit]) if (line) step.problems.createEl("p", { text: line, cls: "specgit-dialog-error" });

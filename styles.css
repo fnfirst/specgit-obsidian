@@ -144,6 +144,16 @@ body.theme-dark {
   color: var(--color-green);
 }
 
+.cm-editor[data-specgit-room="joining"][data-specgit-held="true"] .cm-content {
+  opacity: 0.78;
+  cursor: progress;
+  caret-color: transparent;
+}
+
+.cm-editor[data-specgit-room="joining"][data-specgit-held="true"] .cm-cursorLayer {
+  visibility: hidden;
+}
+
 button.specgit-button {
   display: inline-flex;
   align-items: center;
@@ -615,6 +625,29 @@ button.specgit-retry-now:hover {
   width: 100%;
 }
 
+.specgit-onboard-skipped {
+  grid-column: 2;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 96px;
+  overflow-y: auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: var(--line-height-tight);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.specgit-onboard-skipped > li + li {
+  margin-top: var(--size-2-1);
+}
+
+.specgit-onboard-skipped-more {
+  font-style: italic;
+}
+
 .specgit-tabs {
   display: flex;
   flex: none;
@@ -966,9 +999,10 @@ body:not(.is-mobile) .specgit-panel-body.specgit-panel-body-status > .specgit-we
 }
 
 .specgit-dialog-points > li {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--size-4-2);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--size-4-1) var(--size-4-2);
   line-height: var(--line-height-tight);
 }
 

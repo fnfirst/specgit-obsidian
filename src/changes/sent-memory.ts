@@ -1,4 +1,4 @@
-import { toLf } from "../disk/line-endings";
+import { eolOf, toLf, withEol } from "../disk/line-endings";
 import { gitBlobShaOfText } from "./blob-sha";
 import { blobShasOf } from "./flow-helpers";
 import type { FlowDeps } from "./flow-deps";
@@ -10,12 +10,24 @@ export interface SentMemoryHost {
   readonly model: ChangesModel;
 }
 
+function verifiedSource(answer: Record<string, unknown> | null | undefined): { source: string | null; sha: string | null } {
+  const sha = typeof answer?.contentSha === "string" && answer.contentSha !== "" ? answer.contentSha : null;
+  const raw = typeof answer?.source === "string" ? answer.source : null;
+  const source = raw !== null && (sha === null || gitBlobShaOfText(raw) === sha) ? raw : null;
+  return { source, sha };
+}
+
 function heldBy(answer: Record<string, unknown> | null | undefined): { text: string } | { sha: string } | null {
   if (answer?.unchanged !== true) return null;
-  const sha = typeof answer.contentSha === "string" && answer.contentSha !== "" ? answer.contentSha : null;
-  const source = typeof answer.source === "string" ? answer.source : null;
-  if (source !== null && (sha === null || gitBlobShaOfText(source) === sha)) return { text: source };
+  const { source, sha } = verifiedSource(answer);
+  if (source !== null) return { text: source };
   return sha !== null ? { sha } : null;
+}
+
+function returnedBy(answer: Record<string, unknown> | null | undefined): string | null {
+  if (answer?.unchanged === true) return null;
+  const { source, sha } = verifiedSource(answer);
+  return source !== null && sha !== null ? source : null;
 }
 
 export class SentMemory {
@@ -106,9 +118,12 @@ export class SentMemory {
 
   async accepted(path: string, text: string, body: string, base: string | null = null, answer?: Record<string, unknown> | null): Promise<boolean> {
     const held = heldBy(answer);
+    const returned = returnedBy(answer);
+    const merged = returned !== null && toLf(returned) !== toLf(body) ? withEol(toLf(returned), eolOf(text)) : body;
+    const remembered = held !== null ? ("text" in held ? held.text : null) : (returned ?? body);
     const commit = typeof answer?.commitSha === "string" && answer.commitSha !== "" ? answer.commitSha : undefined;
     const to = reviewKey(answer?.pr as { number?: unknown; group?: unknown } | null | undefined) ?? this.host.model.reviewOf(path);
-    if (await this.writeAndRemember(path, text, body, held === null ? body : "text" in held ? held.text : null, base, to, commit, held !== null)) {
+    if (await this.writeAndRemember(path, text, merged, remembered, base, to, commit, held !== null)) {
       if (held !== null && "sha" in held) {
         this.forget(path);
         this.host.model.learnSent(path, held.sha, to);

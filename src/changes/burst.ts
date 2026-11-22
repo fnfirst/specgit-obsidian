@@ -83,17 +83,18 @@ export function attachmentGroups(attachments: readonly NamedAttachment[], budget
   let open: NamedAttachment[] | null = null;
   let bytes = 0;
   for (const attachment of attachments) {
-    if (attachment.base64.length > budget) {
+    const len = attachment.base64?.length ?? 0;
+    if (len > budget) {
       groups.push([attachment]);
       continue;
     }
-    if (open === null || bytes + attachment.base64.length > budget) {
+    if (open === null || bytes + len > budget) {
       open = [];
       bytes = 0;
       groups.push(open);
     }
     open.push(attachment);
-    bytes += attachment.base64.length;
+    bytes += len;
   }
   return groups;
 }
@@ -110,7 +111,7 @@ export function planBurstParts(files: readonly BurstFile[], attachmentsOf: Reado
     });
     const groups = attachmentGroups(fresh);
     const last = groups.at(-1);
-    const rides = last !== undefined && burstBytes(part) + last.reduce((n, attachment) => n + attachment.base64.length, 0) <= ATTACHMENT_REQUEST_BYTES;
+    const rides = last !== undefined && burstBytes(part) + last.reduce((n, attachment) => n + (attachment.base64?.length ?? 0), 0) <= ATTACHMENT_REQUEST_BYTES;
     for (const group of rides ? groups.slice(0, -1) : groups) plan.push({ files: [], attachments: group });
     plan.push({ files: part, ...(rides ? { attachments: last } : {}) });
   }

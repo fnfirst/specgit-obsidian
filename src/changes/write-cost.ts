@@ -12,6 +12,7 @@ export function writeCost(method: string, args: readonly unknown[]): number {
     case "rename":
       return WRITES_PER_FILE;
     case "attachment":
+    case "uploadAttachment":
       return 1;
     case "moves":
       return ((args[1] as { moves?: unknown[] } | undefined)?.moves?.length ?? 0) > 0 ? MOVES_WRITES : 1;

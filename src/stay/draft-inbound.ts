@@ -23,6 +23,7 @@ import { CHOICE_WORDS, DRAFT_SAID } from "./words";
 export const RECENT_MS = 5_000;
 export const ENDED_AFTER_MS = 60_000;
 export const UNLEVEL_ENDED_WAITS_MS = [10_000, 20_000, 40_000, 80_000, 120_000] as const;
+export const UNSAVED_WAITS_MS = [5_000, 10_000, 20_000, 40_000] as const;
 
 export const TRANSIT_MS = 2_000;
 
@@ -46,6 +47,8 @@ export class DraftInbound {
   private cut = false;
   private wake: number | null = null;
   private readonly unlevel = new Map<string, { strikes: number; until: number }>();
+  private readonly unsaved = new Map<string, { strikes: number; until: number }>();
+  private readonly deferredUnsaved = new Set<string>();
   private looked: Looked | null = null;
   private readonly waiting = new Map<string, { until: number; strikes: number }>();
   private readonly endWaiting = new Map<string, { until: number; strikes: number }>();
@@ -103,6 +106,8 @@ export class DraftInbound {
     this.abort.abort();
     this.offerNotice?.hide();
     this.offerNotice = null;
+    this.unsaved.clear();
+    this.deferredUnsaved.clear();
   }
 
   tellConflict(path: string, blob: string | null): void {
@@ -127,6 +132,28 @@ export class DraftInbound {
   release(path: string): void {
     this.waiting.delete(path);
     this.endWaiting.delete(path);
+    this.clearUnsaved(path);
+  }
+
+  unsavedPaths(): string[] {
+    return [...this.deferredUnsaved];
+  }
+
+  private deferUnsaved(path: string): void {
+    this.deferredUnsaved.add(path);
+    const now = this.ctx.ports.now();
+    let known = this.unsaved.get(path);
+    if (!known || (now >= known.until && known.strikes < UNSAVED_WAITS_MS.length)) {
+      const strikes = known ? known.strikes : 0;
+      known = { strikes: strikes + 1, until: now + UNSAVED_WAITS_MS[strikes]! };
+      this.unsaved.set(path, known);
+    }
+    if (now < known.until) this.wake = Math.min(this.wake ?? Number.POSITIVE_INFINITY, known.until - now + 50);
+  }
+
+  private clearUnsaved(path: string): void {
+    this.deferredUnsaved.delete(path);
+    this.unsaved.delete(path);
   }
 
   told(path: string, blob: string | null): boolean {
@@ -205,6 +232,8 @@ export class DraftInbound {
     await this.readEnds(looked, paths, drafts);
     await this.readDrafts(looked, paths, drafts);
     for (const path of [...this.unlevel.keys()]) if (!paths.has(path)) this.unlevel.delete(path);
+    for (const path of [...this.deferredUnsaved]) if (!paths.has(path)) this.clearUnsaved(path);
+    for (const path of [...this.unsaved.keys()]) if (!paths.has(path)) this.unsaved.delete(path);
     for (const path of paths) {
       if (!this.ctx.current()) break;
       if (renamed.paths.has(path)) continue;
@@ -386,6 +415,7 @@ export class DraftInbound {
     const doc = ports.documentFor(path);
     if (!doc || (ports.inGroup(path) && draft?.inGroup !== true)) {
       this.unlevel.delete(path);
+      this.clearUnsaved(path);
       return false;
     }
     const same = looked.files.get(path);
@@ -396,6 +426,7 @@ export class DraftInbound {
       this.settled(path);
       this.clearConflict(path);
       this.unlevel.delete(path);
+      this.clearUnsaved(path);
       return false;
     }
     const memo = this.endedMemo.get(path);
@@ -439,9 +470,22 @@ export class DraftInbound {
     const alone = draft && answer.kind === "settled" ? await this.leftAlone(looked, path) : null;
     if (draft && answer.kind === "settled" && (alone === null || alone === "live")) await this.attachments(path, doc, draft, alone === null);
     if (answer.kind === "settled" || answer.kind === "send" || answer.kind === "none") this.clearConflict(path);
-    if (!["offer", "take", "create", "merge", "settle", "restore", "end-own"].includes(answer.kind)) return false;
-    if (answer.kind === "end-own" && input.file.publishedMoved) return false;
-    if ((await this.leftAlone(looked, path)) !== null || !this.ctx.current()) return false;
+    if (!["offer", "take", "create", "merge", "settle", "restore", "end-own"].includes(answer.kind)) {
+      this.clearUnsaved(path);
+      return false;
+    }
+    if (answer.kind === "end-own" && input.file.publishedMoved) {
+      this.clearUnsaved(path);
+      return false;
+    }
+    const left = await this.leftAlone(looked, path);
+    if (!this.ctx.current()) return false;
+    if (left !== null) {
+      if (left === "unsaved") this.deferUnsaved(path);
+      else this.clearUnsaved(path);
+      return false;
+    }
+    this.clearUnsaved(path);
     if (answer.kind === "offer") return this.offer(path, looked.drafts?.byPath.get(path) ?? draft);
     const batched = (["settle", "restore", "end-own"].includes(answer.kind) && this.mainOf(path) !== null) || (draft !== null && ["take", "create", "merge"].includes(answer.kind) && this.draftOf(draft) !== null);
     if (this.draftsDeferred.has(path) && ["take", "create", "merge"].includes(answer.kind)) {
@@ -733,10 +777,11 @@ export class DraftInbound {
     const same = toLf(text) === toLf(mine);
     if (!same) {
       activity.ownWrite(path);
-      const written = await ports.vault.process(path, (current) => (current === mine ? text : null));
+      const written = await ports.vault.process(path, (current) => (current === mine ? text : null), choose ? { confirmed: true } : undefined);
       if (written !== "written") {
         activity.notWritten(path);
-        this.wait(path);
+        if (choose) ports.notify(DRAFT_SAID.notApplied(noteName(path)));
+        else this.wait(path);
         return false;
       }
     }
@@ -801,8 +846,9 @@ export class DraftInbound {
         const text = withEol(toLf(chosen), eolOf(mine));
         if (text !== mine) {
           activity.ownWrite(path);
-          if ((await ports.vault.process(path, (current) => (current === mine ? text : null))) !== "written") {
+          if ((await ports.vault.process(path, (current) => (current === mine ? text : null), { confirmed: true })) !== "written") {
             activity.notWritten(path);
+            ports.notify(DRAFT_SAID.notApplied(noteName(path)));
             return;
           }
         }

@@ -1,8 +1,10 @@
 import type { App, Plugin, TFile } from "obsidian";
 import type { SpecgitApi } from "../api";
+import type { SpecgitBinaryFetch } from "../auth/binary-fetch";
 import type { AuthEvent } from "../auth/session";
 import { MARK_ICON } from "../brand/mark";
 import { gitBlobSha } from "../changes/blob-sha";
+import { hashVaultBinary, readVaultBinaryBlob } from "../disk/vault-binary";
 import { showNotice, showNoticeWithAction, showProgress } from "../notices";
 import { VaultOnboarding } from "./flow";
 import { OnboardWindow } from "./modal";
@@ -15,6 +17,7 @@ export const ONBOARD_ACTION = "specgit-onboard";
 
 export interface OnboardSetupDeps {
   api: SpecgitApi;
+  binary?: Pick<SpecgitBinaryFetch, "uploadVaultPack">;
   signedIn: () => boolean;
   signIn: (options?: { install?: boolean }) => Promise<void>;
   onAuth: (listener: (event: AuthEvent) => void) => () => void;
@@ -24,9 +27,10 @@ export interface OnboardSetupDeps {
 
 type Sized = { path: string; size: number };
 
-function vaultReads(app: App): Pick<UploadDeps, "listed" | "config" | "ownGitignore" | "read" | "configDir"> {
+function vaultReads(app: App): Pick<UploadDeps, "listed" | "config" | "ownGitignore" | "read" | "hashFile" | "readBlob" | "configDir"> {
   const { vault } = app;
   const { adapter, configDir } = vault;
+  const isVaultFile = (path: string): boolean => !path.startsWith(`${configDir}/`) && path !== ".gitignore";
   const listConfig = async (dir: string, top: boolean): Promise<Sized[]> => {
     const { files, folders } = await adapter.list(dir);
     const here = await Promise.all(files.map(async (path): Promise<Sized> => ({ path, size: (await adapter.stat(path))?.size ?? 0 })));
@@ -39,9 +43,11 @@ function vaultReads(app: App): Pick<UploadDeps, "listed" | "config" | "ownGitign
     config: () => listConfig(configDir, true),
     ownGitignore: async () => ((await adapter.exists(".gitignore")) ? adapter.read(".gitignore") : null),
     read: async (path) => {
-      const file: TFile | null = path.startsWith(`${configDir}/`) || path === ".gitignore" ? null : vault.getFileByPath(path);
+      const file: TFile | null = isVaultFile(path) ? vault.getFileByPath(path) : null;
       return new Uint8Array(file ? await vault.readBinary(file) : await adapter.readBinary(path));
     },
+    hashFile: async (path, size) => (isVaultFile(path) ? hashVaultBinary(app, path, size) : gitBlobSha(await adapter.readBinary(path))),
+    readBlob: async (path) => (isVaultFile(path) ? readVaultBinaryBlob(app, path) : new Uint8Array(await adapter.readBinary(path))),
   };
 }
 
@@ -79,7 +85,17 @@ export function setUpOnboard(plugin: Plugin, deps: OnboardSetupDeps): VaultOnboa
       }),
     call,
     plan: async () => planVault(reads.listed(), await reads.config(), reads.configDir, await reads.ownGitignore()),
-    upload: (repo, control) => new VaultUpload({ ...reads, call, blobSha: gitBlobSha, wait, now: Date.now, isCurrent: () => control.isCurrent(), progress: (state) => control.progress(state) }).run(repo),
+    upload: (repo, control) =>
+      new VaultUpload({
+        ...reads,
+        call,
+        blobSha: gitBlobSha,
+        ...(deps.binary ? { sendPack: (meta, blobs) => deps.binary!.uploadVaultPack(meta, blobs) } : {}),
+        wait,
+        now: Date.now,
+        isCurrent: () => control.isCurrent(),
+        progress: (state) => control.progress(state),
+      }).run(repo),
     record: new UploadRecords({ load: (key) => app.loadLocalStorage(key) as unknown, save: (key, value) => app.saveLocalStorage(key, value) }),
     openUrl: (url) => void window.open(url),
     onFront,

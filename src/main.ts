@@ -21,7 +21,7 @@ import { diskPath } from "./disk/vault";
 import { noteUrl } from "./links";
 import { ReadingBars } from "./cursors/reading";
 import { liveEditor } from "./editor/extension";
-import { docKey, documentFor, fileFor, isRepoName, normalizeFolder, placeOf } from "./mapping";
+import { docKey, documentFor, type DocumentRef, fileFor, isRepoName, normalizeFolder, placeOf } from "./mapping";
 import { setUpOnboard } from "./onboard/setup";
 import { setUpPick } from "./pick/setup";
 import { ConnectionLifecycle } from "./network/lifecycle";
@@ -56,7 +56,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     registerMark();
 
     const ownRestarts = new OwnRestarts(undefined, { load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) });
-    const { auth, tokens, gitCopy, roomPeople, signIn } = setUpAuth(this, { server: this.config.server, pendingSteps: (doc) => ownRestarts.asking(docKey(doc)) });
+    const { auth, tokens, gitCopy, roomPeople, binary, signIn } = setUpAuth(this, { server: this.config.server, pendingSteps: (doc) => ownRestarts.asking(docKey(doc)) });
     addAuthCommands(this, { auth, signIn });
     const account = new SpecgitAccount(auth, signIn, this);
     this.account = account;
@@ -70,8 +70,10 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     );
     const board = new StatusBoard();
     const cameIn = new Board<Shown[]>();
+    const deferredNew = new Map<string, string>();
+    let isDeferredLocalNew = (_doc: DocumentRef): boolean => false;
     const connections = new Connections(
-      () => this.config.stayConnected,
+      (doc) => this.config.stayConnected && !isDeferredLocalNew(doc),
       {
         load: () => {
           const stored = this.app.loadLocalStorage(DISCONNECTED_KEY) as unknown;
@@ -110,6 +112,14 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       liveEditor({
         reading,
         isLocalOnlyNew: (path) => isLocalOnlyNew(path),
+        onLayout: (listener) => {
+          const active = this.app.workspace.on("active-leaf-change", listener);
+          const layout = this.app.workspace.on("layout-change", listener);
+          return () => {
+            this.app.workspace.offref(active);
+            this.app.workspace.offref(layout);
+          };
+        },
         mainMoved: (path) => mainMoved(path),
         documentFor: (path) => documentFor(this.config, path),
         onMapping: (listener) => this.settingsSaved.subscribe(listener),
@@ -161,7 +171,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       await this.applyMapping(mapping);
       if (mapping.repo !== before) void checkConnected();
     };
-    const onboarding = setUpOnboard(this, { api, signedIn: () => auth.isSignedIn(), signIn, onAuth: (listener) => auth.onChange(listener), apply, repoChosen: () => isRepoName(this.config.repo) });
+    const onboarding = setUpOnboard(this, { api, binary, signedIn: () => auth.isSignedIn(), signIn, onAuth: (listener) => auth.onChange(listener), apply, repoChosen: () => isRepoName(this.config.repo) });
     const picker = setUpPick(this, {
       api,
       dialogs,
@@ -209,6 +219,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
 
     const changes = setUpChanges(this, {
       api,
+      binary,
       dialogs,
       settings: () => this.config,
       bases: disk.bases,
@@ -262,6 +273,17 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
 
     repoShaOf = (path) => changes.model.vault()?.files.get(path)?.repoSha ?? null;
     isLocalOnlyNew = (path) => disk.bases.read(path).status === "none" && changes.model.isLocalOnlyNew(path);
+    isDeferredLocalNew = (doc) => {
+      const key = docKey(doc);
+      const path = changes.model.vaultPathFor(doc.path);
+      if (isLocalOnlyNew(path)) {
+        deferredNew.set(key, path);
+        return true;
+      }
+      if (changes.model.state().phase !== "ready" && deferredNew.get(key) === path) return true;
+      deferredNew.delete(key);
+      return false;
+    };
     this.register(this.settingsSaved.subscribe(changes.settingsChanged));
     this.stay = setUpStay(this, {
       settings: () => this.config,
@@ -275,7 +297,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       gitFile: (doc, at) => gitCopy.readFile(doc, at),
       wasDeleted: (doc) => gitCopy.wasDeleted(doc),
       gitBlobs: (repo, commit, files) => gitCopy.readBlobs(repo, commit, files),
-      gitAttachment: (repo, at, path) => gitCopy.readAttachment(repo, at, path),
+      gitAttachment: (repo, at, path, options) => gitCopy.readAttachment(repo, at, path, options),
       gitFindAttachment: (repo, branch, notePath, embed) => gitCopy.findAttachment(repo, branch, notePath, embed),
       listing,
       gitBlob: (doc, sha) => gitCopy.readBlob(doc, sha),
@@ -291,6 +313,16 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       dialogs,
     });
     this.register(this.settingsSaved.subscribe(() => this.stay?.settingsChanged()));
+    this.register(
+      changes.model.onLooked((looked) => {
+        if (looked === null) return;
+        for (const [key, path] of [...deferredNew]) {
+          const current = documentFor(this.config, path);
+          if (!current || docKey(current) !== key || !looked.files.has(path) || !isLocalOnlyNew(path)) deferredNew.delete(key);
+        }
+        if (this.config.stayConnected) connections.defaultsChanged();
+      }),
+    );
     mainMoved = (path) => changes.model.row(path)?.change.mainMoved === true;
     draftBy = (path) => changes.model.draftAuthor(path);
     liveJoined = (path) => changes.liveFiles.joined(path);
@@ -349,6 +381,10 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     });
     const opened = panel;
     this.app.workspace.onLayoutReady(() => openOnFirstRun({ load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) }, () => opened.reveal()));
+  }
+
+  override onunload(): void {
+    this.stay?.flush();
   }
 
   async setStayConnected(on: boolean): Promise<void> {

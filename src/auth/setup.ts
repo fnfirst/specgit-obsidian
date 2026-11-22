@@ -3,6 +3,7 @@ import { randomToken } from "./pkce";
 import type { DocumentRef } from "../mapping";
 import type { AskedStep } from "../token-source";
 import { AUTH_ACTION, DEFAULT_SERVER } from "./config";
+import { SpecgitBinaryFetch } from "./binary-fetch";
 import { SIGNED_OUT_MESSAGE } from "./errors";
 import { SpecgitGitCopy } from "./git-copy";
 import { obsidianTransport } from "./obsidian-transport";
@@ -17,6 +18,7 @@ export interface AuthSetup {
   tokens: SpecgitTokenSource;
   gitCopy: SpecgitGitCopy;
   roomPeople: SpecgitRoomPeople;
+  binary: SpecgitBinaryFetch;
   signIn: (options?: { install?: boolean }) => Promise<void>;
 }
 
@@ -76,7 +78,8 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
     openBrowser: (url) => void window.open(url),
   });
   const tokens = new SpecgitTokenSource({ server, version: manifest.version, auth, transport: obsidianTransport, ...(options.pendingSteps ? { pendingSteps: options.pendingSteps } : {}) });
-  const gitCopy = new SpecgitGitCopy({ server, version: manifest.version, auth, transport: obsidianTransport });
+  const binary = new SpecgitBinaryFetch({ server, version: manifest.version, auth });
+  const gitCopy = new SpecgitGitCopy({ server, version: manifest.version, auth, transport: obsidianTransport, binaryFetch: binary });
   const roomPeople = new SpecgitRoomPeople({ server, version: manifest.version, auth, transport: obsidianTransport });
 
   let modal: PasteCodeModal | null = null;
@@ -118,7 +121,7 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
     modal.open();
   };
 
-  return { auth, tokens, gitCopy, roomPeople, signIn };
+  return { auth, tokens, gitCopy, roomPeople, binary, signIn };
 }
 
 export function addAuthCommands(plugin: Plugin, setup: Pick<AuthSetup, "auth" | "signIn">): void {

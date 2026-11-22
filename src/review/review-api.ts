@@ -1,6 +1,7 @@
 import type { BurstFile, CatchUpPreview, GroupAction, GroupOverview, InFlightMap, PrInfo, PublishQuota, SavesTo } from "../shared/review-flow";
 import { factsFromDetail, type ReviewFacts } from "../shared/status-panel";
 import { type ApiAnswer, docParams, splitRepo, type SpecgitApi } from "../api";
+import type { SpecgitBinaryFetch } from "../auth/binary-fetch";
 import { GIT_PROVIDER, NOTE_BRANCH } from "../auth/config";
 import { NETWORK_MESSAGE } from "../auth/errors";
 import { TRY_AGAIN } from "../shared/review-flow";
@@ -96,7 +97,14 @@ export interface Reviewer {
 }
 
 export class ReviewApi {
-  constructor(private readonly api: SpecgitApi) {}
+  readonly canUploadBinary: boolean;
+
+  constructor(
+    private readonly api: SpecgitApi,
+    private readonly binary?: Pick<SpecgitBinaryFetch, "uploadAttachment">,
+  ) {
+    this.canUploadBinary = binary !== undefined;
+  }
 
   private send(path: string, doc: DocumentRef, extra: Record<string, unknown> = {}, fallback = TRY_AGAIN): Promise<StepResult> {
     const params = docParams(doc);
@@ -233,6 +241,14 @@ export class ReviewApi {
 
   attachment(note: DocumentRef, filePath: string, base64: string, expectSha?: string | null): Promise<StepResult> {
     return this.send("/api/docs/attachment", note, { filePath, base64, ...(expectSha === undefined ? {} : { expectSha }) });
+  }
+
+  uploadAttachment(
+    note: DocumentRef,
+    input: { filePath: string; blobSha: string; body: Blob | Uint8Array; expectSha?: string | null; createOver?: number },
+  ): Promise<StepResult> {
+    if (!this.binary) return Promise.resolve({ ok: false, status: 501, code: "unsupported", message: TRY_AGAIN, body: null });
+    return this.binary.uploadAttachment({ note, ...input });
   }
 
   async reviewers(doc: DocumentRef): Promise<Reviewer[]> {

@@ -65,15 +65,22 @@ export class Inbound {
   private announcedDeletes = 0;
   private readonly pendingRenames = new Map<string, { to: string; sha: string }>();
   private readonly renameTold = new Set<string>();
+  private readonly deferredUnsaved = new Set<string>();
 
   constructor(private readonly ctx: InboundContext) {}
 
   release(path: string): void {
     this.waiting.delete(path);
+    this.deferredUnsaved.delete(path);
+  }
+
+  unsavedPaths(): string[] {
+    return [...this.deferredUnsaved];
   }
 
   stop(): void {
     this.abort.abort();
+    this.deferredUnsaved.clear();
   }
 
   async run(looked: Looked, silent = false): Promise<{ changed: number; more: boolean }> {
@@ -86,6 +93,8 @@ export class Inbound {
     const said: Said = { updated: [], merged: [], created: [], moved: [], trashed: [], came: [] };
     const added = [...looked.repo].filter(([path, sha]) => seen[path] !== sha);
     const removed = Object.entries(seen).filter(([path]) => !looked.repo.has(path));
+    const active = new Set<string>([...added.map(([path]) => path), ...removed.map(([path]) => path)]);
+    for (const path of [...this.deferredUnsaved]) if (!active.has(path)) this.deferredUnsaved.delete(path);
     const moves = this.pairMoves(looked, added, removed);
     const inMove = new Set(moves.flatMap((move) => [move.from, move.to]));
     this.notePendingRenames(looked, added, removed, inMove);
@@ -207,6 +216,7 @@ export class Inbound {
 
   private settled(path: string, sha: string | null): void {
     this.waiting.delete(path);
+    this.deferredUnsaved.delete(path);
     this.cues.delete(path);
     this.announced.delete(path);
     this.reviewTold.delete(path);
@@ -336,7 +346,12 @@ export class Inbound {
 
   private async free(path: string, doc: DocumentRef, sha: string): Promise<boolean> {
     const { ports } = this.ctx;
-    if ((await notWritableBecause({ phaseOf: (one) => ports.phaseOf(one), hasUnsavedText: (one) => ports.vault.hasUnsavedText(one) }, path)) !== null) return this.notFree(path, sha);
+    const why = await notWritableBecause({ phaseOf: (one) => ports.phaseOf(one), hasUnsavedText: (one) => ports.vault.hasUnsavedText(one) }, path);
+    if (why !== null) {
+      if (why === "typing") this.deferredUnsaved.add(path);
+      return this.notFree(path, sha);
+    }
+    this.deferredUnsaved.delete(path);
     const drafts = this.looked?.drafts;
     const review = drafts?.level && !ports.inGroup(path) ? (drafts.byPath.has(path) ? "open" : "none") : await this.readReview(doc);
     if (review === "none") return true;
@@ -360,6 +375,11 @@ export class Inbound {
   private unwritten(path: string, sha: string, ...also: string[]): void {
     this.ctx.activity.notWritten(path, ...also);
     this.wait(path, sha);
+  }
+
+  private async refusedWrite(path: string, sha: string, written: "written" | "refused" | "gone"): Promise<void> {
+    if (written === "refused" && (await this.ctx.ports.vault.hasUnsavedText(path))) this.deferredUnsaved.add(path);
+    this.unwritten(path, sha);
   }
 
   private keepAsBase(path: string, doc: DocumentRef, main: MainText): void {
@@ -435,7 +455,7 @@ export class Inbound {
       before = current;
       return gitBlobShaOfText(current) === expected ? main.text : null;
     });
-    if (written !== "written") return this.unwritten(path, main.sha);
+    if (written !== "written") return this.refusedWrite(path, main.sha, written);
     await this.bring(path, main.text);
     this.came(said, path, before, main.text);
     this.keepAsBase(path, doc, main);
@@ -462,7 +482,8 @@ export class Inbound {
     const merged = withEol(joined.text, eolOf(mine));
     if (merged !== mine) {
       activity.ownWrite(path);
-      if ((await ports.vault.process(path, (current) => (current === mine ? merged : null))) !== "written") return this.unwritten(path, main.sha);
+      const written = await ports.vault.process(path, (current) => (current === mine ? merged : null));
+      if (written !== "written") return this.refusedWrite(path, main.sha, written);
       await this.bring(path, merged);
       said.merged.push(noteName(path));
       this.came(said, path, mine, merged);
@@ -492,7 +513,10 @@ export class Inbound {
         if (!this.ctx.current()) return;
         const text = withEol(chosen, eolOf(mine));
         activity.ownWrite(path);
-        if ((await ports.vault.process(path, (current) => (current === mine ? text : null))) !== "written") return this.unwritten(path, main.sha);
+        if ((await ports.vault.process(path, (current) => (current === mine ? text : null), { confirmed: true })) !== "written") {
+          ports.notify(DRAFT_SAID.notApplied(noteName(path)));
+          return this.unwritten(path, main.sha);
+        }
         await this.bring(path, text);
         this.keepAsBase(path, doc, main);
         this.settled(path, main.sha);

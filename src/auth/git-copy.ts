@@ -1,13 +1,15 @@
 import type { DocumentRef } from "../mapping";
 import { type Bearer, withBearer } from "./bearer";
+import { formatIfNoneMatch, parseEtagSha, type SpecgitBinaryFetch } from "./binary-fetch";
 import { GIT_PROVIDER, NOTE_BRANCH, normalizeServer, VERSION_HEADER } from "./config";
-import { headerOf, jsonObject, type Transport } from "./transport";
+import { decodeHeaderPath, headerOf, jsonObject, type Transport } from "./transport";
 
 export interface GitCopyOptions {
   server: string;
   version: string;
   auth: Bearer;
   transport: Transport;
+  binaryFetch?: Pick<SpecgitBinaryFetch, "downloadAsset">;
 }
 
 export type MainFile =
@@ -23,7 +25,12 @@ const BLOBS_KEPT = 50;
 
 export type BlobsAnswer = { kind: "answered"; files: Map<string, BlobRead> } | { kind: "missing" } | { kind: "outage" };
 
-export type AttachmentFile = { kind: "bytes"; bytes: ArrayBuffer; path?: string } | { kind: "absent" } | { kind: "unreadable"; outage?: true };
+export type AttachmentFile =
+  | { kind: "bytes"; bytes: ArrayBuffer; path?: string; sha?: string }
+  | { kind: "stream"; stream: ReadableStream<Uint8Array>; size?: number; path?: string; sha?: string }
+  | { kind: "unchanged" }
+  | { kind: "absent" }
+  | { kind: "unreadable"; outage?: true };
 
 const BLOB_KINDS: ReadonlySet<string> = new Set(["too_large", "not_text", "changed"]);
 
@@ -146,31 +153,34 @@ export class SpecgitGitCopy {
     }
   }
 
-  async readAttachment(repo: string, commit: string, path: string): Promise<AttachmentFile> {
-    return this.fetchAttachment(repo, { branch: commit, path });
+  async readAttachment(repo: string, commit: string, path: string, options?: { ifNoneMatch?: string }): Promise<AttachmentFile> {
+    return this.fetchAttachment(repo, { branch: commit, path, ...(options?.ifNoneMatch === undefined ? {} : { ifNoneMatch: options.ifNoneMatch }) });
   }
 
   async findAttachment(repo: string, branch: string, notePath: string, embed: string): Promise<AttachmentFile> {
     return this.fetchAttachment(repo, { branch, path: notePath, embed });
   }
 
-  private async fetchAttachment(repo: string, params: { branch: string; path: string; embed?: string }): Promise<AttachmentFile> {
+  private async fetchAttachment(repo: string, params: { branch: string; path: string; embed?: string; ifNoneMatch?: string }): Promise<AttachmentFile> {
+    if (this.options.binaryFetch) return this.options.binaryFetch.downloadAsset(repo, params);
     const [owner, name, ...rest] = repo.split("/");
     if (!owner || !name || rest.length > 0) return { kind: "unreadable" };
     const query = new URLSearchParams({ provider: GIT_PROVIDER, owner, repo: name, branch: params.branch, path: params.path, ...(params.embed === undefined ? {} : { embed: params.embed }) });
+    const ifNoneMatch = formatIfNoneMatch(params.ifNoneMatch);
     try {
       const response = await withBearer(this.options.auth, (token) =>
         this.options.transport({
           url: `${this.server}/api/docs/asset?${query.toString()}`,
           method: "GET",
-          headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version },
+          headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version, ...(ifNoneMatch === undefined ? {} : { "If-None-Match": ifNoneMatch }) },
           binary: true,
         }),
       );
+      if (response.status === 304) return { kind: "unchanged" };
       if (response.status === 200 && response.bytes) {
-        const said = headerOf(response, "x-specgit-path");
-        const found = said === undefined ? undefined : (() => { try { return decodeURI(said); } catch { return undefined; } })();
-        return { kind: "bytes", bytes: response.bytes, ...(found === undefined ? {} : { path: found }) };
+        const found = decodeHeaderPath(headerOf(response, "x-specgit-path"));
+        const sha = parseEtagSha(headerOf(response, "etag"));
+        return { kind: "bytes", bytes: response.bytes, ...(found === undefined ? {} : { path: found }), ...(sha === undefined ? {} : { sha }) };
       }
       if (response.status === 404) return { kind: "absent" };
       return response.status === 429 || response.status >= 500 ? { kind: "unreadable", outage: true } : { kind: "unreadable" };

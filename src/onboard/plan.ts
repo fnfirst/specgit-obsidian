@@ -1,4 +1,11 @@
-import { VAULT_FILE_MAX_BYTES, VAULT_PART_MAX_BYTES, VAULT_PART_MAX_FILES } from "../shared/review-flow";
+import {
+  VAULT_FILE_MAX_BYTES,
+  VAULT_PACK_MAX_BYTES,
+  VAULT_PACK_MAX_FILES,
+  VAULT_PACK_MAX_META_BYTES,
+  VAULT_PART_MAX_BYTES,
+  VAULT_PART_MAX_FILES,
+} from "../shared/review-flow";
 
 export function safeRepoName(typed: string): string | null {
   const name = typed.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 100);
@@ -50,21 +57,47 @@ export function sendAs(path: string, bytes: Uint8Array, configDir: string): "tex
   }
 }
 
-export function packParts(files: ReadonlyArray<{ path: string; weight: number }>): string[][] {
+const UTF8 = new TextEncoder();
+const PACK_META_ENVELOPE_BYTES = 512;
+const PACK_META_ENTRY_OVERHEAD_BYTES = 96;
+
+const estimatePackEntryMetaBytes = (path: string): number => UTF8.encode(JSON.stringify(path)).byteLength + PACK_META_ENTRY_OVERHEAD_BYTES;
+
+function chunkParts<T extends { path: string }>(
+  files: readonly T[],
+  costOf: (file: T) => number,
+  maxFiles: number,
+  maxBudget: number,
+  maxMetaBytes?: number,
+): string[][] {
   const parts: string[][] = [];
   let part: string[] = [];
-  let weight = 0;
+  let budget = 0;
+  let metaBytes = PACK_META_ENVELOPE_BYTES;
   for (const file of files) {
-    if (part.length > 0 && (part.length + 1 > VAULT_PART_MAX_FILES || weight + file.weight > VAULT_PART_MAX_BYTES)) {
+    const cost = costOf(file);
+    const entryMeta = maxMetaBytes === undefined ? 0 : estimatePackEntryMetaBytes(file.path);
+    const overMeta = maxMetaBytes !== undefined && metaBytes + entryMeta > maxMetaBytes;
+    if (part.length > 0 && (part.length + 1 > maxFiles || budget + cost > maxBudget || overMeta)) {
       parts.push(part);
       part = [];
-      weight = 0;
+      budget = 0;
+      metaBytes = PACK_META_ENVELOPE_BYTES;
     }
     part.push(file.path);
-    weight += file.weight;
+    budget += cost;
+    metaBytes += entryMeta;
   }
   if (part.length > 0) parts.push(part);
   return parts;
+}
+
+export function packParts(files: ReadonlyArray<{ path: string; weight: number }>): string[][] {
+  return chunkParts(files, (file) => file.weight, VAULT_PART_MAX_FILES, VAULT_PART_MAX_BYTES);
+}
+
+export function packBinaryParts(files: ReadonlyArray<{ path: string; size: number }>): string[][] {
+  return chunkParts(files, (file) => file.size, VAULT_PACK_MAX_FILES, VAULT_PACK_MAX_BYTES, VAULT_PACK_MAX_META_BYTES);
 }
 
 export interface VaultPlan {
@@ -99,5 +132,6 @@ export function planVault(listed: ReadonlyArray<{ path: string; size: number }>,
   for (const file of config) keep(file, false);
   files.push({ path: ".gitignore", size: new TextEncoder().encode(gitignore).length });
   files.sort((a, b) => byCodePoint(a.path, b.path));
+  tooLarge.sort(byCodePoint);
   return { files, tooLarge, notes, others, othersAndNotesBytes, totalBytes: files.reduce((sum, file) => sum + file.size, 0), gitignore };
 }

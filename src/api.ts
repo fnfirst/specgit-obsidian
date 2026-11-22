@@ -1,6 +1,6 @@
 import { type Bearer, withBearer } from "./auth/bearer";
 import { GIT_PROVIDER, NOTE_BRANCH, normalizeServer, VERSION_HEADER } from "./auth/config";
-import { jsonObject, type Transport } from "./auth/transport";
+import { parseApiAnswer, type Transport } from "./auth/transport";
 import { retryAfterFromResponse } from "./api/retry-after";
 import type { DocumentRef } from "./mapping";
 
@@ -46,16 +46,8 @@ export class SpecgitApi {
         ...(input.body === undefined ? {} : { contentType: "application/json", body: JSON.stringify(input.body) }),
       }),
     );
-    const body = jsonObject(response.text);
-    const error = body && typeof body.error === "object" && body.error !== null ? (body.error as Record<string, unknown>) : null;
-    const code = typeof error?.code === "string" ? error.code : typeof body?.code === "string" ? body.code : null;
-    const retryAfterMs = response.status === 429 || code === "rate_limited" ? retryAfterFromResponse(response.headers, body) : undefined;
-    return {
-      status: response.status,
-      body,
-      message: typeof error?.message === "string" ? error.message : null,
-      code,
-      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-    };
+    const answer = parseApiAnswer(response.status, response.text);
+    const retryAfterMs = answer.status === 429 || answer.code === "rate_limited" ? retryAfterFromResponse(response.headers, answer.body) : undefined;
+    return retryAfterMs === undefined ? answer : { ...answer, retryAfterMs };
   }
 }

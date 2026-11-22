@@ -1,4 +1,4 @@
-import { CATCH_UP, type CatchUpPreview } from "../shared/review-flow";
+import { CATCH_UP, type CatchUpPreview, isViewersBranch, TRY_AGAIN } from "../shared/review-flow";
 import type { ActionAnswer, PanelAction, PanelHost, ReviewFacts, StatusNotice, StatusReviewer } from "../shared/status-panel";
 import { comparedOf, onGitHubFiles } from "../changes/vault-state";
 import { type Built, panelModelOf } from "./panel-model";
@@ -13,12 +13,13 @@ import { CATCH_UP_HERE } from "../review/words";
 import { viewsOf } from "../changes/vault-since";
 import { type DocumentRef, noteName } from "../mapping";
 import type { BroughtDraft } from "../changes/bring-in";
-import { isViewersBranch, TRY_AGAIN } from "../shared/review-flow";
+import { DraftHold, HELD_RECHECK_MS } from "./draft-hold";
 
 export const FACTS_PER_REQUEST = 50;
 export const FACTS_FRESH_MS = 30_000;
 export const FACTS_RETRY_MS = 15_000;
 export const FACTS_RETRY_MAX_MS = 120_000;
+export { HELD_RECHECK_MS };
 
 export interface StatusEnv {
   model: ChangesModel;
@@ -110,6 +111,9 @@ export function catchUpQuestion(row: ChangeRow, preview: CatchUpPreview | null):
 export class StatusController {
   private readonly listeners = new Set<() => void>();
   private facts = new Map<number, ReviewFacts>();
+  private factsFor = "";
+  private readonly holds: DraftHold;
+  private seq = 0;
   private asked = "";
   private readAt = 0;
   private retry: unknown = null;
@@ -137,8 +141,19 @@ export class StatusController {
 
   constructor(private readonly env: StatusEnv) {
     this.now = env.now ?? Date.now;
+    this.holds = new DraftHold({
+      now: this.now,
+      repo: () => env.repo(),
+      setTimer: (run, ms) => this.setTimer(run, ms),
+      clearTimer: (handle) => this.clearTimer(handle),
+      recheck: (numbers) => void (this.disposed ? undefined : this.read(false, numbers)),
+      onChanged: () => {
+        if (!this.disposed) this.changed();
+      },
+    });
     this.stops.push(env.model.onLooked(() => this.look()));
     this.stops.push(env.model.subscribe(() => this.modelChanged()));
+    this.stops.push(env.model.onDraftMoved((prNumber, isDraft, requestedReviewers) => this.holdDraft(prNumber, isDraft, requestedReviewers)));
     this.stops.push(env.since.subscribe(() => this.changed()));
   }
 
@@ -148,6 +163,7 @@ export class StatusController {
     this.fullRefreshPending = false;
     this.pendingRefresh.clear();
     this.cancelRetry();
+    this.holds.clear();
     this.stops.forEach((stop) => stop());
     this.listeners.clear();
   }
@@ -182,9 +198,17 @@ export class StatusController {
     return [...all.filter((number) => own.has(number)), ...all.filter((number) => !own.has(number))];
   }
 
+  private setTimer(run: () => void, ms: number): unknown {
+    return (this.env.timers?.set ?? ((fn, wait) => window.setTimeout(fn, wait)))(run, ms);
+  }
+
+  private clearTimer(handle: unknown): void {
+    (this.env.timers?.clear ?? ((id) => window.clearTimeout(id as number)))(handle);
+  }
+
   private cancelRetry(): void {
     if (this.retry === null) return;
-    (this.env.timers?.clear ?? ((handle) => window.clearTimeout(handle as number)))(this.retry);
+    this.clearTimer(this.retry);
     this.retry = null;
   }
 
@@ -195,13 +219,33 @@ export class StatusController {
       if (this.disposed) return;
       void this.read(true);
     };
-    this.retry = (this.env.timers?.set ?? ((fn, ms) => window.setTimeout(fn, ms)))(run, wait);
+    this.retry = this.setTimer(run, wait);
   }
 
   private retryLater(): void {
     const wait = this.retryMs;
     this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
     this.scheduleRetry(wait);
+  }
+
+  private syncRepo(): void {
+    const repo = this.env.repo();
+    if (this.factsFor === repo) return;
+    this.factsFor = repo;
+    this.facts = new Map();
+    this.asked = "";
+    this.readAt = 0;
+    this.limitedUntil = 0;
+    this.fullRefreshPending = false;
+    this.pendingRefresh.clear();
+    this.cancelRetry();
+    this.holds.clear();
+  }
+
+  holdDraft(prNumber: number, isDraft: boolean, requestedReviewers?: readonly string[]): void {
+    if (this.disposed) return;
+    this.syncRepo();
+    if (this.holds.record(prNumber, isDraft, ++this.seq, this.facts, this.reading !== null, requestedReviewers)) this.changed();
   }
 
   private modelChanged(): void {
@@ -224,27 +268,40 @@ export class StatusController {
     void this.read();
   }
 
-  private read(retrying = false): Promise<void> {
+  private read(retrying = false, only?: readonly number[]): Promise<void> {
+    this.syncRepo();
+    const repo = this.env.repo();
     const remaining = this.limitedUntil - this.now();
     if (remaining > 0) {
-      if (!retrying) this.fullRefreshPending = true;
+      if (only) for (const number of only) this.pendingRefresh.add(number);
+      else if (!retrying) this.fullRefreshPending = true;
       if (this.retry === null) this.scheduleRetry(remaining);
       return this.reading ?? Promise.resolve();
     }
     this.limitedUntil = 0;
     if (this.reading) {
+      if (only) for (const number of only) this.pendingRefresh.add(number);
+      else this.fullRefreshPending = true;
       this.again = true;
       return this.reading;
     }
-    this.cancelRetry();
+    if (!only) this.cancelRetry();
     const numbers = this.ordered();
-    this.asked = this.numbers().join(",");
-    this.readAt = this.now();
-    const full = !retrying || this.fullRefreshPending;
-    this.fullRefreshPending = false;
-    const pending = this.pendingRefresh;
-    this.pendingRefresh = new Set();
-    const wanted = full ? numbers : numbers.filter((number) => !this.facts.has(number) || pending.has(number));
+    let wanted: number[];
+    if (only) {
+      const targets = new Set(only);
+      wanted = numbers.filter((number) => targets.has(number));
+      if (wanted.length === 0) return Promise.resolve();
+    } else {
+      this.asked = this.numbers().join(",");
+      this.readAt = this.now();
+      const full = !retrying || this.fullRefreshPending;
+      this.fullRefreshPending = false;
+      const pending = this.pendingRefresh;
+      this.pendingRefresh = new Set();
+      wanted = full ? numbers : numbers.filter((number) => !this.facts.has(number) || pending.has(number));
+    }
+    const startedSeq = ++this.seq;
     this.reading = (async () => {
       const next = new Map<number, ReviewFacts>();
       let complete = true;
@@ -252,7 +309,8 @@ export class StatusController {
       let limited: { limited: true; retryAfterMs?: number } | null = null;
       let stoppedAt = wanted.length;
       for (let at = 0; at < wanted.length; at += FACTS_PER_REQUEST) {
-        const answer = await this.env.review.details(this.env.repo(), wanted.slice(at, at + FACTS_PER_REQUEST));
+        const answer = await this.env.review.details(repo, wanted.slice(at, at + FACTS_PER_REQUEST));
+        if (this.disposed || this.env.repo() !== repo) return;
         if (!(answer instanceof Map)) {
           complete = false;
           stoppedAt = at;
@@ -262,7 +320,7 @@ export class StatusController {
         }
         for (const [number, detail] of answer) next.set(number, factsOf(detail));
       }
-      if (this.disposed) return;
+      if (this.disposed || this.env.repo() !== repo) return;
       if (complete) {
         this.retryMs = FACTS_RETRY_MS;
         this.limitedUntil = 0;
@@ -282,6 +340,7 @@ export class StatusController {
           if (fresh) kept.set(number, fresh);
         }
         this.facts = kept;
+        this.holds.reconcile(this.facts, next, startedSeq);
         this.changed();
       }
     })()
@@ -290,7 +349,8 @@ export class StatusController {
         this.reading = null;
         if (this.again && !this.disposed) {
           this.again = false;
-          void this.read();
+          const full = this.fullRefreshPending;
+          void this.read(!full);
         }
       });
     return this.reading;
@@ -338,6 +398,8 @@ export class StatusController {
 
   build(view: StatusView | null): Built {
     const { model } = this.env;
+    this.syncRepo();
+    if (this.holds.reconcile(this.facts)) this.version++;
     const state = model.state();
     const path = view ? (view.state.note?.path ?? null) : this.env.activePath();
     const status = view?.state.status ?? null;
@@ -365,7 +427,7 @@ export class StatusController {
       state,
       viewer: this.env.viewer(),
       now: this.now(),
-      facts: this.facts,
+      facts: this.holds.apply(this.facts),
       flight: model.flightAnswer(),
       rooms: model.roomsNow(),
       unchanged: (one) => model.unchangedRow(one),

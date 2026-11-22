@@ -25,6 +25,7 @@ export const CHOICE_WORDS = {
 
 export const DRAFT_SAID = {
   conflict: (name: string): string => `${name} was changed here and somewhere else, in the same place. Nothing was overwritten.`,
+  notApplied: (name: string): string => `${name} changed while you were choosing, so nothing was overwritten. Try again.`,
   discarded: (name: string): string => `The unpublished changes to ${name} were dropped, so it shows the published version again.`,
   offer: (by: string, name: string): string => `${by} has unpublished changes to ${name}.`,
   offerButton: "Add to my note",
@@ -58,6 +59,8 @@ export const STAY_HELD = {
   github: "Changed or deleted on GitHub. Not saved yet.",
   tries: "Couldn't save after three tries. Edit it to try again.",
   deleted: "Deleted on GitHub. Submit it to bring it back.",
+  baseline: "Here before Stay connected was turned on. Not saved yet.",
+  held: "Not saved automatically. Edit it to try again.",
 } as const;
 
 export { ATTACHMENTS_SAID } from "../changes/attachment-memory";

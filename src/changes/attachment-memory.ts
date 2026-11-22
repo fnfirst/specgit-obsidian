@@ -6,7 +6,9 @@ export type Attachment =
   | {
       repoPath: string;
       base64: string | (() => Promise<string>);
+      binary?: () => Promise<Blob | Uint8Array>;
       sha?: string;
+      size?: number;
       expectSha?: string | null;
     }
   | { repoPath: string; skipped: "tooLarge" | "outsideFolder" };

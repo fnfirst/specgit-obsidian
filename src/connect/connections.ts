@@ -22,6 +22,11 @@ export class Connections {
     return this.chosen.get(key) ?? (this.off.has(key) ? false : this.byDefault(doc));
   }
 
+  isDisconnected(doc: DocumentRef): boolean {
+    const key = keyOf(doc);
+    return this.chosen.get(key) === false || (this.chosen.get(key) === undefined && this.off.has(key));
+  }
+
   private keepOff(): void {
     this.store?.save([...this.off]);
   }

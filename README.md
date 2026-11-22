@@ -48,8 +48,8 @@ Canvas live editing, Writing mode, Riff, and Ask Agent live on [specgit.com](htt
 If your vault isn't on GitHub yet, choose **Put this vault on GitHub** from the panel, the repository picker, or the command palette. specgit creates a private GitHub repository (or public, if you switch it) and uploads your vault.
 
 - **Free and unmetered:** creating and uploading the repository doesn't count against your plan limits. After setup, your plan applies as usual (on Free, it becomes your one repository).
-- **Uploaded:** notes, Canvas boards, Bases files, attachments (up to 20 MB each), Obsidian settings, themes, CSS snippets, and a `.gitignore` file.
-- **Kept local:** community plugins and their settings (so passwords and API keys never leave your device), window layouts, Obsidian's trash, and files over 20 MB.
+- **Uploaded:** notes, Canvas boards, Bases files, attachments (up to 100 MB each), Obsidian settings, themes, CSS snippets, and a `.gitignore` file.
+- **Kept local:** community plugins and their settings (so passwords and API keys never leave your device), window layouts, Obsidian's trash, and files over 100 MB (listed before upload starts).
 - **Scoped permissions:** GitHub asks once to let specgit create repositories on your account. specgit cannot change repository settings, delete a repository, or transfer one.
 - **Resumable:** you can hide the progress view while keeping Obsidian open; if interrupted, **Continue** picks up where it left off.
 

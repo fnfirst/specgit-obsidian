@@ -3,6 +3,7 @@ export { AuthError, type AuthErrorCode } from "./errors";
 export { SpecgitAuth, type AuthEvent, type AuthOptions, type Profile } from "./session";
 export { AuthStorage, secretId, type SecretStore, type SignInKeeping } from "./storage";
 export { SpecgitGitCopy } from "./git-copy";
+export { BINARY_DEADLINE_MS, encodeMetaHeader, SpecgitBinaryFetch, type BinaryAttachmentUpload, type BinaryFetchOptions } from "./binary-fetch";
 export { SpecgitRoomPeople } from "./room-people";
 export { type Bearer, withBearer } from "./bearer";
 export { RoomTokenError, SpecgitTokenSource } from "./token-source";

@@ -1,7 +1,17 @@
 import type { ApiAnswer } from "../api";
 import { AuthError } from "../auth/errors";
-import { GITHUB_TEMPLATE_FILES, type VaultFile, vaultWeight } from "../shared/review-flow";
-import { type VaultPlan, packParts, planVault, sendAs } from "./plan";
+import { gitBlobShaOfStream } from "../changes/blob-sha";
+import {
+  GITHUB_TEMPLATE_FILES,
+  JSON_ATTACHMENT_MAX_BYTES,
+  VAULT_FILE_MAX_BYTES,
+  VAULT_PACK_MAX_BYTES,
+  type VaultFile,
+  type VaultPackEntry,
+  type VaultPackMeta,
+  vaultWeight,
+} from "../shared/review-flow";
+import { type VaultPlan, packBinaryParts, packParts, planVault, sendAs } from "./plan";
 
 export type UploadProgress =
   | { kind: "reading"; done: number; total: number }
@@ -18,6 +28,9 @@ export interface UploadDeps {
   ownGitignore(): Promise<string | null>;
   read(path: string): Promise<Uint8Array>;
   blobSha(bytes: Uint8Array): Promise<string>;
+  hashFile?(path: string, size: number): Promise<string>;
+  readBlob?(path: string): Promise<Blob | Uint8Array>;
+  sendPack?(meta: VaultPackMeta, blobs: readonly (Blob | Uint8Array)[]): Promise<ApiAnswer>;
   wait(ms: number): Promise<void>;
   now(): number;
   isCurrent(): boolean;
@@ -31,10 +44,13 @@ const SLOW_MIN_MS = 5_000;
 const SLOW_MAX_MS = 900_000;
 const MAX_ROUNDS = 3;
 
+const SMALL_HASH_BYTES = 4 * 1024 * 1024;
+
 interface Entry {
   sha: string;
-  kind: "text" | "base64";
-  weight: number;
+  size: number;
+  kind?: "text" | "base64";
+  weight?: number;
 }
 
 type Asked = { answer: ApiAnswer } | "again" | "ended";
@@ -53,12 +69,27 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+async function hashPayload(payload: Blob | Uint8Array, blobSha: (bytes: Uint8Array) => Promise<string>): Promise<string> {
+  if (ArrayBuffer.isView(payload)) return blobSha(payload);
+  if (payload.size <= SMALL_HASH_BYTES && typeof payload.arrayBuffer === "function") {
+    return blobSha(new Uint8Array(await payload.arrayBuffer()));
+  }
+  if (typeof payload.stream === "function") return gitBlobShaOfStream(payload.size, payload.stream());
+  return blobSha(new Uint8Array(await payload.arrayBuffer()));
+}
+
 export class VaultUpload {
   private readonly entries = new Map<string, Entry>();
   private offlineSince: number | null = null;
   private offlineCount = 0;
+  private packUnsupported = false;
+  private badPackRetries = 0;
 
   constructor(private readonly deps: UploadDeps) {}
+
+  private usePack(): boolean {
+    return this.deps.sendPack !== undefined && !this.packUnsupported;
+  }
 
   async run(repo: string): Promise<void> {
     try {
@@ -85,11 +116,11 @@ export class VaultUpload {
     const plan = await this.plan();
     const paths = new Set(plan.files.map((file) => file.path));
     for (const path of [...entries.keys()]) if (!paths.has(path)) entries.delete(path);
-    for (const { path } of plan.files) {
+    for (const { path, size } of plan.files) {
       if (entries.has(path)) continue;
       if (!deps.isCurrent()) return this.stopped();
       try {
-        entries.set(path, (await this.measure(path, plan)).entry);
+        entries.set(path, await this.hashEntry(path, size, plan));
       } catch (error) {
         return this.leftOrFailed(path, error);
       }
@@ -103,10 +134,17 @@ export class VaultUpload {
     return "again";
   }
 
+  private async hashEntry(path: string, size: number, plan: VaultPlan): Promise<Entry> {
+    if (this.deps.hashFile && path !== ".gitignore") {
+      return { sha: await this.deps.hashFile(path, size), size };
+    }
+    return (await this.measure(path, plan)).entry;
+  }
+
   private async measure(path: string, plan: VaultPlan): Promise<{ bytes: Uint8Array; entry: Entry }> {
     const bytes = path === ".gitignore" ? new TextEncoder().encode(plan.gitignore) : await this.deps.read(path);
     const kind = sendAs(path, bytes, this.deps.configDir);
-    return { bytes, entry: { sha: await this.deps.blobSha(bytes), kind, weight: vaultWeight(kind, bytes.length) } };
+    return { bytes, entry: { sha: await this.deps.blobSha(bytes), size: bytes.length, kind, weight: vaultWeight(kind, bytes.length) } };
   }
 
   private stopped(): "ended" {
@@ -119,13 +157,13 @@ export class VaultUpload {
     return "ended";
   }
 
-  private async request(action: string, body: Record<string, unknown>): Promise<Asked> {
+  private async requestWith(send: () => Promise<ApiAnswer>): Promise<Asked> {
     const { deps } = this;
     for (;;) {
       if (!deps.isCurrent()) return this.stopped();
       let answer: ApiAnswer;
       try {
-        answer = await deps.call(action, body);
+        answer = await send();
       } catch (error) {
         if (error instanceof AuthError && error.code === "signed_out") return this.stopped();
         return this.waitOffline();
@@ -138,6 +176,10 @@ export class VaultUpload {
       deps.progress({ kind: "waiting", why: "slow" });
       await deps.wait(Math.min(Math.max(typeof asked === "number" ? asked : 0, SLOW_MIN_MS), SLOW_MAX_MS));
     }
+  }
+
+  private request(action: string, body: Record<string, unknown>): Promise<Asked> {
+    return this.requestWith(() => this.deps.call(action, body));
   }
 
   private async waitOffline(): Promise<Asked> {
@@ -181,32 +223,108 @@ export class VaultUpload {
   }
 
   private async sendParts(repo: string, plan: VaultPlan, from: string, send: string[], deletes: string[], matching: number): Promise<"sent" | "again" | "ended"> {
+    if (this.usePack()) return this.sendPackParts(repo, plan, from, send, deletes, matching);
+    return this.sendJsonParts(repo, plan, from, send, deletes, matching);
+  }
+
+  private applyPartAnswer(answer: ApiAnswer, sentCount: number, state: { workHead: string; done: number }, total: number): "ok" | "again" | "ended" {
+    if (answer.code === "moved") return "again";
+    if (answer.status === 404) return this.end("gone");
+    const next = asString(answer.body?.workHead);
+    if (answer.status !== 200 || next === null) return this.end("failed");
+    state.workHead = next;
+    state.done += sentCount;
+    this.badPackRetries = 0;
+    this.deps.progress({ kind: "uploading", done: state.done, total });
+    return "ok";
+  }
+
+  private async sendPackParts(repo: string, plan: VaultPlan, from: string, send: string[], deletes: string[], matching: number): Promise<"sent" | "again" | "ended"> {
     const { deps, entries } = this;
-    let workHead = from;
-    let done = matching;
-    const weights = [...deletes.map((path) => ({ path, weight: vaultWeight("delete", 0) })), ...send.map((path) => ({ path, weight: entries.get(path)?.weight ?? 0 }))];
+    const state = { workHead: from, done: matching };
+    const sized = [...deletes.map((path) => ({ path, size: 0 })), ...send.map((path) => ({ path, size: entries.get(path)?.size ?? 0 }))];
+    const removed = new Set(deletes);
+    for (const part of packBinaryParts(sized)) {
+      const files: VaultPackEntry[] = [];
+      const blobs: Array<Blob | Uint8Array> = [];
+      let batchBytes = 0;
+      for (const path of part) {
+        if (removed.has(path)) {
+          files.push({ path, delete: true });
+          continue;
+        }
+        let blob: Blob | Uint8Array;
+        try {
+          blob = path === ".gitignore" ? new TextEncoder().encode(plan.gitignore) : deps.readBlob ? await deps.readBlob(path) : await deps.read(path);
+        } catch (error) {
+          return this.leftOrFailed(path, error);
+        }
+        const blobSize = ArrayBuffer.isView(blob) ? blob.byteLength : blob.size;
+        if (blobSize > VAULT_FILE_MAX_BYTES) {
+          entries.delete(path);
+          return "again";
+        }
+        const sha = await hashPayload(blob, (bytes) => deps.blobSha(bytes));
+        entries.set(path, { sha, size: blobSize });
+        batchBytes += blobSize;
+        if (blobs.length >= 1 && batchBytes > VAULT_PACK_MAX_BYTES) {
+          return "again";
+        }
+        files.push({ path, size: blobSize, blobSha: sha });
+        blobs.push(blob);
+      }
+      const meta: VaultPackMeta = { repo, workHead: state.workHead, files };
+      const asked = await this.requestWith(() => deps.sendPack!(meta, blobs));
+      if (typeof asked === "string") return asked;
+      const { answer } = asked;
+      if ((answer.status === 404 && answer.body === null) || answer.status === 405 || answer.status === 501) {
+        const fitsLegacy = plan.files.every((file) => Math.max(entries.get(file.path)?.size ?? 0, file.size) <= JSON_ATTACHMENT_MAX_BYTES);
+        if (fitsLegacy) {
+          this.packUnsupported = true;
+          return "again";
+        }
+        return this.end("failed");
+      }
+      if (answer.status === 400 && answer.code === "bad_request" && this.badPackRetries < MAX_ROUNDS) {
+        this.badPackRetries++;
+        for (const path of part) if (!removed.has(path)) entries.delete(path);
+        return "again";
+      }
+      const outcome = this.applyPartAnswer(answer, blobs.length, state, plan.files.length);
+      if (outcome !== "ok") return outcome;
+    }
+    return "sent";
+  }
+
+  private async sendJsonParts(repo: string, plan: VaultPlan, from: string, send: string[], deletes: string[], matching: number): Promise<"sent" | "again" | "ended"> {
+    const { entries } = this;
+    const state = { workHead: from, done: matching };
+    const weights = [
+      ...deletes.map((path) => ({ path, weight: vaultWeight("delete", 0) })),
+      ...send.map((path) => {
+        const entry = entries.get(path);
+        return { path, weight: entry?.weight ?? vaultWeight("base64", entry?.size ?? 0) };
+      }),
+    ];
     const removed = new Set(deletes);
     for (const part of packParts(weights)) {
       const files: VaultFile[] = [];
+      let sentCount = 0;
       for (const path of part) {
         if (removed.has(path)) files.push({ path, delete: true });
-        else
+        else {
           try {
             files.push(await this.fileOf(path, plan));
+            sentCount++;
           } catch (error) {
             return this.leftOrFailed(path, error);
           }
+        }
       }
-      const asked = await this.request("add", { repo, workHead, files });
+      const asked = await this.request("add", { repo, workHead: state.workHead, files });
       if (typeof asked === "string") return asked;
-      const { answer } = asked;
-      if (answer.code === "moved") return "again";
-      if (answer.status === 404) return this.end("gone");
-      const next = asString(answer.body?.workHead);
-      if (answer.status !== 200 || next === null) return this.end("failed");
-      workHead = next;
-      done += part.filter((path) => !removed.has(path)).length;
-      deps.progress({ kind: "uploading", done, total: plan.files.length });
+      const outcome = this.applyPartAnswer(asked.answer, sentCount, state, plan.files.length);
+      if (outcome !== "ok") return outcome;
     }
     return "sent";
   }

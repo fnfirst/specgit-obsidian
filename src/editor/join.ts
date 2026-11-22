@@ -45,8 +45,8 @@ export type Outcome =
   | { kind: "block"; why: string }
   | { kind: "lock"; why: string }
   | { kind: "apart"; why: string }
-  | { kind: "review"; regions: Region[]; fromBase: boolean; snapshot: Snapshot }
-  | { kind: "bind"; text: string; notice: string | null; kept: boolean; git?: string | null };
+  | { kind: "review"; regions: Region[]; fromBase: boolean; snapshot: Snapshot; base: string | null }
+  | { kind: "bind"; text: string; notice: string | null; kept: boolean; base: string | null; git?: string | null };
 
 const WAIT: Outcome = { kind: "wait" };
 
@@ -116,9 +116,24 @@ export class Join {
       case "apart":
         return { kind: "apart", why: SAID.apart };
       case "review":
-        return { kind: "review", regions: joined.regions, fromBase: joined.fromBase, snapshot: { mine: editor, theirs: roomText } };
-      case "text":
-        return { kind: "bind", text: joined.text, notice: apart.startedOver && joined.text !== roomText ? SAID.startedOver : null, kept: apart.base !== null && withoutFinalBreaks(editor) !== withoutFinalBreaks(apart.base) && joined.text !== roomText, ...(this.git !== undefined ? { git: this.git } : {}) };
+        return { kind: "review", regions: joined.regions, fromBase: joined.fromBase, snapshot: { mine: editor, theirs: roomText }, base: joined.fromBase ? apart.base : null };
+      case "text": {
+        const base =
+          apart.base ??
+          (withoutFinalBreaks(editor) === withoutFinalBreaks(roomText)
+            ? roomText
+            : !roomIsUnwritten(roomText, editor) && this.git != null && withoutFinalBreaks(editor) === withoutFinalBreaks(this.git)
+              ? this.git
+              : null);
+        return {
+          kind: "bind",
+          text: joined.text,
+          notice: apart.startedOver && joined.text !== roomText ? SAID.startedOver : null,
+          kept: apart.base !== null && withoutFinalBreaks(editor) !== withoutFinalBreaks(apart.base) && joined.text !== roomText,
+          base,
+          ...(this.git !== undefined ? { git: this.git } : {}),
+        };
+      }
     }
   }
 

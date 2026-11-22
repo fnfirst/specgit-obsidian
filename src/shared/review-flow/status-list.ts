@@ -24,7 +24,13 @@ export function heldWords(
     const added = about.kind === "members" ? "" : about.kind === "others" ? "A file outside the group changed on GitHub." : about.others === 1 ? "A file outside the group changed there too." : "Files outside the group changed there too.";
     return `${[gone, added].filter(Boolean).join(" ")} ${HOLD_PICKS.mine} leaves that change out of this group. It stays in the pull request's history on GitHub.`;
   }
-  if (group.hold === "behind") return "The published version of a file here changed. Catch it up to publish.";
+  if (group.hold === "behind") {
+    const named = group.holdPaths ?? [];
+    if (named.length === 0) return "The published version of a file here changed. Catch it up to publish.";
+    const names = named.slice(0, 2).map((p) => p.split("/").pop() ?? p);
+    const files = named.length === 1 ? names[0]! : named.length === 2 ? `${names[0]} and ${names[1]}` : `${names.join(", ")}, and ${named.length - 2} more`;
+    return `The published version of ${files} changed. Catch ${named.length === 1 ? "it" : "them"} up to publish.`;
+  }
   if (group.mergeableState !== "dirty") return null;
   const named = group.conflictPaths ?? [];
   if (named.length > 0) return `The published version of ${named.length === 1 ? "this file" : `${named.length} of these files`} changed too (${named.slice(0, 3).map((p) => p.split("/").pop()).join(", ")}${named.length > 3 ? ", and more" : ""}). Take ${named.length === 1 ? "it" : "them"} out, catch up with the published version, and add ${named.length === 1 ? "it" : "them"} back.`;

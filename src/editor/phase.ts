@@ -4,6 +4,7 @@ import { setIcon } from "obsidian";
 import { MARK_ICON } from "../brand/mark";
 import { statusTip, statusText } from "../status";
 import type { NotePhase } from "../status";
+import { fromRoom } from "./binding";
 
 export type Phase = "off" | NotePhase;
 
@@ -46,22 +47,25 @@ export const phaseField = StateField.define<Phase>({
     for (const effect of transaction.effects) if (effect.is(setPhase)) return effect.value;
     return phase;
   },
-  provide: (field) => [
-    joiningEditableField,
-    Prec.highest(
-      EditorState.readOnly.computeN([field, readerField, joiningEditableField], (state) => {
-        if (state.field(readerField)) return [true];
-        const phase = state.field(field);
-        if (phase === "locked") return [true];
-        if (phase === "joining" && !state.field(joiningEditableField)) return [true];
-        return [];
-      }),
-    ),
-    EditorView.editorAttributes.compute([field], (state): Record<string, string> => {
+  provide: (field) => {
+    const held = (state: EditorState): boolean => {
+      if (state.field(readerField, false) === true) return true;
       const phase = state.field(field);
-      return phase === "off" ? {} : { "data-specgit-room": phase };
-    }),
-  ],
+      if (phase === "locked") return true;
+      return phase === "joining" && state.field(joiningEditableField, false) !== true;
+    };
+    return [
+      joiningEditableField,
+      Prec.highest(EditorState.readOnly.computeN([field, readerField, joiningEditableField], (state) => (held(state) ? [true] : []))),
+      Prec.highest(EditorView.editable.computeN([field, readerField, joiningEditableField], (state) => (held(state) ? [false] : []))),
+      Prec.highest(EditorView.contentAttributes.computeN([field, readerField, joiningEditableField], (state) => (held(state) ? [{ contenteditable: "false", tabindex: "-1" }] : []))),
+      Prec.highest(EditorState.changeFilter.of((tr) => !tr.docChanged || !held(tr.startState) || tr.annotation(fromRoom) === true || tr.isUserEvent("set"))),
+      EditorView.editorAttributes.compute([field, readerField, joiningEditableField], (state): Record<string, string> => {
+        const phase = state.field(field);
+        return phase === "off" ? {} : { "data-specgit-room": phase, ...(held(state) ? { "data-specgit-held": "true" } : {}) };
+      }),
+    ];
+  },
 });
 
 export function headerActions(editor: HTMLElement): HTMLElement | null {

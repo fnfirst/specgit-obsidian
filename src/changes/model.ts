@@ -147,6 +147,7 @@ export class ChangesModel {
   private refreshing: Promise<void> | null = null;
   private again: { scheduled: boolean } | null = null;
   private readonly lookListeners = new Set<(looked: Looked | null) => void>();
+  private readonly draftListeners = new Set<(prNumber: number, isDraft: boolean, requestedReviewers?: readonly string[]) => void>();
   private looked: { rows: ChangeRow[]; groups: ChangeRow[]; maps: Lookups } | null = null;
   private states: VaultStates | null = null;
   private repoFiles: ReadonlyMap<string, string> | null = null;
@@ -162,6 +163,7 @@ export class ChangesModel {
     this.presenceRetry = null;
     this.listeners.clear();
     this.lookListeners.clear();
+    this.draftListeners.clear();
   }
 
   private lookLater(ms: number): void {
@@ -179,6 +181,15 @@ export class ChangesModel {
   onLooked(listener: (looked: Looked | null) => void): () => void {
     this.lookListeners.add(listener);
     return () => this.lookListeners.delete(listener);
+  }
+
+  onDraftMoved(listener: (prNumber: number, isDraft: boolean, requestedReviewers?: readonly string[]) => void): () => void {
+    this.draftListeners.add(listener);
+    return () => this.draftListeners.delete(listener);
+  }
+
+  private emitDraftMoved(prNumber: number, isDraft: boolean, requestedReviewers?: readonly string[]): void {
+    this.draftListeners.forEach((listener) => listener(prNumber, isDraft, requestedReviewers));
   }
 
   subscribe(listener: () => void): () => void {
@@ -340,6 +351,10 @@ export class ChangesModel {
   }
 
   learn(path: string, review: ReviewStatus): void {
+    const pr = review.pr;
+    if (pr && pr.number > 0 && (pr.state === "open" || pr.state === "draft")) {
+      this.emitDraftMoved(pr.number, pr.isDraft || pr.state === "draft", pr.requestedReviewers);
+    }
     const row = this.row(path);
     if (!row) {
       const watched = this.watched;
@@ -362,6 +377,16 @@ export class ChangesModel {
   change(change: InFlightChange): void {
     const replaced = (one: PendingChange): boolean => change.kind === "draft" && one.change.kind === "draft" && one.change.groupIds.some((id) => change.groupIds.includes(id));
     this.pending = [...this.pending.filter((one) => !replaced(one)), { change, madeAt: this.now() }];
+    if (change.kind === "draft") {
+      for (const id of change.groupIds) {
+        const prNumber = this.group(id)?.group?.overview.prNumber ?? Object.values(this.groupsRead.overviews).find((one) => one.id === id)?.prNumber;
+        if (prNumber && prNumber > 0) this.emitDraftMoved(prNumber, change.isDraft);
+      }
+      for (const path of change.paths) {
+        const prNumber = this.row(path)?.entry?.prNumber;
+        if (prNumber && prNumber > 0) this.emitDraftMoved(prNumber, change.isDraft);
+      }
+    }
     this.set({});
   }
 

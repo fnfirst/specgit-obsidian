@@ -1,11 +1,17 @@
 import { type App, TFile } from "obsidian";
 import { gitBlobShaOfText } from "../changes/blob-sha";
+import { sameBaseText } from "../changes/same-base";
+import { sameCanvasText } from "../shared/review-flow";
 import { toLf } from "./line-endings";
+
+export interface ProcessOptions {
+  confirmed?: boolean;
+}
 
 export interface GuardedVault {
   read(path: string): Promise<string | null>;
   hasUnsavedText(path: string): Promise<boolean>;
-  process(path: string, edit: (current: string) => string | null): Promise<"written" | "refused" | "gone">;
+  process(path: string, edit: (current: string) => string | null, options?: ProcessOptions): Promise<"written" | "refused" | "gone">;
   create(path: string, text: string): Promise<"created" | "exists" | "failed">;
   rename(from: string, to: string): Promise<"renamed" | "exists" | "gone" | "failed">;
   trash(path: string, expectedSha: string): Promise<boolean>;
@@ -14,14 +20,51 @@ export interface GuardedVault {
 
 const DISPLAY_ONLY_VIEWS: ReadonlySet<string> = new Set(["backlink", "outgoing-link", "outline", "file-properties", "localgraph"]);
 
+interface PaneView {
+  file?: { path: string } | null;
+  editor?: { getValue(): string };
+  getViewType(): string;
+  getViewData?: () => string;
+  canvas?: { isDragging?: boolean } | null;
+  containerEl?: { querySelector?: (selector: string) => unknown } | null;
+}
+
+function readViewData(view: PaneView): string | null {
+  if (typeof view.getViewData !== "function") return null;
+  try {
+    const data = view.getViewData();
+    return typeof data === "string" ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
+  if (view.editor !== undefined) return view.editor.getValue() !== toLf(disk);
+  const type = view.getViewType();
+  if (type === "markdown" || DISPLAY_ONLY_VIEWS.has(type)) return false;
+  if (type === "canvas") {
+    const data = readViewData(view);
+    if (data !== null && toLf(data) !== toLf(disk) && !sameCanvasText(data, disk)) return true;
+    if (confirmed) return false;
+    return data === null || view.canvas?.isDragging === true || view.containerEl?.querySelector?.(".canvas-node.is-editing") != null;
+  }
+  if (type === "bases") {
+    const data = readViewData(view);
+    if (data !== null && toLf(data) !== toLf(disk) && !sameBaseText(data, disk)) return true;
+    return !confirmed && data === null;
+  }
+  return !confirmed;
+}
+
 export function guardedVault(app: App): GuardedVault {
   const { vault, workspace, fileManager } = app;
-  const heldInPane = (path: string, disk: string): boolean => {
+  const heldInPane = (path: string, disk: string, confirmed = false): boolean => {
     let held = false;
     workspace.iterateAllLeaves((leaf) => {
-      const view = leaf.view as { file?: { path: string } | null; editor?: { getValue(): string }; getViewType(): string };
+      const view = leaf.view as PaneView;
       if (view.file?.path !== path) return;
-      if (view.editor === undefined ? view.getViewType() !== "markdown" && !DISPLAY_ONLY_VIEWS.has(view.getViewType()) : view.editor.getValue() !== toLf(disk)) held = true;
+      if (viewHeld(view, disk, confirmed)) held = true;
     });
     return held;
   };
@@ -44,13 +87,14 @@ export function guardedVault(app: App): GuardedVault {
       const disk = file ? await vault.read(file).catch(() => null) : null;
       return disk !== null && heldInPane(path, disk);
     },
-    process: async (path, edit) => {
+    process: async (path, edit, options) => {
       const file = fileAt(path);
       if (!file) return "gone";
       let refused = false;
+      const confirmed = options?.confirmed === true;
       try {
         await vault.process(file, (current) => {
-          const next = heldInPane(path, current) ? null : edit(current);
+          const next = heldInPane(path, current, confirmed) ? null : edit(current);
           if (next === null) {
             refused = true;
             return current;

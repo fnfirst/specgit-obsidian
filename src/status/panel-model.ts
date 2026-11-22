@@ -279,6 +279,12 @@ function pinnedOf(
   const own = items.find((item): item is StatusDoc => item.kind === "doc" && item.id === path);
   const row = rows.get(path) ?? state.rows.find((one) => one.change.path === path);
   const card = state.groups.find((one) => one.group?.files.some((file) => file.path === path));
+  const memberRow = card?.group?.files.find((file) => file.path === path)?.row ?? null;
+  const groupedBehind =
+    card?.group !== undefined &&
+    memberRow !== null &&
+    !card.group.overview.ending &&
+    (active.behind || (card.group.overview.hold === "behind" && card.group.overview.holdPaths.includes(path)));
   const entry = row?.entry ?? null;
   const facts = entry ? factsOf(entry.prNumber, row?.review?.pr) : null;
   const submitted = entry !== null && facts !== null && !facts.isDraft;
@@ -292,7 +298,7 @@ function pinnedOf(
   return {
     id: path,
     name: noteName(path),
-    state: own?.state ?? "published",
+    state: own?.state ?? (state.choices.has(path) ? "changed-in-both" : groupedBehind ? "out-of-date" : "published"),
     ...(own?.when ? { when: own.when } : {}),
     ...(own?.changed === undefined ? {} : { changed: own.changed }),
     people: own?.people ?? [],

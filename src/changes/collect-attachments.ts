@@ -7,6 +7,7 @@ export interface CollectPorts {
   repoPathOf(vaultPath: string): string | null;
   sha(file: { path: string; mtime: number; size: number }): Promise<string>;
   base64(file: { path: string }): Promise<string>;
+  binary?: (file: { path: string; size: number }) => Promise<Blob | Uint8Array>;
   agreedOf(repoPath: string): string | undefined;
   publishedSha(vaultPath: string): string | null | undefined;
 }
@@ -27,7 +28,14 @@ export async function collectAttachments(ports: CollectPorts, notePath: string, 
     }
     const sha = await ports.sha(target);
     const expectSha = ports.agreedOf(repoPath) ?? ports.publishedSha(target.path);
-    found.set(target.path, { repoPath, sha, base64: () => ports.base64(target), ...(expectSha === undefined ? {} : { expectSha }) });
+    found.set(target.path, {
+      repoPath,
+      sha,
+      size: target.size,
+      base64: () => ports.base64(target),
+      ...(ports.binary ? { binary: () => ports.binary!(target) } : {}),
+      ...(expectSha === undefined ? {} : { expectSha }),
+    });
   }
   return [...found.values()];
 }

@@ -1,6 +1,8 @@
 import type { BlobsAnswer, AttachmentFile, MainFile } from "../auth/git-copy";
+import type { CommitScope, StreamCreateResult } from "../disk/vault-binary";
 import { type DocumentRef, isHiddenPath, noteName } from "../mapping";
-import { gitBlobSha, gitBlobShaOfText } from "./blob-sha";
+import { MAX_ATTACHMENT_BYTES } from "../shared/review-flow";
+import { gitBlobSha, gitBlobShaOfText, readStreamBounded } from "./blob-sha";
 import { attachmentTarget, fileAttachmentLinks } from "./attachment-links";
 import { type LeftOut, leftOutKinds, leftOutTotal } from "./left-out";
 import { leftOutWords } from "../pick/words";
@@ -25,6 +27,7 @@ export interface CopyInPorts {
   create(path: string, text: string): Promise<"created" | "exists" | "failed">;
   agreed?(repoPath: string, sha: string): void;
   createBinary?(path: string, bytes: ArrayBuffer): Promise<"created" | "exists" | "failed">;
+  createBinaryStream?(path: string, stream: ReadableStream<Uint8Array>, size?: number, commit?: CommitScope): Promise<StreamCreateResult>;
   recordBase?(file: CopyInFile, text: string, sha: string): void;
   checkpoint?(): void;
   vaultPaths(): Iterable<string>;
@@ -70,7 +73,7 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
   };
   let sliceStart = ports.clock();
   const shown: Array<{ note: string; links: string[] }> = [];
-  const wantAttachments = (options.attachments?.size ?? 0) > 0 && ports.gitAttachment !== undefined && ports.createBinary !== undefined;
+  const wantAttachments = (options.attachments?.size ?? 0) > 0 && ports.gitAttachment !== undefined && (ports.createBinary !== undefined || ports.createBinaryStream !== undefined);
   const tell = (final = false): void => {
     if (!final && ports.clock() - told < PROGRESS_EVERY_MS) return;
     told = ports.clock();
@@ -250,19 +253,14 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
         if (there.has(key)) continue;
         there.add(key);
         const read = await ports.gitAttachment!(files[0]?.doc.repo ?? "", commit, repoPath);
-        if (read.kind !== "bytes") {
-          there.delete(key);
-          if (read.kind === "unreadable" && read.outage) result.stopped = "unreadable";
-          continue;
-        }
-        const made = await ports.during([path], () => ports.createBinary!(path, read.bytes));
-        if (made === "created") {
-          ports.agreed?.(repoPath, await gitBlobSha(read.bytes));
+        const landed = await landCopiedAttachment(ports, path, read);
+        if (landed.status === "created") {
+          ports.agreed?.(repoPath, landed.sha);
           result.attachments++;
           copiedAttachments.add(path);
         } else {
-          ports.notWritten(path);
-          if (made === "failed") there.delete(key);
+          if (landed.status !== "exists") there.delete(key);
+          if (landed.status === "outage") result.stopped = "unreadable";
         }
         await slice();
       }
@@ -274,6 +272,47 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
   result.left = files.length - result.created - result.existed - result.gone - files.filter((file) => isHiddenPath(file.path)).length;
   tell(true);
   return result;
+}
+
+async function landCopiedAttachment(ports: CopyInPorts, path: string, read: AttachmentFile): Promise<StreamCreateResult> {
+  if (read.kind === "unreadable") return { status: read.outage ? "outage" : "failed" };
+  if (read.kind !== "stream" && read.kind !== "bytes") return { status: "failed" };
+  if (read.kind === "stream" && read.size !== undefined && read.size > MAX_ATTACHMENT_BYTES) {
+    await read.stream.cancel().catch(() => undefined);
+    return { status: "failed" };
+  }
+  let entered = false;
+  const commit: CommitScope = (run) => {
+    entered = true;
+    return ports.during([path], run);
+  };
+  const finish = (outcome: StreamCreateResult): StreamCreateResult => {
+    if (outcome.status !== "created" && entered) ports.notWritten(path);
+    return outcome;
+  };
+  if (read.kind === "stream" && ports.createBinaryStream) {
+    return finish(await ports.createBinaryStream(path, read.stream, read.size, commit));
+  }
+  let bytes: ArrayBuffer;
+  if (read.kind === "stream") {
+    const got = await readStreamBounded(read.stream, MAX_ATTACHMENT_BYTES, read.size);
+    if (!got.ok) return { status: got.outage ? "outage" : "failed" };
+    bytes = got.bytes;
+  } else {
+    if (read.bytes.byteLength > MAX_ATTACHMENT_BYTES) return { status: "failed" };
+    bytes = read.bytes;
+  }
+  if (ports.createBinary) {
+    const made = await commit(() => ports.createBinary!(path, bytes));
+    return finish(made === "created" ? { status: "created", sha: await gitBlobSha(bytes) } : { status: made });
+  }
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(bytes));
+      controller.close();
+    },
+  });
+  return finish(await ports.createBinaryStream!(path, stream, bytes.byteLength, commit));
 }
 
 const named = (paths: readonly string[]): string => {

@@ -49,7 +49,7 @@ import { isTextOfBytes } from "./blob-sha";
 import { AutoCommitFlows, type FileRow, type SendOptions } from "./auto-commit";
 import { type Behind, behindOf, type BranchHead, deletedOnGitHub, lastMatched, levelWith, sameAsVault, sendThroughBranch } from "./branch-send";
 import { type CatchUpAsked, CatchUpFlows } from "./catch-up-flows";
-import { attachmentAnswer, attachmentEntry, attachmentsToCarry, nameAttachments, type NamedAttachment } from "./attachment-send";
+import { attachmentAnswer, attachmentEntry, attachmentsToCarry, INLINE_ATTACHMENT_MAX_RAW, nameAttachments, type NamedAttachment, uploadOneAttachment } from "./attachment-send";
 import { linksKeptWords, MoveFlows } from "./move-flows";
 import { PublishFlows } from "./publish-flows";
 import { ADD_REVIEWER_HERE, CHANGES_VIEW, DELETE_CONFIRM, DELETE_HELD_BACK, GONE_FROM_VAULT, partialReview, PUBLISHED_HERE, readOnlyRepo, REVIEW_REQUESTED_HERE, NOT_LIVE } from "../review/words";
@@ -324,9 +324,13 @@ export class ChangesFlows {
       const sha = attachment.sha ?? (await nameAttachments([{ repoPath: attachment.repoPath, base64: await base64Of() }]))[0]!.sha;
       const key = `${doc.repo}\n${doc.path}\n${attachment.repoPath}\n${sha}`;
       if (this.uploaded.get(key) === (row.review?.reviewBranch ?? null)) continue;
+      if (attachment.sha !== undefined && attachment.size !== undefined && attachment.size > INLINE_ATTACHMENT_MAX_RAW) {
+        named.push({ repoPath: attachment.repoPath, sha, size: attachment.size, key, ...(attachment.binary ? { binary: attachment.binary } : {}), ...(attachment.expectSha === undefined ? {} : { expectSha: attachment.expectSha }) });
+        continue;
+      }
       const base64 = await base64Of();
-      const size = Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
-      named.push({ repoPath: attachment.repoPath, base64, sha, size, key, ...(attachment.expectSha === undefined ? {} : { expectSha: attachment.expectSha }) });
+      const size = attachment.size ?? Math.floor((base64.length * 3) / 4) - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+      named.push({ repoPath: attachment.repoPath, base64, sha, size, key, ...(attachment.binary ? { binary: attachment.binary } : {}), ...(attachment.expectSha === undefined ? {} : { expectSha: attachment.expectSha }) });
     }
     return { named, problems };
   }
@@ -336,7 +340,7 @@ export class ChangesFlows {
     const { problems } = picked;
     const named = onlyDue ? picked.named.filter((attachment) => deps.attachmentHeld?.(attachment.repoPath, attachment.sha) !== true) : picked.named;
     for (const attachment of named) {
-      const uploaded = await deps.review.attachment(row.doc, attachment.repoPath, attachment.base64, attachment.expectSha);
+      const { result: uploaded, sha } = await uploadOneAttachment(deps.review, row.doc, attachment);
       if (!uploaded.ok) {
         const deleted = deletedAtOf(uploaded);
         if (deleted !== null) return this.gone(row.change.path, deleted);
@@ -349,8 +353,8 @@ export class ChangesFlows {
         return { ok: false, message: failure(uploaded, COULDNT_FINISH) };
       }
       const at = (uploaded.body as { reviewBranch?: unknown }).reviewBranch;
-      this.uploaded.set(attachment.key, typeof at === "string" ? at : (row.review?.reviewBranch ?? null));
-      deps.attachmentAgreed?.(attachment.repoPath, attachment.sha);
+      this.uploaded.set(`${row.doc.repo}\n${row.doc.path}\n${attachment.repoPath}\n${sha}`, typeof at === "string" ? at : (row.review?.reviewBranch ?? null));
+      deps.attachmentAgreed?.(attachment.repoPath, sha);
     }
     deps.attachmentProblems?.(row.change.path, problems);
     return null;
@@ -415,10 +419,10 @@ export class ChangesFlows {
   ): Promise<Sent | null> {
     const said = attachmentAnswer(answer);
     const done = new Set<string>();
-    const sent = (attachment: NamedAttachment & { key: string }, at: string | null): void => {
+    const sent = (attachment: NamedAttachment & { key: string }, at: string | null, agreedSha = attachment.sha): void => {
       done.add(attachment.repoPath);
-      this.uploaded.set(attachment.key, at);
-      deps.attachmentAgreed?.(attachment.repoPath, attachment.sha);
+      this.uploaded.set(`${row.doc.repo}\n${row.doc.path}\n${attachment.repoPath}\n${agreedSha}`, at);
+      deps.attachmentAgreed?.(attachment.repoPath, agreedSha);
     };
     const refused = (attachment: NamedAttachment, why: "exists" | "changed"): void => {
       done.add(attachment.repoPath);
@@ -449,7 +453,7 @@ export class ChangesFlows {
       }
     }
     for (const attachment of needed) {
-      const uploaded = await deps.review.attachment(doc, attachment.repoPath, attachment.base64, attachment.expectSha);
+      const { result: uploaded, sha } = await uploadOneAttachment(deps.review, doc, attachment);
       if (!uploaded.ok) {
         if (lenient && refusedAttachment(uploaded)) {
           problems.push({ name: attachmentName(attachment.repoPath), why: attachmentRefusal(uploaded) });
@@ -458,7 +462,7 @@ export class ChangesFlows {
         problems.push({ name: attachmentName(attachment.repoPath), ...(lenient ? { why: ATTACHMENT_LATER } : attachmentNotSent(uploaded)) });
         continue;
       }
-      sent(attachment, typeof (uploaded.body as { reviewBranch?: unknown }).reviewBranch === "string" ? ((uploaded.body as { reviewBranch: string }).reviewBranch) : branch);
+      sent(attachment, typeof (uploaded.body as { reviewBranch?: unknown }).reviewBranch === "string" ? (uploaded.body as { reviewBranch: string }).reviewBranch : branch, sha);
     }
     return null;
   }
