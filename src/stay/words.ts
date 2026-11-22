@@ -73,3 +73,7 @@ export const STAY_DRAFTS_WORDS = {
   mine: "Ask me first",
   description: "Other people's saved but unpublished changes. Your own from other devices are always added.",
 } as const;
+
+export const STAY_PAUSED_NOTICE = "Stay connected is paused here because this vault's repository changed on another device.";
+
+export const customServerQuestion = (host: string): string => `Sign in to ${host} instead of specgit.com?`;

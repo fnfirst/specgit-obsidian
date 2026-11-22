@@ -10,6 +10,8 @@ export interface DeleteHost {
   wait(path: string): void;
   settled(path: string): void;
   forgetEnded(path: string): void;
+  holdDeleted(looked: Looked, path: string, deletedAt: number): boolean;
+  noteRemoved(path: string): void;
 }
 
 export class DraftDeletes {
@@ -47,22 +49,13 @@ export class DraftDeletes {
   }
 
   keep(looked: Looked, path: string, deletedAt: number): void {
-    const { ports, state } = this.ctx;
-    const entry = looked.files.get(path);
+    const { ports } = this.ctx;
     ports.agreed(path, null);
     this.host.forgetEnded(path);
     this.host.settled(path);
-    const { data } = state;
-    data.committed = data.committed.filter((key) => key !== changeKey({ kind: "new", path }) && !key.startsWith(`renamed|${path}|`));
-    if (!looked.repo.has(path) && !data.held.includes(changeKey({ kind: "new", path }))) data.held.push(changeKey({ kind: "new", path }));
-    if (entry) {
-      (data.editsHeld ??= {})[path] = entry.sha;
-      (data.heldWhy ??= {})[path] = "deleted";
-    }
-    const told = data.deletedAt?.[path] !== undefined;
-    (data.deletedAt ??= {})[path] = deletedAt;
+    const newlyTold = this.host.holdDeleted(looked, path, deletedAt);
     this.known.set(path, deletedAt);
-    if (!told) this.keptNow.push(noteName(path));
+    if (newlyTold) this.keptNow.push(noteName(path));
   }
 
   forget(path: string): void {
@@ -73,7 +66,7 @@ export class DraftDeletes {
     for (const name of this.keptNow.splice(0)) this.ctx.ports.notify(DRAFT_SAID.deletedKept(name));
   }
 
-  async flush(): Promise<number> {
+  async flush(looked: Looked): Promise<number> {
     const { ports, state, activity } = this.ctx;
     if (this.toTrash.size === 0) return 0;
     for (const path of this.released) if (!this.toTrash.has(path)) this.released.delete(path);
@@ -91,7 +84,7 @@ export class DraftDeletes {
         const words = heldDeletesWords(asked.length);
         if (ports.aware()) {
           ports.heldDeletes?.({ count: asked.length, move: release });
-          ports.notify(words, { label: "Show them", run: () => ports.openStatus?.(), lasting: true });
+          ports.notify(words, { label: "Show them", run: () => ports.openStatus?.() }, { lasting: true });
         } else ports.notify(words, { label: "Move them to the trash", run: release });
       }
     }
@@ -108,6 +101,8 @@ export class DraftDeletes {
       }
       this.toTrash.delete(path);
       this.released.delete(path);
+      this.host.noteRemoved(path);
+      if (!looked.repo.has(path)) ports.forgetDelete(path);
       ports.agreed(path, null);
       this.host.forgetEnded(path);
       this.host.settled(path);

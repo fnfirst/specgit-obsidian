@@ -23,8 +23,137 @@ export function agentPrefixShown(body: string, author: { login: string; name?: s
   return `🤖 **${byline[1]} for ${markdownSafe(name)}**${body.slice(byline[0].length)}`;
 }
 
+const MENTION_USER = /^([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?)\b/;
+
+function scanFenceEnd(markdown: string, lineStart: number): number | null {
+  const nl = markdown.indexOf("\n", lineStart);
+  const line = nl === -1 ? markdown.slice(lineStart) : markdown.slice(lineStart, nl);
+  const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!open) return null;
+  const fence = open[1]!;
+  const ch = fence[0]!;
+  if (ch === "`" && open[2]!.indexOf("`") !== -1) return null;
+  if (nl === -1) return markdown.length;
+  let pos = nl + 1;
+  while (pos < markdown.length) {
+    const nextNl = markdown.indexOf("\n", pos);
+    const cur = nextNl === -1 ? markdown.slice(pos) : markdown.slice(pos, nextNl);
+    const trimmed = cur.replace(/^ {0,3}/, "");
+    if (trimmed.length >= fence.length && trimmed.indexOf(ch.repeat(fence.length)) === 0) {
+      let restAt = fence.length;
+      while (restAt < trimmed.length && trimmed[restAt] === ch) restAt++;
+      if (/^[ \t]*\r?$/.test(trimmed.slice(restAt))) return nextNl === -1 ? markdown.length : nextNl + 1;
+    }
+    if (nextNl === -1) return markdown.length;
+    pos = nextNl + 1;
+  }
+  return markdown.length;
+}
+
+function scanCodeSpanEnd(markdown: string, start: number): number {
+  let ticks = 0;
+  while (start + ticks < markdown.length && markdown[start + ticks] === "`") ticks++;
+  let pos = start + ticks;
+  while (pos < markdown.length) {
+    if (markdown[pos] === "`") {
+      let closeTicks = 0;
+      while (pos + closeTicks < markdown.length && markdown[pos + closeTicks] === "`") closeTicks++;
+      if (closeTicks === ticks) return pos + closeTicks;
+      pos += closeTicks;
+    } else {
+      pos++;
+    }
+  }
+  return start + ticks;
+}
+
+function scanInlineLinkEnd(markdown: string, start: number): number | null {
+  if (markdown[start] !== "[") return null;
+  let depth = 0;
+  let pos = start;
+  while (pos < markdown.length) {
+    const ch = markdown[pos];
+    if (ch === "\\" && pos + 1 < markdown.length) {
+      pos += 2;
+      continue;
+    }
+    if (ch === "`") {
+      pos = scanCodeSpanEnd(markdown, pos);
+      continue;
+    }
+    if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) break;
+    } else if (ch === "\n") {
+      return null;
+    }
+    pos++;
+  }
+  if (depth !== 0 || markdown[pos + 1] !== "(") return null;
+  let parenDepth = 0;
+  let urlPos = pos + 1;
+  while (urlPos < markdown.length) {
+    const ch = markdown[urlPos];
+    if (ch === "\\" && urlPos + 1 < markdown.length) {
+      urlPos += 2;
+      continue;
+    }
+    if (ch === "(") parenDepth++;
+    else if (ch === ")") {
+      parenDepth--;
+      if (parenDepth === 0) return urlPos + 1;
+    } else if (ch === "\n") {
+      return null;
+    }
+    urlPos++;
+  }
+  return null;
+}
+
 export function linkifyMentions(markdown: string): string {
-  return markdown.replace(/(^|[^\w@`])@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?)\b/g, (_match, before: string, user: string) => `${before}[@${user}](https://github.com/${user})`);
+  let out = "";
+  let i = 0;
+  while (i < markdown.length) {
+    if (i === 0 || markdown[i - 1] === "\n") {
+      const fenceEnd = scanFenceEnd(markdown, i);
+      if (fenceEnd !== null) {
+        out += markdown.slice(i, fenceEnd);
+        i = fenceEnd;
+        continue;
+      }
+    }
+    const ch = markdown[i]!;
+    if (ch === "`") {
+      const end = scanCodeSpanEnd(markdown, i);
+      out += markdown.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === "[") {
+      const linkEnd = scanInlineLinkEnd(markdown, i);
+      if (linkEnd !== null) {
+        out += markdown.slice(i, linkEnd);
+        i = linkEnd;
+        continue;
+      }
+    }
+    if (ch === "@") {
+      const prev = i === 0 ? "" : markdown[i - 1]!;
+      if (prev === "" || !/[\w@`]/.test(prev)) {
+        const match = MENTION_USER.exec(markdown.slice(i + 1));
+        if (match) {
+          const user = match[1]!;
+          out += `[@${user}](https://github.com/${user})`;
+          i += 1 + user.length;
+          continue;
+        }
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 export function picturesAsWords(markdown: string): string {

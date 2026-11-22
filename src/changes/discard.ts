@@ -2,7 +2,7 @@ import { FILES_PER_BATCH } from "./copy-in";
 import { isOwnDraft, teammateReview } from "./batch-reviews";
 import { gitBlobShaOfText } from "./blob-sha";
 import { toLf } from "../disk/line-endings";
-import { type DocumentRef, noteName } from "../mapping";
+import { CasePathIndex, type DocumentRef, noteName } from "../mapping";
 import { isLostAnswerResult, reviewIsOpen, type StepResult } from "../review/review-api";
 import { discardAsk, type DiscardCounts, type DiscardResult, type DiscardWorld, discardedWords, DISCARD, discardTitle, type LeftAlone, nothingToDiscard, type SkipReason } from "./discard-words";
 import type { Dialogs, FlowDeps } from "./flow-deps";
@@ -94,6 +94,13 @@ export class Discard {
     return (await deps.vault.hasUnsavedText(path)) ? "held" : null;
   }
 
+  private collidesCase(target: string, excludeFrom?: string): boolean {
+    const { deps, model } = this.host;
+    if (deps.vault.collidesCase) return deps.vault.collidesCase(target, excludeFrom);
+    const files = model.vault()?.files.keys();
+    return files !== undefined && CasePathIndex.fromPaths(files, deps.vault.loadedEntries?.()).collision(target, excludeFrom) !== null;
+  }
+
   private async plan(row: ChangeRow): Promise<Plan> {
     const { deps } = this.host;
     const { change } = row;
@@ -104,7 +111,10 @@ export class Discard {
     const roomed = isRoomed(deps, change.path);
     if (roomed && row.theirs) return { kind: "skip", row, why: "theirs" };
     if (roomed && this.host.model.offline()) return { kind: "skip", row, why: "unreachable" };
-    if (change.kind === "deleted") return { kind: "recreate", row, original, roomed };
+    if (change.kind === "deleted") {
+      if (deps.vault.exists(change.path) || this.collidesCase(change.path)) return { kind: "skip", row, why: "exists" };
+      return { kind: "recreate", row, original, roomed };
+    }
     const why = await this.allowed(change.path);
     if (why !== null) return { kind: "skip", row, why };
     const mine = await deps.readText(change.path);
@@ -112,8 +122,11 @@ export class Discard {
     switch (change.kind) {
       case "new":
         return { kind: "trash", row, original, mine, roomed };
-      case "renamed":
+      case "renamed": {
+        const back = change.from!;
+        if (deps.vault.exists(back) || this.collidesCase(back, change.path)) return { kind: "skip", row, why: "exists" };
         return { kind: "rename", row, original, mine, roomed };
+      }
       default:
         return { kind: "restore", row, original, mine, roomed };
     }
@@ -183,6 +196,8 @@ export class Discard {
     }
     const now = await deps.readText(change.path);
     if (plan.kind === "recreate" ? now !== null : now === null) return plan.kind === "recreate" ? "exists" : "gone";
+    if (plan.kind === "recreate" && this.collidesCase(change.path)) return "exists";
+    if (plan.kind === "rename" && (deps.vault.exists(change.from!) || this.collidesCase(change.from!, change.path))) return "exists";
     if (plan.kind !== "recreate") {
       if (toLf(now ?? "") !== toLf(plan.mine)) return "changed";
       const why = await this.allowed(change.path);

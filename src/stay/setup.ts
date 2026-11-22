@@ -10,13 +10,13 @@ import { guardedBinaryCreateStream, hashVaultBinary, replaceAttachmentStream } f
 import type { BlobsAnswer, BranchFile, AttachmentFile, MainFile } from "../auth/git-copy";
 import type { ReviewKey } from "../changes/review-key";
 import { showChanges } from "../review/modals";
-import { type DocumentRef, fileFor, normalizeFolder, underFolder } from "../mapping";
+import { type DocumentRef, fileFor, isHiddenPath, normalizeFolder, underFolder } from "../mapping";
 import { bringInDraft, bringInNewer, type BroughtDraft, type BroughtNewer } from "../changes/bring-in";
 import { copiedWords, copyIn, FILES_PER_BATCH, type CopyInFile, type CopyInOptions, type CopyInPorts, type CopyInResult } from "../changes/copy-in";
 
 import { endOf, readReviewEnds } from "./ends";
 import { fileAttachmentLinks } from "../changes/attachment-links";
-import { type BringPorts, AttachmentLooks, draftElseMain } from "../changes/bring-attachments";
+import { attachmentPlacement, type BringPorts, AttachmentLooks, draftElseMain } from "../changes/bring-attachments";
 import { isAttachmentPath } from "../shared/review-flow";
 import type { AttachmentMemory } from "../changes/attachment-memory";
 import { gitBlobSha } from "../changes/blob-sha";
@@ -111,7 +111,11 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     window.clearTimeout(lookTimer);
     lookTimer = window.setTimeout(() => void deps.model.refresh(), 400);
   };
-  plugin.register(() => window.clearTimeout(lookTimer));
+  let unloaded = false;
+  plugin.register(() => {
+    unloaded = true;
+    window.clearTimeout(lookTimer);
+  });
 
   const planFor = async (files: readonly CopyInFile[]): Promise<{ files: CopyInFile[]; options: CopyInOptions }> => {
     const states = deps.model.vault();
@@ -131,7 +135,8 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   };
 
   interface CopyJob {
-    repo: string;
+    key: string;
+    active: boolean;
     wanted: Array<() => boolean>;
     result: Promise<CopyInResult>;
   }
@@ -140,14 +145,18 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   const copyNotesIn = async (files: readonly CopyInFile[], isCurrent: () => boolean = () => true, skipped: readonly string[] = []): Promise<CopyInResult> => {
     if (files.length === 0 && skipped.length === 0) return nothing();
     const repo = files[0]?.doc.repo ?? "";
+    const prefix = files[0] ? files[0].path.slice(0, files[0].path.length - files[0].doc.path.length) : "";
+    const key = `${repo}\0${prefix}\0${identity()}`;
+    const top = normalizeFolder(deps.settings().folder);
     while (job !== null) {
-      if (job.repo === repo) {
+      if (job.active && job.key === key && job.wanted.some((wanted) => wanted())) {
         job.wanted.push(isCurrent);
         return job.result;
       }
       await job.result.catch(() => undefined);
     }
-    const mine: CopyJob = { repo, wanted: [isCurrent], result: Promise.resolve(nothing()) };
+    if (!isCurrent()) return { ...nothing(), left: files.length, stopped: "unloaded" };
+    const mine: CopyJob = { key, active: true, wanted: [isCurrent], result: Promise.resolve(nothing()) };
     mine.result = (async (): Promise<CopyInResult> => {
       let copiedNow = 0;
       deps.model.copying({ done: 0, total: files.length });
@@ -176,11 +185,12 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
             deps.model.copying({ done, total });
           },
         };
-        const result = await copyIn(copying, plan.files, skipped, { ...plan.options, top: normalizeFolder(deps.settings().folder) });
+        const result = await copyIn(copying, plan.files, skipped, { ...plan.options, top });
         showNotice(copiedWords(result));
         copiedNow = result.created;
         return result;
       } finally {
+        mine.active = false;
         shown.hide();
         try {
           await deps.model.refresh();
@@ -246,14 +256,16 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     if (!deps.gitAttachment || !deps.gitFindAttachment) return;
     const memory = deps.attachmentMemory?.();
     const folder = normalizeFolder(deps.settings().folder);
+    const configDir = (app.vault as { configDir?: string }).configDir;
     const ports: BringPorts = {
+      ...(configDir !== undefined ? { configDir } : {}),
       now: () => Date.now(),
       resolve: (link, from) => {
         const file = app.metadataCache.getFirstLinkpathDest(link, from);
         return file ? { path: file.path, mtime: file.stat.mtime, size: file.stat.size } : null;
       },
       repoPathOf: (vaultPath) => underFolder(folder, vaultPath),
-      vaultPathOf: (repoPath) => (repoPath.split("/").includes("..") ? null : folder === "" ? repoPath : `${folder}/${repoPath}`),
+      vaultPathOf: (repoPath) => attachmentPlacement(folder, repoPath, configDir),
       findAttachment: (link) => deps.gitFindAttachment!(doc.repo, branch, doc.path, link),
       told: (path, words) => deps.model.attachmentTold(path, words, "bring"),
       draftAttachment:
@@ -351,7 +363,8 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       else deps.model.learnSent(path, agreement.sent, agreement.to as ReviewKey | null, { ...(agreement.agreed === undefined ? {} : { agreed: agreement.agreed }), ...(agreement.commit === undefined ? {} : { commit: agreement.commit }) });
     },
     agreedAs: (path, agreed) => deps.model.learnAgreed(path, agreed),
-    notify: (message, action) => (action ? showNoticeWithAction(message, action.label, action.run, action.lasting === true) : showNotice(message)),
+    notify: (message, action, options) => (action ? showNoticeWithAction(message, action.label, action.run, options?.lasting === true) : showNotice(message, options?.lasting === true)),
+    holdsChanged: () => deps.model.redraw(),
     aware: () => deps.model.state().aware !== null,
     awareLine: (about) => void deps.model.checkNow(about),
     heldDeletes: (offer) => deps.model.holdDeletes(offer),
@@ -415,14 +428,17 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   };
 
   const touched = (path: string): void => activity.touched(path);
+  const isTrackedPath = (path: string): boolean => !isHiddenPath(path) && mapped(path) !== null;
+  const isTrackedFile = (file: { path: string; children?: unknown }): boolean => !("children" in file) && isTrackedPath(file.path);
   app.workspace.onLayoutReady(() => {
-    plugin.registerEvent(app.vault.on("create", (file) => touched(file.path)));
-    plugin.registerEvent(app.vault.on("modify", (file) => touched(file.path)));
-    plugin.registerEvent(app.vault.on("delete", (file) => touched(file.path)));
+    plugin.registerEvent(app.vault.on("create", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
+    plugin.registerEvent(app.vault.on("modify", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
+    plugin.registerEvent(app.vault.on("delete", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
     plugin.registerEvent(
       app.vault.on("rename", (file, from) => {
-        touched(from);
-        touched(file.path);
+        if ("children" in file) return;
+        if (isTrackedPath(file.path)) activity.renamed(from, file.path);
+        else if (isTrackedPath(from)) touched(from);
       }),
     );
     plugin.registerEvent(app.workspace.on("active-leaf-change", () => engine?.panesChanged()));
@@ -539,7 +555,11 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       ),
     bringFor,
     touched,
-    copyIn: (files, skipped) => copyNotesIn(files, () => true, skipped),
+    copyIn: (files, skipped) => {
+      const at = identity();
+      let alive = true;
+      return copyNotesIn(files, () => (alive &&= !unloaded && deps.signedIn() && identity() === at), skipped);
+    },
     offer: async () => {
       const settings = deps.settings();
       if (settings.stayOffered || settings.stayConnected) return;

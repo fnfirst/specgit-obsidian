@@ -112,6 +112,28 @@ export class Activity {
     this.listener?.(path);
   }
 
+  renamed(from: string, to: string): void {
+    const now = this.now();
+    if ((this.own.get(to) ?? 0) > now || this.writing(to)) {
+      this.ownAt.set(to, now);
+      return;
+    }
+    if (from !== to) {
+      for (const event of this.recent) if (event.path === from) event.path = to;
+      for (const event of this.history) if (event.path === from) event.path = to;
+      this.moveMark(this.suspect, from, to);
+      this.moveMark(this.git, from, to);
+    }
+    this.touched(to);
+  }
+
+  private moveMark(marks: Map<string, number>, from: string, to: string): void {
+    const at = marks.get(from);
+    if (at === undefined) return;
+    marks.delete(from);
+    marks.set(to, Math.max(at, marks.get(to) ?? 0));
+  }
+
   gitMoved(): void {
     const now = this.now();
     this.gitEnds = now + this.options.quietMs;
@@ -123,15 +145,16 @@ export class Activity {
   }
 
   isGit(path: string): boolean {
-    return this.current(this.git, path);
+    return this.untilOf(this.git, path) !== null;
   }
 
-  private current(marks: Map<string, number>, path: string): boolean {
+  private untilOf(marks: Map<string, number>, path: string): number | null {
     const at = marks.get(path);
-    if (at === undefined) return false;
-    if (this.now() - at < this.options.suspectMs) return true;
+    if (at === undefined) return null;
+    const until = at + this.options.suspectMs;
+    if (until > this.now()) return until;
     marks.delete(path);
-    return false;
+    return null;
   }
 
   quietIn(): number {
@@ -139,7 +162,15 @@ export class Activity {
   }
 
   isSuspect(path: string): boolean {
-    return this.current(this.suspect, path);
+    return this.untilOf(this.suspect, path) !== null;
+  }
+
+  suspectUntil(path: string): number | null {
+    return this.untilOf(this.suspect, path);
+  }
+
+  flurryDeadline(path: string): number {
+    return this.suspectUntil(path) ?? this.now() + this.options.suspectMs;
   }
 
   settled(path: string): void {

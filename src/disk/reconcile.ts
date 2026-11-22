@@ -3,7 +3,8 @@ import { bodyOf, frontmatterRegion } from "./front-matter";
 import { mergeRegions, twoWayRegions } from "./merge";
 import { conflictsIn, type Region, theirsStanding } from "./regions";
 
-export interface Meeting {
+export interface RoomMeeting {
+  source: "room";
   editor: string;
   room: string;
   base: string | null;
@@ -12,6 +13,15 @@ export interface Meeting {
   baseIsGit: boolean;
   readOnly: boolean;
 }
+
+export interface GitMeeting {
+  source: "git";
+  editor: string;
+  room: string;
+  base: string | null;
+}
+
+export type Meeting = RoomMeeting | GitMeeting;
 
 export type Joined =
   | { kind: "text"; text: string }
@@ -28,11 +38,11 @@ export function roomIsUnwritten(room: string, editor: string): boolean {
 
 export function reconcile(meeting: Meeting, budget: Budget): Joined {
   const joined = decide(meeting, budget);
-  if (!meeting.readOnly || joined.kind === "needs-git") return joined;
+  if (meeting.source === "git" || !meeting.readOnly || joined.kind === "needs-git") return joined;
   return joined.kind === "text" && joined.text === meeting.room ? joined : { kind: "apart" };
 }
 
-function againstGit(merged: string, { editor, room, base, baseIsGit, git }: Pick<Meeting, "editor" | "room" | "base" | "baseIsGit" | "git">, budget: Budget): Joined {
+function againstGit(merged: string, { editor, room, base, baseIsGit, git }: Pick<RoomMeeting, "editor" | "room" | "base" | "baseIsGit" | "git">, budget: Budget): Joined {
   if (merged === room || base === null || !baseIsGit || editor === "") return text(merged);
   if (git === undefined) return { kind: "needs-git" };
   if (git === null || withoutFinalBreaks(git) === withoutFinalBreaks(base) || withoutFinalBreaks(git) === withoutFinalBreaks(room)) return text(merged);
@@ -40,16 +50,24 @@ function againstGit(merged: string, { editor, room, base, baseIsGit, git }: Pick
   return conflictsIn(regions) === 0 ? text(theirsStanding(regions)) : { kind: "review", regions, fromBase: true };
 }
 
-function decide({ editor, room, base, baseIsGit, emptied, git }: Meeting, budget: Budget): Joined {
+function decide(meeting: Meeting, budget: Budget): Joined {
+  const { editor, room, base } = meeting;
   if (editor === room || withoutFinalBreaks(editor) === withoutFinalBreaks(room)) return text(room);
+  if (meeting.source === "git") {
+    if (base !== null) {
+      const regions = mergeRegions(base, editor, room, budget);
+      return conflictsIn(regions) > 0 ? { kind: "review", regions, fromBase: true } : text(theirsStanding(regions));
+    }
+    return { kind: "review", regions: twoWayRegions(editor, room, budget), fromBase: false };
+  }
   if (roomIsUnwritten(room, editor)) return text(editor);
-  if (editor === "" && !emptied) return text(room);
+  if (editor === "" && !meeting.emptied) return text(room);
   if (base !== null) {
     const regions = mergeRegions(base, editor, room, budget);
     if (conflictsIn(regions) > 0 && editor !== "") return { kind: "review", regions, fromBase: true };
-    return againstGit(theirsStanding(regions), { editor, room, base, baseIsGit, git }, budget);
+    return againstGit(theirsStanding(regions), meeting, budget);
   }
-  if (git === undefined) return { kind: "needs-git" };
-  if (git !== null && withoutFinalBreaks(editor) === withoutFinalBreaks(git)) return text(room);
+  if (meeting.git === undefined) return { kind: "needs-git" };
+  if (meeting.git !== null && withoutFinalBreaks(editor) === withoutFinalBreaks(meeting.git)) return text(room);
   return { kind: "review", regions: twoWayRegions(editor, room, budget), fromBase: false };
 }

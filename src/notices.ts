@@ -31,8 +31,9 @@ function stack(notice: Notice): void {
   restack();
 }
 
-export function showNotice(message: string): void {
-  new Notice(message);
+export function showNotice(message: string, lasting = false): void {
+  const notice = new Notice(message, lasting ? 0 : undefined);
+  if (lasting) stack(notice);
 }
 
 export function showProgress(message: string): { set(message: string): void; hide(): void } {

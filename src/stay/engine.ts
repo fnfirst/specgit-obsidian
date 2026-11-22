@@ -18,6 +18,7 @@ import { Pace, WriteBudget } from "./limits";
 import { changeKey, isEdit, planOutbound } from "./outbound";
 import { ATTACHMENTS_KEPT, ATTACHMENTS_PER_NOTE, type StayState, TYPED_KEPT } from "./state";
 import type { StayPorts } from "./types";
+import { WAKE_PAD_MS } from "./wait";
 
 export const HEARD_MS = 1_500;
 export const ENDED_WATCH_MS = 65_000;
@@ -44,7 +45,7 @@ const QUIT_GRACE_MS = 5_000;
 
 const SAVE_SOON_MS = 5_000;
 
-type Timer = "inbound" | "outbound" | "edits" | "drafts";
+type Timer = "inbound" | "outbound" | "edits" | "drafts" | "flurry";
 
 export class StayConnected {
   private on = false;
@@ -58,7 +59,7 @@ export class StayConnected {
   private readonly pace: Pace;
   private readonly holds: StayHolds;
   private readonly conflicts = new Map<string, string>();
-  private readonly timers = new Map<Timer, () => void>();
+  private readonly timers = new Map<Timer, { cancel: () => void; at: number }>();
   private readonly heard = new Map<string, () => void>();
   private readonly heardLater = new Set<string>();
   private saving: (() => void) | null = null;
@@ -77,18 +78,23 @@ export class StayConnected {
   private readonly retryAt = new Map<string, number>();
   private readonly tries = new Map<string, number>();
   private readonly basesTried = new Set<string>();
+  private readonly releasedAtStart = new Set<string>();
   private startedOutbound = false;
   private startedEdits = false;
   private beganAt = 0;
   private grouping = false;
   private readonly firstLook = new FirstLook();
   private readonly offers = new DraftOffers({
-    draftIn: (current) => (this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, current })),
+    draftIn: (current) => this.draftInbound(current),
     existing: () => this.draftIn,
     on: () => this.on,
     looked: () => this.looked,
     phaseOf: (path) => this.ports.phaseOf(path),
   });
+
+  private draftInbound(current: () => boolean): DraftInbound {
+    return (this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, current }));
+  }
 
   constructor(
     private readonly ports: StayPorts,
@@ -152,7 +158,7 @@ export class StayConnected {
     this.on = false;
     this.activity.listener = null;
     this.generation++;
-    for (const cancel of this.timers.values()) cancel();
+    for (const entry of this.timers.values()) entry.cancel();
     this.timers.clear();
     this.inbound?.stop();
     this.inbound = null;
@@ -182,6 +188,7 @@ export class StayConnected {
     this.retryAt.clear();
     this.tries.clear();
     this.basesTried.clear();
+    this.releasedAtStart.clear();
     this.startedOutbound = false;
     this.startedEdits = false;
   }
@@ -231,9 +238,9 @@ export class StayConnected {
   deletedOnGithub(path: string, at: number): void {
     const looked = this.looked;
     if (!this.on || !looked || !looked.files.has(path)) return;
-    this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, current: () => this.on });
-    this.draftIn.keepDeleted(looked, path, at);
-    this.draftIn.tellDeleted();
+    const draftIn = this.draftInbound(() => this.on);
+    draftIn.keepDeleted(looked, path, at);
+    draftIn.tellDeleted();
     this.state.save();
   }
 
@@ -242,9 +249,8 @@ export class StayConnected {
   }
 
   restored(path: string): void {
-    this.holds.restored(path);
     this.draftIn?.forgetDeleted(path);
-    this.state.save();
+    this.holds.restored(path);
   }
 
   returned(): void {
@@ -292,14 +298,13 @@ export class StayConnected {
     if (this.running || this.ports.personBusy()) return void this.heardReviewAgain(path, generation);
     const looked = this.looked;
     if (!looked || this.ports.offline()) return;
-    this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, current: () => this.current(generation) });
-    const draftIn = this.draftIn;
+    const draftIn = this.draftInbound(() => this.current(generation));
     this.track(
       (async () => {
         try {
           const done = await draftIn.readEnded(looked, path);
           if (!this.current(generation)) return;
-          if (done.wake !== null) this.later("drafts", done.wake, () => this.ports.lookAgain());
+          if (done.wake !== null) this.sooner("drafts", done.wake, () => this.ports.lookAgain());
           if (done.changed > 0) this.ports.lookAgain();
         } catch {
           this.ports.diagnose("a review that the events named could not be read");
@@ -328,8 +333,7 @@ export class StayConnected {
     if (!looked || this.ports.offline()) return;
     const known = looked.drafts?.byPath.has(path) === true || looked.files.get(path)?.sent !== undefined;
     if (!known) return this.ports.lookAgain();
-    this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, current: () => this.current(generation) });
-    const draftIn = this.draftIn;
+    const draftIn = this.draftInbound(() => this.current(generation));
     this.track(
       (async () => {
         try {
@@ -340,7 +344,7 @@ export class StayConnected {
             shas.read = [...shas.read, ...shas.waiting].slice(-8);
             shas.waiting.clear();
           }
-          if (done.wake !== null) this.later("drafts", done.wake, () => this.ports.lookAgain());
+          if (done.wake !== null) this.sooner("drafts", done.wake, () => this.ports.lookAgain());
           if (done.changed > 0) this.ports.lookAgain();
         } catch {
           this.ports.diagnose("a draft that the events named could not be read");
@@ -391,25 +395,24 @@ export class StayConnected {
       this.ports.notify(SAID.taken(taken.length));
       return this.ports.lookAgain();
     }
-    this.inbound ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, current: () => this.current(generation) });
-    this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, current: () => this.current(generation) });
+    this.inbound ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, current: () => this.current(generation) });
+    const draftIn = this.draftInbound(() => this.current(generation));
     let changed = 0;
     let unfinished = false;
     try {
       const shown = !this.ports.hidden();
-      const done = shown ? await this.inbound.run(looked, this.away !== null) : { changed: 0, more: false };
+      const done = shown ? await this.inbound.run(looked, this.away !== null) : { changed: 0, more: false, wake: null };
       changed = done.changed;
       unfinished = done.more;
-      if (done.more && this.current(generation)) this.later("inbound", MORE_MS, () => this.ports.lookAgain());
+      const inboundWake = done.more ? Math.min(MORE_MS, done.wake ?? Number.POSITIVE_INFINITY) : done.wake;
+      if (inboundWake !== null && this.current(generation)) this.later("inbound", inboundWake, () => this.ports.lookAgain());
       if (this.current(generation) && shown) {
-        const drafts = await this.draftIn.run(looked, (sha) => this.inbound?.textOf(sha));
+        const drafts = await draftIn.run(looked, (sha) => this.inbound?.textOf(sha));
         changed += drafts.changed;
         this.firstLook.added(drafts.changed);
-        if (drafts.more) {
-          unfinished = true;
-          if (this.current(generation)) this.later("inbound", MORE_MS, () => this.ports.lookAgain());
-        }
-        if (drafts.wake !== null && this.current(generation)) this.later("drafts", drafts.wake, () => this.ports.lookAgain());
+        if (drafts.more) unfinished = true;
+        const draftWake = drafts.more ? Math.min(MORE_MS, drafts.wake ?? Number.POSITIVE_INFINITY) : drafts.wake;
+        if (draftWake !== null && this.current(generation)) this.later("drafts", draftWake, () => this.ports.lookAgain());
       }
     } catch {
       this.ports.diagnose("a pass of main's changes failed");
@@ -435,7 +438,7 @@ export class StayConnected {
     const looked = this.looked;
     if (!looked || !this.ports.signedIn()) return false;
     const generation = this.generation;
-    this.bringer ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, current: () => this.generation === generation && this.ports.enabled() });
+    this.bringer ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, current: () => this.generation === generation && this.ports.enabled() });
     return this.bringer.bringIn(looked, path);
   }
 
@@ -466,14 +469,27 @@ export class StayConnected {
   }
 
   private later(timer: Timer, ms: number, fn: () => void): void {
-    this.timers.get(timer)?.();
-    this.timers.set(
-      timer,
-      this.ports.later(() => {
+    this.cancelTimer(timer);
+    const at = this.ports.now() + ms;
+    this.timers.set(timer, {
+      at,
+      cancel: this.ports.later(() => {
         this.timers.delete(timer);
         fn();
       }, ms),
-    );
+    });
+  }
+
+  private sooner(timer: Timer, ms: number, fn: () => void): void {
+    const now = this.ports.now();
+    const existing = this.timers.get(timer);
+    if (existing && existing.at > now && existing.at <= now + ms) return;
+    this.later(timer, ms, fn);
+  }
+
+  private cancelTimer(timer: Timer): void {
+    this.timers.get(timer)?.cancel();
+    this.timers.delete(timer);
   }
 
   private async keepBases(looked: Looked, generation: number): Promise<void> {
@@ -551,8 +567,8 @@ export class StayConnected {
     return { grouped: files.length, left: 0 };
   }
 
-  private pruneHeld(looked: Looked, committed: ReadonlySet<string>): void {
-    this.holds.prune(looked, committed, (key) => {
+  private pruneHeld(looked: Looked, committed: ReadonlySet<string>): { changed: boolean; releasedFlurry: Set<string> } {
+    return this.holds.prune(looked, committed, (key) => {
       this.tries.delete(key);
       this.retryAt.delete(key);
     });
@@ -564,10 +580,11 @@ export class StayConnected {
     this.attachmentTimers.delete(path);
     if (!this.attachmentRetrying.has(path)) this.attachmentTries.delete(path);
     if (problems.length === 0) {
-      this.attachmentNotes.delete(path);
+      const had = this.attachmentNotes.delete(path);
       this.attachmentTries.delete(path);
       this.attachmentLeft.delete(path);
       this.keepAttachments(path);
+      if (had) this.ports.holdsChanged?.();
       return;
     }
     this.attachmentLeft.set(path, problems);
@@ -576,9 +593,11 @@ export class StayConnected {
     const tried = this.attachmentTries.get(path) ?? 0;
     if (later && tried >= ATTACHMENT_BACKOFF_MS.length) {
       this.attachmentNotes.set(path, ATTACHMENTS_SAID(problems.map((one) => (one.why === ATTACHMENT_LATER ? { ...one, why: ATTACHMENT_HELD } : one))));
+      this.ports.holdsChanged?.();
       return;
     }
     this.attachmentNotes.set(path, ATTACHMENTS_SAID(problems));
+    this.ports.holdsChanged?.();
     if (later && this.on) this.attachmentTimers.set(path, this.ports.later(() => this.retryAttachments(path, this.generation), ATTACHMENT_BACKOFF_MS[tried]!));
   }
 
@@ -677,8 +696,10 @@ export class StayConnected {
   }
 
   attachmentRow(path: string, words: string | null): void {
+    const before = this.attachmentNotes.get(path) ?? null;
     if (words === null) this.attachmentNotes.delete(path);
     else this.attachmentNotes.set(path, words);
+    if (before !== words) this.ports.holdsChanged?.();
   }
 
   heldWhy(path: string): string | null {
@@ -732,6 +753,12 @@ export class StayConnected {
     };
   }
 
+  private scheduleFlurry(generation: number): void {
+    const nextFlurry = this.holds.nextFlurryAt();
+    if (nextFlurry !== null && this.current(generation)) this.later("flurry", Math.max(0, nextFlurry - this.ports.now()) + WAKE_PAD_MS, () => this.ports.lookAgain());
+    else this.cancelTimer("flurry");
+  }
+
   private async outbound(looked: Looked, generation: number): Promise<void> {
     const { data } = this.state;
     const keys = new Set(looked.rows.map((row) => changeKey(row.change)));
@@ -739,57 +766,79 @@ export class StayConnected {
     data.committed = data.committed.filter((key) => keys.has(key));
     data.held = [...new Set(data.held.filter((key) => keys.has(key)))];
     data.burst = data.burst.filter((key) => keys.has(key));
-    this.pruneHeld(looked, new Set(data.committed));
-    const seen = data.seen ?? {};
-    const newPaths = new Set(looked.rows.filter((row) => row.change.kind === "new").map((row) => row.change.path));
-    const kept = [...new Set([...data.kept, ...[...newPaths].filter((path) => seen[path] !== undefined)])].filter((path) => newPaths.has(path));
-    const grew = kept.some((path) => !data.kept.includes(path));
-    data.kept = kept;
-    if (grew) this.ports.lookAgain();
-    const edits = this.editRules(looked);
-    const quiet = this.activity.quietIn();
-    if (quiet > 0 && (!this.startedOutbound || !edits)) return this.later("outbound", quiet + 50, () => this.ports.lookAgain());
-    const atStart = !this.startedOutbound;
-    this.startedOutbound = true;
-    const editsAtStart = edits !== null && !this.startedEdits;
-    if (edits) this.startedEdits = true;
-    const committed = new Set(data.committed);
-    const plan = planOutbound({
-      atStart,
-      editsAtStart,
-      rows: looked.rows,
-      baseline: new Set(data.baseline),
-      committed,
-      held: new Set(data.held),
-      kept: new Set(data.kept),
-      suspect: (path) => this.activity.isSuspect(path),
-      allowed: (row) => this.ports.phaseOf(row.change.path) === "local" && !this.ports.disconnected(row.doc) && (this.retryAt.get(changeKey(row.change)) ?? 0) <= this.ports.now() && this.followed(looked, row, committed),
-      settling: quiet > 0,
-      ...(edits ? { edits } : {}),
-    });
-    const heldNew = plan.hold.filter((held) => held.edit !== true);
-    const heldEdits = plan.hold.filter((held) => held.edit === true);
-    const closed = heldEdits.filter((held) => held.atStart === true);
-    for (const { path } of heldEdits) this.holds.holdEdit(looked, path, closed.some((one) => one.path === path) ? "closed" : "flurry");
-    if (closed.length > 0) this.ports.notify(SAID.editsClosed(closed.length), { label: "Show them", run: () => this.ports.openStatus?.(), lasting: true });
-    if (heldNew.length) {
-      for (const held of heldNew) {
-        this.holds.holdNew(looked, held.key, held.path, held.atStart === true ? "closed" : "flurry");
-        if (held.atStart !== true && !data.burst.includes(held.key)) data.burst.push(held.key);
+    const prepared = this.holds.batch(() => {
+      const pruned = this.pruneHeld(looked, new Set(data.committed));
+      if (!this.startedOutbound || !this.startedEdits) for (const path of pruned.releasedFlurry) this.releasedAtStart.add(path);
+      const seen = data.seen ?? {};
+      const newPaths = new Set(looked.rows.filter((row) => row.change.kind === "new").map((row) => row.change.path));
+      const kept = [...new Set([...data.kept, ...[...newPaths].filter((path) => seen[path] !== undefined)])].filter((path) => newPaths.has(path));
+      const grew = kept.some((path) => !data.kept.includes(path));
+      data.kept = kept;
+      if (grew) {
+        this.holds.noteChanged();
+        this.ports.lookAgain();
       }
-    }
-    const atStartNew = heldNew.filter((held) => held.atStart === true);
-    const arrived = plan.hold.filter((held) => held.atStart !== true);
-    if (atStartNew.length) this.ports.notify(SAID.atStart(atStartNew.length));
-    if (arrived.length) {
-      const words = plan.burst === null ? SAID.flurry(arrived.length) : SAID.burst(plan.burst);
-      const groupable = this.burstFiles(looked).length;
-      this.ports.notify(words, groupable >= 2 && this.ports.groupsOn() && !this.ports.groupsLocked() ? { label: "Group together", run: () => void this.groupHeld() } : undefined);
-    }
-    for (const { path } of plan.hold) this.activity.settled(path);
-    const waits = [plan.wait ?? Number.POSITIVE_INFINITY, quiet > 0 ? quiet : Number.POSITIVE_INFINITY];
-    if (Math.min(...waits) !== Number.POSITIVE_INFINITY && this.current(generation)) this.later("edits", Math.min(...waits) + 50, () => this.ports.lookAgain());
-    this.state.save();
+      const edits = this.editRules(looked);
+      const quiet = this.activity.quietIn();
+      if (quiet > 0 && (!this.startedOutbound || !edits)) {
+        this.scheduleFlurry(generation);
+        this.state.save();
+        this.later("outbound", quiet + WAKE_PAD_MS, () => this.ports.lookAgain());
+        return null;
+      }
+      const atStart = !this.startedOutbound;
+      this.startedOutbound = true;
+      const editsAtStart = edits !== null && !this.startedEdits;
+      if (edits) this.startedEdits = true;
+      const committed = new Set(data.committed);
+      const plan = planOutbound({
+        atStart,
+        editsAtStart,
+        rows: looked.rows,
+        baseline: new Set(data.baseline),
+        committed,
+        held: new Set(data.held),
+        kept: new Set(data.kept),
+        ...(this.releasedAtStart.size > 0 ? { released: new Set(this.releasedAtStart) } : {}),
+        suspect: (path) => this.activity.isSuspect(path),
+        allowed: (row) => this.ports.phaseOf(row.change.path) === "local" && !this.ports.disconnected(row.doc) && (this.retryAt.get(changeKey(row.change)) ?? 0) <= this.ports.now() && this.followed(looked, row, committed),
+        settling: quiet > 0,
+        ...(edits ? { edits } : {}),
+      });
+      if (this.startedOutbound && this.startedEdits) this.releasedAtStart.clear();
+      const heldNew = plan.hold.filter((held) => held.edit !== true);
+      const heldEdits = plan.hold.filter((held) => held.edit === true);
+      const flurryUntil = (path: string, isClosed: boolean): number | undefined => (!isClosed && plan.burst === null && !this.activity.isGit(path) ? this.activity.flurryDeadline(path) : undefined);
+      for (const held of heldEdits) {
+        const isClosed = held.atStart === true;
+        const until = flurryUntil(held.path, isClosed);
+        this.holds.holdEdit(looked, held.path, isClosed ? "closed" : "flurry", until !== undefined ? { flurryUntil: until } : undefined);
+      }
+      const closedCount = heldEdits.filter((held) => held.atStart === true).length;
+      if (closedCount > 0) this.ports.notify(SAID.editsClosed(closedCount), { label: "Show them", run: () => this.ports.openStatus?.() }, { lasting: true });
+      for (const held of heldNew) {
+        const isClosed = held.atStart === true;
+        const until = flurryUntil(held.path, isClosed);
+        this.holds.holdNew(looked, held.key, held.path, isClosed ? "closed" : "flurry", { ...(isClosed ? {} : { burst: true }), ...(until !== undefined ? { flurryUntil: until } : {}) });
+      }
+      const atStartNew = heldNew.filter((held) => held.atStart === true);
+      const arrived = plan.hold.filter((held) => held.atStart !== true);
+      if (atStartNew.length) this.ports.notify(SAID.atStart(atStartNew.length));
+      if (arrived.length) {
+        const words = plan.burst === null ? SAID.flurry(arrived.length) : SAID.burst(plan.burst);
+        const groupable = this.burstFiles(looked).length;
+        const action = groupable >= 2 && this.ports.groupsOn() && !this.ports.groupsLocked() ? { label: "Group together", run: () => void this.groupHeld() } : undefined;
+        this.ports.notify(words, action, plan.burst !== null ? { lasting: true } : undefined);
+      }
+      for (const { path } of plan.hold) this.activity.settled(path);
+      this.scheduleFlurry(generation);
+      const waits = [plan.wait ?? Number.POSITIVE_INFINITY, quiet > 0 ? quiet : Number.POSITIVE_INFINITY];
+      if (Math.min(...waits) !== Number.POSITIVE_INFINITY && this.current(generation)) this.later("edits", Math.min(...waits) + WAKE_PAD_MS, () => this.ports.lookAgain());
+      this.state.save();
+      return { plan, committed };
+    });
+    if (prepared === null) return;
+    const { plan, committed } = prepared;
     let sent = 0;
     let gaveUp = 0;
     let unsure = 0;
@@ -842,7 +891,7 @@ export class StayConnected {
     if (!this.current(generation)) return;
     if (unsure > 0) this.ports.notify(`${LOST_ANSWER_TITLE}. ${LOST_ANSWER_DESCRIPTION}`);
     const next = Math.min(...[...this.retryAt.values()].filter((at) => at > this.ports.now()), Number.POSITIVE_INFINITY);
-    if (next !== Number.POSITIVE_INFINITY) this.later("outbound", next - this.ports.now() + 50, () => this.ports.lookAgain());
+    if (next !== Number.POSITIVE_INFINITY) this.later("outbound", next - this.ports.now() + WAKE_PAD_MS, () => this.ports.lookAgain());
     if (gaveUp > 0) this.ports.notify(SAID.gaveUp(gaveUp));
     if (sent > 0) this.ports.lookAgain();
   }

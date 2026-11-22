@@ -1,8 +1,30 @@
 import { type App, TFile } from "obsidian";
 import { gitBlobShaOfText } from "../changes/blob-sha";
 import { sameBaseText } from "../changes/same-base";
+import { hasPathCaseCollision, isVaultTarget, type VaultPathEntry } from "../mapping";
 import { sameCanvasText } from "../shared/review-flow";
 import { toLf } from "./line-endings";
+
+const configDirOf = (app: App): string => (app.vault as { configDir?: string }).configDir ?? "";
+
+type VaultIndex = {
+  getAllLoadedFiles?: () => Array<{ path: string; children?: unknown }>;
+  getFiles?: () => Array<{ path: string }>;
+};
+
+export function vaultLoadedEntries(vault: VaultIndex): VaultPathEntry[] {
+  if (typeof vault.getAllLoadedFiles === "function") {
+    return vault.getAllLoadedFiles().map((entry) => ({ path: entry.path, folder: Array.isArray(entry.children) }));
+  }
+  if (typeof vault.getFiles === "function") {
+    return vault.getFiles().map((file) => ({ path: file.path, folder: false }));
+  }
+  return [];
+}
+
+export function hasVaultCaseCollision(vault: VaultIndex, target: string, excludeFrom?: string): boolean {
+  return hasPathCaseCollision(vaultLoadedEntries(vault), target, excludeFrom);
+}
 
 export interface ProcessOptions {
   confirmed?: boolean;
@@ -16,6 +38,8 @@ export interface GuardedVault {
   rename(from: string, to: string): Promise<"renamed" | "exists" | "gone" | "failed">;
   trash(path: string, expectedSha: string): Promise<boolean>;
   exists(path: string): boolean;
+  collidesCase?(path: string, excludeFrom?: string): boolean;
+  loadedEntries?(): readonly VaultPathEntry[];
 }
 
 const DISPLAY_ONLY_VIEWS: ReadonlySet<string> = new Set(["backlink", "outgoing-link", "outline", "file-properties", "localgraph"]);
@@ -107,25 +131,27 @@ export function guardedVault(app: App): GuardedVault {
       return refused ? "refused" : "written";
     },
     create: async (path, text) => {
-      if (vault.getAbstractFileByPath(path)) return "exists";
+      if (!isVaultTarget(path, configDirOf(app))) return "failed";
+      if (vault.getAbstractFileByPath(path) || hasVaultCaseCollision(vault, path)) return "exists";
       try {
         await ensureFolder(path);
         await vault.create(path, text);
         return "created";
       } catch {
-        return vault.getAbstractFileByPath(path) ? "exists" : "failed";
+        return vault.getAbstractFileByPath(path) || hasVaultCaseCollision(vault, path) ? "exists" : "failed";
       }
     },
     rename: async (from, to) => {
+      if (!isVaultTarget(to, configDirOf(app))) return "failed";
       const file = fileAt(from);
       if (!file) return "gone";
-      if (vault.getAbstractFileByPath(to)) return "exists";
+      if (vault.getAbstractFileByPath(to) || hasVaultCaseCollision(vault, to, from)) return "exists";
       try {
         await ensureFolder(to);
         await vault.rename(file, to);
         return "renamed";
       } catch {
-        return "failed";
+        return vault.getAbstractFileByPath(to) || hasVaultCaseCollision(vault, to, from) ? "exists" : "failed";
       }
     },
     trash: async (path, expectedSha) => {
@@ -140,20 +166,23 @@ export function guardedVault(app: App): GuardedVault {
       }
     },
     exists: (path) => vault.getAbstractFileByPath(path) !== null,
+    collidesCase: (path, excludeFrom) => hasVaultCaseCollision(vault, path, excludeFrom),
+    loadedEntries: () => vaultLoadedEntries(vault),
   };
 }
 
 export function guardedBinaryCreate(app: App): (path: string, bytes: ArrayBuffer) => Promise<"created" | "exists" | "failed"> {
   const { vault } = app;
   return async (path, bytes) => {
-    if (vault.getAbstractFileByPath(path)) return "exists";
+    if (!isVaultTarget(path, configDirOf(app))) return "failed";
+    if (vault.getAbstractFileByPath(path) || hasVaultCaseCollision(vault, path)) return "exists";
     try {
       const folder = path.split("/").slice(0, -1).join("/");
       if (folder !== "" && !vault.getFolderByPath(folder)) await vault.createFolder(folder).catch(() => undefined);
       await vault.createBinary(path, bytes);
       return "created";
     } catch {
-      return vault.getAbstractFileByPath(path) ? "exists" : "failed";
+      return vault.getAbstractFileByPath(path) || hasVaultCaseCollision(vault, path) ? "exists" : "failed";
     }
   };
 }

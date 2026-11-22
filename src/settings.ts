@@ -1,9 +1,9 @@
 import { type App, type Plugin, PluginSettingTab, requireApiVersion, Setting, type SettingDefinitionItem } from "obsidian";
 import { drawLogo, TAGLINE } from "./brand/mark";
 import { supportPageUrl } from "./report/report";
-import { DEFAULT_SERVER, isServerAddress, normalizeServer } from "./auth/config";
+import { DEFAULT_SERVER, isDefaultServer, isServerAddress, normalizeServer, serverHost } from "./auth/config";
 import type { SignInKeeping } from "./auth/storage";
-import { isRepoName, type MappingSettings } from "./mapping";
+import { isRepoName, type MappingSettings, normalizeFolder } from "./mapping";
 import { CHANGE, CHOOSE_A_REPOSITORY_FIRST, CHOOSE_REPOSITORY, NO_REPOSITORY_YET, outsideStays, WHOLE_VAULT } from "./pick/words";
 import type { Identity } from "./presence";
 import { SOMEONE } from "./shared/review-flow";
@@ -29,26 +29,101 @@ export function withoutDeviceSettings(settings: Settings): Partial<Settings> {
 
 const DEVICE_KEY = "specgit-device-settings";
 
+export interface StayPlace {
+  server: string;
+  repo: string;
+  folder: string;
+}
+
+export function stayPlaceOf(settings: Pick<Settings, "server" | "repo" | "folder">): StayPlace {
+  return { server: normalizeServer(settings.server), repo: settings.repo.trim(), folder: normalizeFolder(settings.folder) };
+}
+
+export function sameStayPlace(a: StayPlace, b: StayPlace): boolean {
+  return a.server === b.server && a.repo === b.repo && a.folder === b.folder;
+}
+
+function parseStayPlace(value: unknown): StayPlace | null {
+  if (typeof value !== "object" || value === null) return null;
+  const given = value as { server?: unknown; repo?: unknown; folder?: unknown };
+  if (typeof given.server !== "string" || typeof given.repo !== "string" || typeof given.folder !== "string") return null;
+  return { server: normalizeServer(given.server), repo: given.repo.trim(), folder: normalizeFolder(given.folder) };
+}
+
+function parseTrustedServers(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim().toLowerCase()))];
+}
+
 export class DeviceSettings {
   constructor(private readonly state: { load(key: string): unknown; save(key: string, value: unknown): void }) {}
 
-  read(): Pick<Settings, "stayConnected" | "stayOffered"> {
+  private raw(): Record<string, unknown> {
     let stored: unknown = null;
     try {
       stored = this.state.load(DEVICE_KEY);
     } catch {
       void 0;
     }
-    const given = (typeof stored === "object" && stored !== null ? stored : {}) as Record<string, unknown>;
-    return { stayConnected: given.stayConnected === true, stayOffered: given.stayOffered === true };
+    return (typeof stored === "object" && stored !== null ? stored : {}) as Record<string, unknown>;
   }
 
-  write(settings: Pick<Settings, "stayConnected" | "stayOffered">): void {
+  private saveRaw(next: Record<string, unknown>): void {
     try {
-      this.state.save(DEVICE_KEY, { stayConnected: settings.stayConnected, stayOffered: settings.stayOffered });
+      this.state.save(DEVICE_KEY, next);
     } catch {
       void 0;
     }
+  }
+
+  read(): Pick<Settings, "stayConnected" | "stayOffered"> {
+    const given = this.raw();
+    return { stayConnected: given.stayConnected === true, stayOffered: given.stayOffered === true };
+  }
+
+  write(settings: Pick<Settings, "stayConnected" | "stayOffered">, options?: { stayPlace?: StayPlace | null }): void {
+    const given = this.raw();
+    const stayPlace = options && "stayPlace" in options ? (options.stayPlace ? stayPlaceOf(options.stayPlace) : null) : parseStayPlace(given.stayPlace);
+    const trustedServers = parseTrustedServers(given.trustedServers);
+    this.saveRaw({
+      stayConnected: settings.stayConnected,
+      stayOffered: settings.stayOffered,
+      ...(stayPlace ? { stayPlace } : {}),
+      ...(trustedServers.length > 0 ? { trustedServers } : {}),
+    });
+  }
+
+  readStayPlace(): StayPlace | null {
+    return parseStayPlace(this.raw().stayPlace);
+  }
+
+  writeStayPlace(place: StayPlace | null): void {
+    const given = this.raw();
+    const trustedServers = parseTrustedServers(given.trustedServers);
+    this.saveRaw({
+      stayConnected: given.stayConnected === true,
+      stayOffered: given.stayOffered === true,
+      ...(place ? { stayPlace: stayPlaceOf(place) } : {}),
+      ...(trustedServers.length > 0 ? { trustedServers } : {}),
+    });
+  }
+
+  isTrustedServer(host: string): boolean {
+    return parseTrustedServers(this.raw().trustedServers).includes(host.trim().toLowerCase());
+  }
+
+  trustServer(host: string): void {
+    const clean = host.trim().toLowerCase();
+    if (clean === "") return;
+    const given = this.raw();
+    const stayPlace = parseStayPlace(given.stayPlace);
+    const trustedServers = [...new Set([...parseTrustedServers(given.trustedServers), clean])];
+    this.saveRaw({
+      stayConnected: given.stayConnected === true,
+      stayOffered: given.stayOffered === true,
+      ...(stayPlace ? { stayPlace } : {}),
+      trustedServers,
+    });
   }
 }
 
@@ -85,15 +160,17 @@ export interface SettingsHost {
   config: Settings;
   saveConfig(): Promise<void>;
   setStayConnected(on: boolean): Promise<void>;
+  recordStayPlace?(): void;
   linked?(): void;
   onSaved?(listener: () => void): () => void;
 }
 
 type TypedSetting = Exclude<{ [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings], "login" | "displayName" | "avatarUrl" | "stayDrafts">;
 
-function accountText(signedIn: boolean, login: string): string {
+function accountText(signedIn: boolean, login: string, server: string): string {
   if (!signedIn) return "Not signed in. Sign in with GitHub to edit notes live.";
-  return login ? `Signed in to specgit as @${login}.` : "Signed in to specgit.";
+  const target = isDefaultServer(server) ? "specgit" : serverHost(server);
+  return login ? `Signed in to ${target} as @${login}.` : `Signed in to ${target}.`;
 }
 
 export const NOT_KEPT = "This computer can't store your sign-in securely, so you'll sign in each time you open Obsidian.";
@@ -233,7 +310,8 @@ export class SpecgitSettingTab extends PluginSettingTab {
   private accountDesc(): string {
     const signedIn = this.account.signedIn();
     const keeping = this.keeping();
-    return keeping === null ? accountText(signedIn, this.host.config.login) : `${accountText(signedIn, this.host.config.login)} ${keeping.kept() ? KEPT_UNSECURED : NOT_KEPT}`;
+    const text = accountText(signedIn, this.host.config.login, this.host.config.server);
+    return keeping === null ? text : `${text} ${keeping.kept() ? KEPT_UNSECURED : NOT_KEPT}`;
   }
 
   private repoDesc(): string {
@@ -262,10 +340,17 @@ export class SpecgitSettingTab extends PluginSettingTab {
     words.createEl("p", { text: TAGLINE, cls: "specgit-settings-line" });
     const links = words.createEl("p", { cls: "specgit-settings-links" });
     links.createEl("a", { text: "Help", href: supportPageUrl(this.host.config.server) });
-    links.createEl("a", { text: "specgit.com", href: this.host.config.server });
+    links.createEl("a", { text: isDefaultServer(this.host.config.server) ? "specgit.com" : serverHost(this.host.config.server), href: this.host.config.server });
   }
 
-  private bindText(key: TypedSetting, setting: Setting, placeholder: string, normalize: (value: string) => string = (value) => value.trim(), onBlur = false): (() => void) | void {
+  private bindText(
+    key: TypedSetting,
+    setting: Setting,
+    placeholder: string,
+    normalize: (value: string) => string = (value) => value.trim(),
+    onBlur = false,
+    after?: () => void,
+  ): (() => void) | void {
     let cleanup: (() => void) | undefined;
     setting.addText((input) => {
       let typed: string | null = null;
@@ -273,8 +358,11 @@ export class SpecgitSettingTab extends PluginSettingTab {
       const commit = (): void => {
         window.clearTimeout(pause);
         if (typed === null) return;
-        this.host.config[key] = normalize(typed);
+        const next = normalize(typed);
         typed = null;
+        this.host.config[key] = next;
+        if (input.getValue() !== next) input.setValue(next);
+        after?.();
         void this.saveTyped();
       };
       input
@@ -283,6 +371,7 @@ export class SpecgitSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           if (!onBlur) {
             this.host.config[key] = normalize(value);
+            after?.();
             return this.saveTyped();
           }
           typed = value;
@@ -422,7 +511,15 @@ export class SpecgitSettingTab extends PluginSettingTab {
         {
           name: "Server",
           desc: SERVER_DESC,
-          render: (setting) => this.bindText("server", setting, DEFAULT_SERVER, normalizeServer, true),
+          render: (setting) =>
+            this.bindText(
+              "server",
+              setting,
+              DEFAULT_SERVER,
+              (value) => (isServerAddress(value) ? normalizeServer(value) : DEFAULT_SERVER),
+              true,
+              () => this.host.recordStayPlace?.(),
+            ),
         },
       ],
     };

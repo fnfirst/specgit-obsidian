@@ -1,7 +1,6 @@
 import { Budget } from "../disk/diff";
-import { changesBetween, mergeRegions } from "../disk/merge";
 import { toLf } from "../disk/line-endings";
-import { conflictsIn, resolved as settledText } from "../disk/regions";
+import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { noteName } from "../mapping";
 import { CATCH_UP, type CatchUpPreview } from "../shared/review-flow";
 import { CATCH_UP_HERE } from "../review/words";
@@ -81,7 +80,7 @@ export class CatchUpFlows {
     const mine = await this.deps.readText(row.change.path);
     if (!seen || !seen.ok || mine === null) return null;
     const body = seen.body as { baseSource: string; theirsSource: string };
-    return conflictsIn(mergeRegions(toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400)));
+    return mergeFile(row.change.path, toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400)).conflicts;
   }
 
   async catchUp(row: ChangeRow, preview: Behind, options: CatchUpAsked = {}): Promise<boolean> {
@@ -122,10 +121,8 @@ export class CatchUpFlows {
       return null;
     }
     const body = seen.body as { baseSource: string; theirsSource: string; oursTipSha: string; theirsTipSha: string };
-    const regions = mergeRegions(toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400));
-    const mergedText = conflictsIn(regions) === 0 ? settledText(regions, []) : null;
-    const came = mergedText === null ? null : changesBetween(toLf(mine), toLf(mergedText));
-    const chosen = await this.deps.chooseWhatToKeep({ name: noteName(row.change.path), regions, fromBase: true, other: "github", settle: () => null, signal: new AbortController().signal, ...(came ? { merged: came } : {}) });
+    const merged = mergeFile(row.change.path, toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400));
+    const chosen = await this.deps.chooseWhatToKeep(buildReviewRequest(row.change.path, merged.review, { other: "github", signal: new AbortController().signal }));
     if (chosen === null) return null;
     const resolved = await this.deps.review.resolveMerge(row.doc, { ours, theirs: preview.base, oursTipSha: body.oursTipSha, theirsTipSha: body.theirsTipSha, resolvedSource: chosen });
     if (!resolved.ok) {

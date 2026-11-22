@@ -24,6 +24,7 @@ function menuFor(doc: StatusDoc): readonly StatusRowMenuItem[] {
   const withReview: readonly StatusRowMenuItem[] = doc.hasReview ? ["stop-review", "view-on-github"] : [];
   if (doc.teammate) return ["open", ...(doc.bringIn ? (["bring-in"] as const) : []), ...(doc.hasReview ? (["view-on-github"] as const) : [])];
   if (doc.asksYou) return ["open", "show-changes", "view-on-github"];
+  if (doc.propose) return ["open", "show-changes", ...(doc.hasReview ? (["view-on-github"] as const) : [])];
   return [...COMPARISONS, ...ownMenu(doc, withReview), ...(doc.bringIn ? (["bring-in"] as const) : [])];
 }
 
@@ -33,8 +34,9 @@ function ownMenu(doc: StatusDoc, withReview: readonly StatusRowMenuItem[]): read
   switch (doc.state) {
     case "in-review":
     case "changes-requested":
-    case "out-of-date":
       return ["open", "show-changes", "add-reviewer", "move-back", "discard", "stop-review", "view-on-github"];
+    case "out-of-date":
+      return doc.draft ? ["open", "show-changes", "discard", ...withReview] : ["open", "show-changes", "add-reviewer", "move-back", "discard", "stop-review", "view-on-github"];
     case "ready":
       return ["open", "show-changes", "publish-only", "add-reviewer", "move-back", "discard", "stop-review", "view-on-github"];
     case "draft":
@@ -67,7 +69,7 @@ export const menuIsWorthDrawing = (items: readonly StatusRowMenuItem[]): boolean
 
 export const rowMenuLabel = (item: StatusRowMenuItem): string => STATUS_ROW_MENU[item];
 
-export function groupMenuItems(group: Pick<StatusGroup, "state" | "hasReview">, ctx: Pick<Ctx, "readOnly">): StatusGroupMenuItem[] {
+export function groupMenuItems(group: Pick<StatusGroup, "state" | "hasReview" | "draft">, ctx: Pick<Ctx, "readOnly">): StatusGroupMenuItem[] {
   if (ctx.readOnly) return group.hasReview ? ["view-on-github"] : [];
   const withReview: StatusGroupMenuItem[] = group.hasReview ? ["stop-review", "view-on-github"] : [];
   const wanted: StatusGroupMenuItem[] = ["rename"];
@@ -81,8 +83,10 @@ export function groupMenuItems(group: Pick<StatusGroup, "state" | "hasReview">, 
       break;
     case "in-review":
     case "changes-requested":
-    case "out-of-date":
       wanted.push("add-reviewer", "move-back", "stop-review", "view-on-github");
+      break;
+    case "out-of-date":
+      wanted.push(...(group.draft ? withReview : (["add-reviewer", "move-back", "stop-review", "view-on-github"] as const)));
       break;
     default:
       wanted.push(...withReview);

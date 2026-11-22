@@ -4,7 +4,7 @@ import type * as Y from "yjs";
 import { AuthError } from "../auth/errors";
 import type { DocumentRef } from "../mapping";
 import { type Lease, rejoinDelay, type SocketPool } from "../network/sockets";
-import { ROOM_DIVERGED_MESSAGE, ROOM_ENDED_REASON, ROOM_TOO_LARGE, sessionSeedClaim } from "../protocol";
+import { ROOM_DIVERGED_MESSAGE, ROOM_ENDED_REASON, ROOM_OVER_BUDGET, ROOM_TOO_LARGE, sessionSeedClaim } from "../protocol";
 import type { RoomSteps, RoomToken, TokenSource } from "../token-source";
 import { sameAccount, tokenSub } from "./account";
 import { GuardedProvider, sameLineage } from "./lineage";
@@ -29,6 +29,7 @@ export interface Transport {
 export type OpenTransport = (ref: DocumentRef, doc: Y.Doc, awareness: Awareness) => Promise<Transport>;
 
 const FIRST_TOKEN_MAX_AGE_MS = 60_000;
+const BUDGET_SETTLE_MS = 5_000;
 
 interface TokenEvents {
   readOnly(readOnly: boolean): void;
@@ -70,7 +71,10 @@ class HocuspocusTransport implements Transport {
   stopped: Stop | null = null;
   private readonly listeners = new Set<() => void>();
   private rejoins = 0;
+  private budgetRejoins = 0;
+  private budgetRefused = false;
   private rejoining: number | null = null;
+  private budgetSettle: number | null = null;
 
   constructor(
     private readonly provider: GuardedProvider,
@@ -82,6 +86,15 @@ class HocuspocusTransport implements Transport {
   ) {
     provider.on("synced", () => {
       this.rejoins = 0;
+      this.clearBudgetSettle();
+      if (this.budgetRefused || this.budgetRejoins > 0) {
+        this.budgetSettle = window.setTimeout(() => {
+          this.budgetSettle = null;
+          this.budgetRejoins = 0;
+          this.budgetRefused = false;
+          this.changed();
+        }, BUDGET_SETTLE_MS);
+      }
       provider.guardReconnects((roomVector) => {
         if (sameLineage(doc, roomVector)) return true;
         this.restart();
@@ -98,8 +111,14 @@ class HocuspocusTransport implements Transport {
     provider.on("stateless", ({ payload }: { payload: string }) => {
       if (payload === ROOM_DIVERGED_MESSAGE) this.stop("diverged");
       else if (payload === ROOM_TOO_LARGE) this.stop("too_large");
+      else if (payload === ROOM_OVER_BUDGET) {
+        this.budgetRefused = true;
+        this.changed();
+        this.rejoin(true);
+      }
     });
     provider.on("close", () => {
+      this.clearBudgetSettle();
       this.changed();
       if (this.lease.socket.status === WebSocketStatus.Connected) this.rejoin();
     });
@@ -115,7 +134,7 @@ class HocuspocusTransport implements Transport {
   }
 
   get acknowledged(): boolean {
-    return this.synced && this.online && !this.provider.hasUnsyncedChanges;
+    return this.synced && this.online && !this.provider.hasUnsyncedChanges && !this.budgetRefused;
   }
 
   subscribe(listener: () => void): () => void {
@@ -168,6 +187,7 @@ class HocuspocusTransport implements Transport {
   }
 
   private refused(reason: string): void {
+    this.clearBudgetSettle();
     if (!this.live) return;
     if (reason === ROOM_ENDED_REASON) return this.restart();
     if (reason === ROOM_TOO_LARGE) return this.stop("too_large");
@@ -188,17 +208,25 @@ class HocuspocusTransport implements Transport {
     this.provider.detach();
   }
 
-  private rejoin(): void {
+  private rejoin(budget = false): void {
+    this.clearBudgetSettle();
     if (!this.live || this.rejoining !== null) return;
     const { socket } = this.lease;
     socket.disconnect();
+    const attempt = budget ? this.budgetRejoins++ : this.rejoins++;
     this.rejoining = window.setTimeout(() => {
       this.rejoining = null;
       void socket.connect();
-    }, rejoinDelay(this.rejoins++));
+    }, rejoinDelay(attempt));
+  }
+
+  private clearBudgetSettle(): void {
+    if (this.budgetSettle !== null) window.clearTimeout(this.budgetSettle);
+    this.budgetSettle = null;
   }
 
   private stopRejoining(): void {
+    this.clearBudgetSettle();
     if (this.rejoining !== null) window.clearTimeout(this.rejoining);
     this.rejoining = null;
   }

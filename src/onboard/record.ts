@@ -9,6 +9,7 @@ export interface UploadRecord {
   repo: string;
   at: number;
   uploaded?: true;
+  private?: boolean;
 }
 
 export class UploadRecords {
@@ -21,9 +22,22 @@ export class UploadRecords {
     try {
       const kept = this.state.load(KEY);
       if (kept === null || kept === undefined) return null;
-      const value = kept as { repo?: unknown; at?: unknown; uploaded?: unknown };
-      if (typeof value.repo === "string" && isRepoName(value.repo) && typeof value.at === "number" && this.now() - value.at <= KEPT_MS && (value.uploaded === undefined || value.uploaded === true))
-        return { repo: value.repo, at: value.at, ...(value.uploaded === true ? { uploaded: true as const } : {}) };
+      const value = kept as { repo?: unknown; at?: unknown; uploaded?: unknown; private?: unknown };
+      if (
+        typeof value.repo === "string" &&
+        isRepoName(value.repo) &&
+        typeof value.at === "number" &&
+        this.now() - value.at <= KEPT_MS &&
+        (value.uploaded === undefined || value.uploaded === true) &&
+        (value.private === undefined || typeof value.private === "boolean")
+      ) {
+        return {
+          repo: value.repo,
+          at: value.at,
+          ...(value.uploaded === true ? { uploaded: true as const } : {}),
+          ...(typeof value.private === "boolean" ? { private: value.private } : {}),
+        };
+      }
       this.state.save(KEY, null);
     } catch {
       void 0;
@@ -31,9 +45,9 @@ export class UploadRecords {
     return null;
   }
 
-  write(repo: string): void {
+  write(repo: string, isPrivate?: boolean): void {
     try {
-      this.state.save(KEY, { repo, at: this.now() });
+      this.state.save(KEY, { repo, at: this.now(), ...(isPrivate === undefined ? {} : { private: isPrivate }) });
     } catch {
       void 0;
     }

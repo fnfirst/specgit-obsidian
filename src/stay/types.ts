@@ -75,7 +75,8 @@ export interface StayPorts {
   createGroup(rows: ChangeRow[]): Promise<{ outcome: "made" | "limited" | "failed"; writes: number; retryAfterMs?: number }>;
   diagnose(what: string): void;
   aware(): boolean;
-  notify(message: string, action?: { label: string; run: () => void; lasting?: boolean }): NoticeHandle | void;
+  notify(message: string, action?: { label: string; run: () => void }, options?: { lasting?: boolean }): NoticeHandle | void;
+  holdsChanged?(): void;
   choice?(path: string, choice: { words: string; label: string; run: () => void } | null): void;
   heldDeletes?(offer: { count: number; move: () => void } | null): void;
   awareLine?(about: { added: number }): void;

@@ -40,6 +40,7 @@ const FLASH_MS = 1000;
 
 const laneWord = (lane: Exclude<Lane, "none">): string => STATUS_CHIPS[lane];
 const CARD_OWN_STEPS: readonly StatusRowMenuItem[] = ["open", "show-changes", "submit-only", "publish-only"];
+const GROUP_CARD_ITEMS: readonly StatusGroupMenuItem[] = ["add-reviewer", "move-back", "stop-review"];
 const CHIP_LANES = ["approve", "publish", "drafts"] as const;
 
 function useCoarse(): boolean {
@@ -295,12 +296,25 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const cardMenuItems = (): PanelMenuItem[] => {
     const open = layout.pinned;
     if (!open) return [];
-    const own = (open.menu ?? []).map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => act({ type: "pinned", action: item }) }));
-    if (!model.cardOnly) return own;
-    const row = layout.entries.find((entry) => entry.item.kind === "doc" && entry.item.id === open.id)?.item;
-    if (row?.kind !== "doc") return own;
-    const rowItems = rowMenuItems(row, { noun, readOnly: !!model.readOnly }).filter((item) => !CARD_OWN_STEPS.includes(item) && !(item === "view-on-github" && open.menu?.includes("view-on-github")));
-    return [...own, ...rowItems.map((item): PanelMenuItem => ({ label: rowMenuLabel(item), run: () => act({ type: "row", id: open.id, action: item }) }))];
+    const ownItems = open.menu ?? [];
+    const before = ownItems.filter((item) => item !== "view-on-github").map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => act({ type: "pinned", action: item }) }));
+    const after = ownItems.filter((item) => item === "view-on-github").map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => act({ type: "pinned", action: item }) }));
+    if (!model.cardOnly && !open.reviewMenu) return [...before, ...after];
+    const ownNames = new Set<string>(ownItems);
+    const openEntry = layout.entries.find((entry) => entry.open);
+    let derived: PanelMenuItem[] = [];
+    if (openEntry?.item.kind === "doc") {
+      const row = openEntry.item;
+      derived = rowMenuItems(row, { noun, readOnly: !!model.readOnly })
+        .filter((item) => item !== "view-on-github" && !CARD_OWN_STEPS.includes(item) && !ownNames.has(item))
+        .map((item): PanelMenuItem => ({ label: rowMenuLabel(item), run: () => act({ type: "row", id: row.id, action: item }) }));
+    } else if (openEntry?.item.kind === "group") {
+      const group = openEntry.item;
+      derived = groupMenuItems(group, { readOnly: !!model.readOnly })
+        .filter((item) => GROUP_CARD_ITEMS.includes(item) && !ownNames.has(item))
+        .map((item): PanelMenuItem => ({ label: groupMenuLabel(item), run: () => act({ type: "group", id: group.id, action: item }) }));
+    }
+    return [...before, ...derived, ...after];
   };
   const cardMenu = cardMenuItems();
   const onCardMore = (anchor: HTMLElement) => openMenu(cardMenu, anchor, "pinned");

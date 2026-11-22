@@ -78,6 +78,14 @@ export const MERGED_REVIEW = {
   after: "Merged",
 } as const;
 
+export const MERGED_BOARD = {
+  title: "Review the merged board",
+  empty: "No card or arrow changes to apply.",
+} as const;
+
+export const INVALID_CANVAS_JSON = "That version isn't valid canvas JSON. Choose the other version.";
+export const INVALID_BASE_YAML = "That result isn't valid YAML. Choose one version or edit it.";
+
 export type ChangesContext =
   | { kind: "yours"; name: string }
   | { kind: "mine"; name: string; what: string }

@@ -1,16 +1,38 @@
 import type { AttachmentFile } from "../auth/git-copy";
 import type { CommitScope, StreamCreateResult, StreamReplaceResult } from "../disk/vault-binary";
+import { isVaultTarget, normalizeFolder } from "../mapping";
 import { ATTACHMENT_WORDS, MAX_ATTACHMENT_BYTES } from "../shared/review-flow";
 import { fileAttachmentLinks } from "./attachment-links";
 import { ATTACHMENT_RECHECK_MS, ATTACHMENT_RETRY_MS, type AttachmentMemory, attachmentMove, attachmentName } from "./attachment-memory";
 import { readStreamBounded } from "./blob-sha";
 import { ATTACHMENT_BOTH } from "../stay/words";
 
+export type AttachmentPlacement = { kind: "target"; path: string } | { kind: "outside" } | { kind: "unsafe" };
+
+export function attachmentPlace(folder: string, repoPath: string, configDir = ""): string | null {
+  if (!isVaultTarget(repoPath)) return null;
+  const top = normalizeFolder(folder);
+  const target = top === "" ? repoPath : `${top}/${repoPath}`;
+  return isVaultTarget(target, configDir) ? target : null;
+}
+
+export function attachmentPlacement(folder: string, repoPath: string, configDir = ""): AttachmentPlacement {
+  const path = attachmentPlace(folder, repoPath, configDir);
+  return path === null ? { kind: "unsafe" } : { kind: "target", path };
+}
+
+function normalizePlacement(raw: AttachmentPlacement | string | null, repoPath: string, configDir: string): AttachmentPlacement {
+  if (raw === null) return isVaultTarget(repoPath, configDir) ? { kind: "outside" } : { kind: "unsafe" };
+  if (typeof raw === "string") return { kind: "target", path: raw };
+  return raw;
+}
+
 export interface BringPorts {
+  configDir?: string;
   now(): number;
   resolve(link: string, notePath: string): { path: string; mtime: number; size: number } | null;
   repoPathOf(vaultPath: string): string | null;
-  vaultPathOf(repoPath: string): string | null;
+  vaultPathOf(repoPath: string): AttachmentPlacement | string | null;
   findAttachment(link: string, notePath: string): Promise<AttachmentFile>;
   told(notePath: string, words: readonly string[]): void;
   draftAttachment(repoPath: string, ifNoneMatch?: string): Promise<AttachmentFile>;
@@ -147,14 +169,21 @@ export class AttachmentLooks {
         const size = read.kind === "stream" ? read.size : read.bytes.byteLength;
         if (read.path === undefined || (size !== undefined && size > MAX_ATTACHMENT_BYTES)) {
           await cancelIfStream(read);
+        } else if (!isVaultTarget(read.path)) {
+          await cancelIfStream(read);
         } else {
-          const make = ports.vaultPathOf(read.path);
-          if (make === null) {
+          const configDir = ports.configDir ?? "";
+          const placed = normalizePlacement(ports.vaultPathOf(read.path), read.path, configDir);
+          if (placed.kind === "unsafe") {
+            await cancelIfStream(read);
+          } else if (placed.kind === "outside") {
             await cancelIfStream(read);
             found = true;
             outside = true;
+          } else if (!isVaultTarget(placed.path, configDir)) {
+            await cancelIfStream(read);
           } else {
-            const made = await landNewAttachment(ports, make, read);
+            const made = await landNewAttachment(ports, placed.path, read);
             if (made.status === "outage") return;
             if (made.status === "created") {
               found = true;

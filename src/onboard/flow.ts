@@ -13,6 +13,7 @@ import {
   DONE_TITLE,
   FAILED,
   gone,
+  isPublic,
   LINK_FAILED,
   nameTaken,
   notEmpty,
@@ -55,7 +56,7 @@ export type OnboardView =
   | { step: "form"; name: string; canGiveAccess: boolean; notSeen: boolean }
   | { step: "upload"; progress: UploadView }
   | { step: "done"; repo: string }
-  | { step: "problem"; why: "changed" | "gone" | "not_empty" | "failed" | "link"; line: string; action: "start_again" | "try_again" | null };
+  | { step: "problem"; why: "changed" | "gone" | "not_empty" | "public" | "failed" | "link"; line: string; action: "start_again" | "try_again" | null };
 
 export interface OnboardEvents {
   edit(typed: string, isPrivate: boolean): void;
@@ -80,6 +81,7 @@ export interface OnboardUi {
 export interface UploadControl {
   progress(state: UploadProgress): void;
   isCurrent(): boolean;
+  expectPrivate?: boolean;
 }
 
 export interface OnboardDeps {
@@ -89,7 +91,7 @@ export interface OnboardDeps {
   call(action: string, body: Record<string, unknown>): Promise<ApiAnswer>;
   plan(): Promise<VaultPlan>;
   upload(repo: string, control: UploadControl): Promise<void>;
-  record: { read(): UploadRecord | null; write(repo: string): void; markUploaded(): void; clear(): void };
+  record: { read(): UploadRecord | null; write(repo: string, isPrivate?: boolean): void; markUploaded(): void; clear(): void };
   openUrl(url: string): void;
   onFront(listener: () => void): () => void;
   wait(ms: number): Promise<void>;
@@ -175,6 +177,7 @@ export class VaultOnboarding {
     const record = this.deps.record.read();
     if (record === null) return;
     const s = this.newSession(nameOf(record.repo));
+    s.private = record.private ?? true;
     this.session = s;
     if (!this.deps.signedIn() && (await this.deps.signIn({ install: false })) !== "signed_in") {
       this.end(s);
@@ -417,7 +420,7 @@ export class VaultOnboarding {
     this.show(s, { step: "creating", name });
     const answer = await this.ask("create", { name, private: s.private });
     const made = answer?.status === 200 && typeof answer.body?.repo === "string" && isRepoName(answer.body.repo) ? answer.body.repo : null;
-    if (made !== null) this.deps.record.write(made);
+    if (made !== null) this.deps.record.write(made, s.private);
     if (s.ended) return;
     if (made !== null) {
       s.refused = false;
@@ -469,10 +472,18 @@ export class VaultOnboarding {
     this.watch(
       s,
       async (live) => {
-        const answer = await this.ask("start", { repo, gitignore: s.plan?.gitignore ?? "" });
+        const answer = await this.ask("start", { repo, gitignore: s.plan?.gitignore ?? "", ...(s.private ? { expectPrivate: true } : {}) });
         if (answer === null || !live()) return false;
+        if (answer.code === "repo_public") {
+          this.problem(s, "public", isPublic(name), null);
+          return true;
+        }
         if (answer.status === 200) {
-          this.deps.record.write(repo);
+          if (s.private && answer.body?.private === false) {
+            this.problem(s, "public", isPublic(name), null);
+            return true;
+          }
+          this.deps.record.write(repo, s.private);
           this.beginUpload(s, repo);
           return true;
         }
@@ -532,7 +543,7 @@ export class VaultOnboarding {
     s.watching = null;
     this.show(s, this.uploadView(s));
     this.emit();
-    void this.deps.upload(repo, { progress: (state) => this.progressed(s, state), isCurrent: () => !s.ended && !s.stopRequested && !this.unloaded });
+    void this.deps.upload(repo, { progress: (state) => this.progressed(s, state), isCurrent: () => !s.ended && !s.stopRequested && !this.unloaded, expectPrivate: s.private });
   }
 
   private hide(s: Session): void {
@@ -586,12 +597,13 @@ export class VaultOnboarding {
     this.emit();
   }
 
-  private failed(s: Session, why: "changed" | "gone" | "not_empty" | "failed", repo: string): void {
+  private failed(s: Session, why: "changed" | "gone" | "not_empty" | "public" | "failed", repo: string): void {
     const name = nameOf(repo);
-    if (why === "not_empty") this.deps.record.clear();
+    if (why === "not_empty" || why === "public") this.deps.record.clear();
     if (why === "changed") this.problem(s, why, changed(name), "start_again");
     else if (why === "gone") this.problem(s, why, gone(name), "start_again");
     else if (why === "not_empty") this.problem(s, why, notEmpty(name), null);
+    else if (why === "public") this.problem(s, why, isPublic(name), null);
     else this.problem(s, why, FAILED, "try_again");
   }
 

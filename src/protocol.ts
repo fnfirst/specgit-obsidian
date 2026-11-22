@@ -23,4 +23,6 @@ export const ROOM_DIVERGED_MESSAGE = "room_diverged";
 
 export const ROOM_TOO_LARGE = "room_too_large";
 
+export const ROOM_OVER_BUDGET = "over_budget";
+
 export const ROOM_ENDED_REASON = "room_ended";

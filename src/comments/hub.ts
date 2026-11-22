@@ -3,17 +3,21 @@ import { placeQuote, looseText, plainQuote } from "../shared/anchoring/anchor";
 import {
   COMMENT_SAVE_WAIT,
   COMMENT_WORDS,
+  countOccurrences,
   createLocalIntents,
   extractSuggestionFromComments,
   failureWords,
   findConversation,
   concernsDocument,
   createPollGateFor,
+  isSuggestionStillApplied,
   type LiveEvent,
+  normalizeLineEndings,
   openThreadCount,
   type PollSignals,
   type PrInfo,
   ReviewOpener,
+  type SuggestionSnapshot,
   type ThreadAnchorLines,
   ThreadsStore,
   type ThreadsStoreDeps,
@@ -61,10 +65,26 @@ export interface CommentsHost {
   now?(): number;
 }
 
+interface AppliedSuggestion {
+  snapshot: SuggestionSnapshot;
+  saved: boolean;
+  savedText: string | null;
+}
+
+function isAppliedPresent(entry: AppliedSuggestion, text: string | null): boolean {
+  if (text === null) return false;
+  return isSuggestionStillApplied(entry.snapshot, {
+    replaceCount: (needle) => countOccurrences(text, needle),
+    findCount: (needle) => countOccurrences(text, needle),
+    sourceCount: (needle) => countOccurrences(text, needle),
+  });
+}
+
 export class NoteComments {
   readonly store: ThreadsStore;
   private ui: NoteUi = { selectedId: null, draft: null, draftBody: "", posting: false, focusRequests: 0, waiting: false, applyingId: null };
   private readonly listeners = new Set<() => void>();
+  private readonly applied = new Map<string, AppliedSuggestion>();
   private sending = false;
   private applying = false;
   private seq = 0;
@@ -76,7 +96,15 @@ export class NoteComments {
     store: ThreadsStore,
   ) {
     this.store = store;
-    store.subscribe(() => this.show());
+    store.subscribe(() => {
+      if (!this.applying) {
+        const threads = this.store.getState().threads;
+        for (const id of [...this.applied.keys()]) {
+          if (findConversation(threads, id)?.resolved) this.applied.delete(id);
+        }
+      }
+      this.show();
+    });
   }
 
   getUi = (): NoteUi => this.ui;
@@ -213,15 +241,45 @@ export class NoteComments {
     this.patch({ applyingId: id });
     try {
       const thread = findConversation(this.store.getState().threads, id);
-      const replacement = thread ? extractSuggestionFromComments(thread.displayComments) : null;
-      const { anchor } = thread ?? {};
-      let status: ApplyStatus = "failed";
-      if (anchor && replacement !== null) {
-        status = this.host.marks.applyEdit(this.path, { lineStart: anchor.lineStart, lineEnd: anchor.lineEnd, quotedText: anchor.quotedText, exactText: anchor.exactText }, replacement);
-      }
-      if (status !== "applied") {
-        await this.host.alert(COMMENT_WORDS.applyFailedTitle, COMMENT_WORDS.applyFailedBody);
-        return;
+      const key = thread?.id ?? id;
+      const currentText = this.host.marks.text(this.path);
+      const existing = this.applied.get(key) ?? this.applied.get(id);
+      let entry: AppliedSuggestion | undefined;
+      if (existing && isAppliedPresent(existing, currentText)) {
+        entry = existing;
+      } else {
+        this.applied.delete(key);
+        this.applied.delete(id);
+        const beforeText = currentText ?? "";
+        const replacement = thread ? extractSuggestionFromComments(thread.displayComments) : null;
+        const { anchor } = thread ?? {};
+        let status: ApplyStatus = "failed";
+        if (anchor && replacement !== null) {
+          status = this.host.marks.applyEdit(this.path, { lineStart: anchor.lineStart, lineEnd: anchor.lineEnd, quotedText: anchor.quotedText, exactText: anchor.exactText }, replacement);
+        }
+        if (status !== "applied") {
+          await this.host.alert(COMMENT_WORDS.applyFailedTitle, COMMENT_WORDS.applyFailedBody);
+          return;
+        }
+        const afterText = this.host.marks.text(this.path) ?? "";
+        const find = normalizeLineEndings(anchor?.exactText?.trim() || anchor?.quotedText || "");
+        const replace = normalizeLineEndings(replacement ?? "");
+        entry = {
+          snapshot: {
+            replaceNeedle: replace,
+            beforeReplaceCount: countOccurrences(beforeText, replace),
+            afterReplaceCount: countOccurrences(afterText, replace),
+            findNeedle: find,
+            beforeFindCount: countOccurrences(beforeText, find),
+            afterFindCount: countOccurrences(afterText, find),
+            sourceReplace: replace,
+            beforeSourceCount: countOccurrences(beforeText, replace),
+            afterSourceCount: countOccurrences(afterText, replace),
+          },
+          saved: false,
+          savedText: null,
+        };
+        this.applied.set(key, entry);
       }
       const persist = async (): Promise<boolean> => {
         try {
@@ -232,10 +290,24 @@ export class NoteComments {
           return false;
         }
       };
-      if (!(await persist())) return;
+      const needsSave = !entry.saved || this.host.marks.text(this.path) !== entry.savedText;
+      if (needsSave) {
+        if (!(await persist())) return;
+        entry.saved = true;
+        entry.savedText = this.host.marks.text(this.path);
+      }
       const committed = this.host.marks.text(this.path);
-      await this.store.resolve(id, true);
-      if (this.host.marks.text(this.path) !== committed) await persist();
+      const resolved = await this.store.resolve(id, true);
+      if (resolved) {
+        this.applied.delete(key);
+        this.applied.delete(id);
+      }
+      if (this.host.marks.text(this.path) !== committed) {
+        if (await persist()) {
+          entry.saved = true;
+          entry.savedText = this.host.marks.text(this.path);
+        }
+      }
     } finally {
       this.applying = false;
       this.patch({ applyingId: null });

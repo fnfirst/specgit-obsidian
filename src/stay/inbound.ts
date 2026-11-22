@@ -8,15 +8,17 @@ import { follows } from "./draft-state";
 import { changesBetween } from "../disk/merge";
 import type { Shown } from "../disk/regions";
 import { eolOf, toLf, withEol } from "../disk/line-endings";
-import { reconcile } from "../disk/reconcile";
+import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { notWritableBecause } from "../disk/writable";
-import type { ReviewRequest } from "../editor/services";
-import { type DocumentRef, noteName } from "../mapping";
+import type { ReviewPayload } from "../editor/services";
+import { CasePathIndex, casePathKey, type DocumentRef, noteName } from "../mapping";
 import type { Activity } from "./activity";
+import { caseCollisionWords, StayHolds, vaultCaseIndex } from "./holds";
 import { BURST_FILES } from "./limits";
 import { CHOICE_WORDS, DRAFT_SAID } from "./words";
 import type { StayState } from "./state";
 import type { StayPorts } from "./types";
+import { BackoffWaits, WakeClock } from "./wait";
 
 export const READS_PER_PASS = 40;
 
@@ -28,11 +30,23 @@ export const MAX_WAIT_MS = 5 * 60_000;
 export const STUCK_MS = 60_000;
 export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 
+const topSegmentKey = (path: string): string => {
+  const slash = path.indexOf("/");
+  return casePathKey(slash === -1 ? path : path.slice(0, slash));
+};
+
 export interface InboundContext {
   ports: StayPorts;
   state: StayState;
   activity: Activity;
+  holds?: StayHolds;
   current(): boolean;
+}
+
+export interface InboundPass {
+  changed: number;
+  more: boolean;
+  wake: number | null;
 }
 
 type MainText = Extract<MainFile, { kind: "file" }>;
@@ -51,23 +65,50 @@ export class Inbound {
   private readonly deciding = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private readonly abort = new AbortController();
-  private readonly waiting = new Map<string, { sha: string; until: number; strikes: number }>();
+  private readonly waiting: BackoffWaits<string>;
+  private readonly holds: StayHolds;
   private readonly announced = new Map<string, string>();
   private readonly cues = new Map<string, { sha: string; since: number; told: boolean }>();
   private readonly opening = new Set<string>();
   private readonly reviewTold = new Map<string, string>();
   private looked: Looked | null = null;
+  private caseIndex = new CasePathIndex();
   private texts = new Map<string, string>();
   private gone: Map<string, boolean> | null = null;
   private reads = 0;
   private cut = false;
+  private readonly wake = new WakeClock();
   private readonly releasedDeletes = new Set<string>();
   private announcedDeletes = 0;
   private readonly pendingRenames = new Map<string, { to: string; sha: string }>();
   private readonly renameTold = new Set<string>();
   private readonly deferredUnsaved = new Set<string>();
 
-  constructor(private readonly ctx: InboundContext) {}
+  constructor(private readonly ctx: InboundContext) {
+    this.holds = ctx.holds ?? new StayHolds(ctx.state, ctx.activity, ctx.ports);
+    this.waiting = new BackoffWaits(
+      () => this.ctx.ports.now(),
+      (strikes) => Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** strikes),
+    );
+  }
+
+  private clearPending(path: string): void {
+    this.waiting.delete(path);
+    this.deferredUnsaved.delete(path);
+    this.cues.delete(path);
+    this.announced.delete(path);
+    this.reviewTold.delete(path);
+    this.pendingRenames.delete(path);
+  }
+
+  private holdCaseCollision(path: string, sha: string, from?: string): void {
+    if (from !== undefined) {
+      if (!this.ctx.state.data.kept.includes(from)) this.ctx.state.data.kept.push(from);
+      this.settled(from, null);
+    }
+    this.clearPending(path);
+    if (this.holds.holdCaseCollision(path, sha)) this.ctx.ports.notify(caseCollisionWords(noteName(path)));
+  }
 
   release(path: string): void {
     this.waiting.delete(path);
@@ -83,13 +124,16 @@ export class Inbound {
     this.deferredUnsaved.clear();
   }
 
-  async run(looked: Looked, silent = false): Promise<{ changed: number; more: boolean }> {
+  async run(looked: Looked, silent = false): Promise<InboundPass> {
     const { state } = this.ctx;
     const seen = state.data.seen;
-    if (!seen) return { changed: 0, more: false };
+    if (!seen) return { changed: 0, more: false, wake: null };
     this.reads = 0;
     this.cut = false;
+    this.wake.reset();
     this.looked = looked;
+    this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
+    this.holds.pruneCaseCollisions(looked, this.caseIndex);
     const said: Said = { updated: [], merged: [], created: [], moved: [], trashed: [], came: [] };
     const added = [...looked.repo].filter(([path, sha]) => seen[path] !== sha);
     const removed = Object.entries(seen).filter(([path]) => !looked.repo.has(path));
@@ -97,12 +141,21 @@ export class Inbound {
     for (const path of [...this.deferredUnsaved]) if (!active.has(path)) this.deferredUnsaved.delete(path);
     const moves = this.pairMoves(looked, added, removed);
     const inMove = new Set(moves.flatMap((move) => [move.from, move.to]));
+    const deletes = removed.filter(([path]) => !inMove.has(path));
+    const deleteTops = new Set(deletes.filter(([path]) => looked.files.has(path)).map(([path]) => topSegmentKey(path)));
+    const deferredCaseAdds: Array<[string, string]> = [];
     this.notePendingRenames(looked, added, removed, inMove);
     this.noteCues(looked, added);
     this.texts = await this.fetchTexts(looked, added, inMove);
     for (const move of moves) if (this.ready(move.from, move.sha)) await this.guarded(move.from, move.sha, () => this.move(move, said));
-    for (const [path, sha] of added) if (!inMove.has(path) && this.ready(path, sha)) await this.guarded(path, sha, () => this.add(looked, path, sha, said));
-    const deletes = removed.filter(([path]) => !inMove.has(path));
+    for (const [path, sha] of added) {
+      if (inMove.has(path) || !this.ready(path, sha)) continue;
+      if (!looked.files.has(path) && this.caseIndex.collision(path) !== null && deleteTops.has(topSegmentKey(path))) {
+        deferredCaseAdds.push([path, sha]);
+        continue;
+      }
+      await this.guarded(path, sha, () => this.add(looked, path, sha, said));
+    }
     const here = deletes.filter(([path]) => looked.files.has(path)).map(([path]) => path);
     const still = new Set(here);
     for (const path of this.releasedDeletes) if (!still.has(path)) this.releasedDeletes.delete(path);
@@ -118,7 +171,7 @@ export class Inbound {
       const words = heldDeletesWords(asked.length);
       if (this.ctx.ports.aware()) {
         this.ctx.ports.heldDeletes?.({ count: asked.length, move: release });
-        this.ctx.ports.notify(words, { label: "Show them", run: () => this.ctx.ports.openStatus?.(), lasting: true });
+        this.ctx.ports.notify(words, { label: "Show them", run: () => this.ctx.ports.openStatus?.() }, { lasting: true });
       } else this.ctx.ports.notify(words, { label: "Move them to the trash", run: release });
     }
     if (!holdDeletes) {
@@ -130,10 +183,18 @@ export class Inbound {
       if (holdDeletes && looked.files.has(path) && !this.releasedDeletes.has(path)) continue;
       if (this.ready(path, sha)) await this.guarded(path, sha, () => this.remove(looked, path, sha, said));
     }
+    for (const [path, sha] of deferredCaseAdds) {
+      if (!this.ctx.current()) break;
+      if (this.caseIndex.collision(path) === null) {
+        if (this.ready(path, sha)) await this.guarded(path, sha, () => this.add(looked, path, sha, said));
+      } else if (!this.cut && !holdDeletes && !deletes.some(([gone]) => looked.files.has(gone) && topSegmentKey(gone) === topSegmentKey(path) && state.data.seen?.[gone] !== undefined)) {
+        this.holdCaseCollision(path, sha);
+      }
+    }
     this.tellStuck();
     state.save();
     if (!silent) this.tell(said);
-    return { changed: said.updated.length + said.merged.length + said.created.length + said.moved.length + said.trashed.length, more: this.cut };
+    return { changed: said.updated.length + said.merged.length + said.created.length + said.moved.length + said.trashed.length, more: this.cut, wake: this.wake.value() };
   }
 
   async bringIn(looked: Looked, path: string): Promise<boolean> {
@@ -141,6 +202,7 @@ export class Inbound {
     const entry = looked.files.get(path);
     if (sha === undefined || !entry || entry.sha === sha || !unchangedHere(entry)) return false;
     this.looked = looked;
+    this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
     this.reads = 0;
     this.waiting.delete(path);
     const said: Said = { updated: [], merged: [], created: [], moved: [], trashed: [], came: [] };
@@ -157,7 +219,7 @@ export class Inbound {
     for (const [path, sha] of added) {
       const doc = ports.documentFor(path);
       const entry = looked.files.get(path);
-      if (!doc || inMove.has(path) || seen.has(sha) || entry?.sha === sha || !this.ready(path, sha, false) || (entry && this.followsDraft(looked, path, doc, entry.sentTo))) continue;
+      if (!doc || inMove.has(path) || seen.has(sha) || entry?.sha === sha || (!entry && this.caseIndex.collision(path) !== null) || (entry && this.followsDraft(looked, path, doc, entry.sentTo)) || !this.ready(path, sha, false)) continue;
       seen.add(sha);
       asked.push({ doc, sha });
       if (asked.length >= TEXTS_PER_PASS) break;
@@ -198,8 +260,8 @@ export class Inbound {
 
   private ready(path: string, sha: string, spend = true): boolean {
     if (!this.ctx.current()) return false;
-    const waited = this.waiting.get(path);
-    if (waited && waited.sha === sha && this.ctx.ports.now() < waited.until) return false;
+    if (this.holds.isCaseHeld(path, sha)) return false;
+    if (this.waiting.waiting(path, sha, this.wake)) return false;
     if (this.declined.get(path) === sha || this.announced.get(path) === sha || this.deciding.has(path)) return false;
     if (spend && this.reads >= READS_PER_PASS) {
       this.cut = true;
@@ -209,18 +271,11 @@ export class Inbound {
   }
 
   private wait(path: string, sha: string): void {
-    const before = this.waiting.get(path);
-    const strikes = before && before.sha === sha ? before.strikes + 1 : 0;
-    this.waiting.set(path, { sha, strikes, until: this.ctx.ports.now() + Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** strikes) });
+    this.waiting.defer(path, sha, this.wake);
   }
 
   private settled(path: string, sha: string | null): void {
-    this.waiting.delete(path);
-    this.deferredUnsaved.delete(path);
-    this.cues.delete(path);
-    this.announced.delete(path);
-    this.reviewTold.delete(path);
-    this.pendingRenames.delete(path);
+    this.clearPending(path);
     const guessed = this.ctx.state.data.guessed;
     if (guessed.includes(path)) this.ctx.state.data.guessed = guessed.filter((one) => one !== path);
     const seen = this.ctx.state.data.seen;
@@ -265,12 +320,12 @@ export class Inbound {
 
   private askChoice(path: string, words: string, label: string, run: () => void, notice: string, plain: string = notice): void {
     if (!this.ctx.ports.aware()) {
-      this.ctx.ports.notify(plain, { label, run, lasting: true });
+      this.ctx.ports.notify(plain, { label, run }, { lasting: true });
       return;
     }
     this.choices.add(path);
     this.ctx.ports.choice?.(path, { words, label, run });
-    this.ctx.ports.notify(notice, { label: CHOICE_WORDS.show, run: () => this.ctx.ports.openStatus?.(), lasting: true });
+    this.ctx.ports.notify(notice, { label: CHOICE_WORDS.show, run: () => this.ctx.ports.openStatus?.() }, { lasting: true });
   }
 
   private dropChoice(path: string): void {
@@ -399,6 +454,7 @@ export class Inbound {
     if (!doc) return this.settled(path, sha);
     const entry = looked.files.get(path);
     if (entry?.sha === sha || (!entry && looked.deleted.some((gone) => gone.path === path))) return this.settled(path, sha);
+    if (!entry && this.caseIndex.collision(path) !== null) return this.holdCaseCollision(path, sha);
     if (entry && this.followsDraft(looked, path, doc, entry.sentTo)) return this.settled(path, sha);
     if (!(await this.free(path, doc, sha))) return;
     const batched = this.texts.get(sha);
@@ -426,7 +482,13 @@ export class Inbound {
   private async create(path: string, doc: DocumentRef, main: MainText, said: Said): Promise<void> {
     const { ports, activity } = this.ctx;
     activity.ownWrite(path);
-    if ((await ports.vault.create(path, main.text)) !== "created") return this.unwritten(path, main.sha);
+    const made = await ports.vault.create(path, main.text);
+    if (made === "exists" && !ports.vault.exists(path)) {
+      activity.notWritten(path);
+      return this.holdCaseCollision(path, main.sha);
+    }
+    if (made !== "created") return this.unwritten(path, main.sha);
+    this.caseIndex.add(path);
     await this.bring(path, main.text);
     this.keepAsBase(path, doc, main);
     this.settled(path, main.sha);
@@ -476,10 +538,9 @@ export class Inbound {
       },
       () => ports.baseText(path, matched),
     );
-    const joined = reconcile({ editor: toLf(mine), room: toLf(main.text), base, baseIsGit: false, emptied: false, git: main.text, readOnly: false }, new Budget(400));
-    if (joined.kind === "review") return this.askPerson(path, doc, main, mine, joined);
-    if (joined.kind !== "text") return this.wait(path, main.sha);
-    const merged = withEol(joined.text, eolOf(mine));
+    const result = mergeFile(path, base, toLf(mine), toLf(main.text), new Budget(400));
+    if (result.kind === "conflict") return this.askPerson(path, doc, main, mine, result.review);
+    const merged = withEol(result.text, eolOf(mine));
     if (merged !== mine) {
       activity.ownWrite(path);
       const written = await ports.vault.process(path, (current) => (current === mine ? merged : null));
@@ -492,7 +553,7 @@ export class Inbound {
     this.settled(path, main.sha);
   }
 
-  private askPerson(path: string, doc: DocumentRef, main: MainText, mine: string, joined: { regions: ReviewRequest["regions"]; fromBase: boolean }): void {
+  private askPerson(path: string, doc: DocumentRef, main: MainText, mine: string, review: ReviewPayload): void {
     if (this.declined.get(path) === main.sha || this.deciding.has(path)) return;
     if (!this.opening.has(path)) {
       if (this.announced.get(path) === main.sha) return;
@@ -508,7 +569,7 @@ export class Inbound {
     this.queue = this.queue.then(async () => {
       try {
         if (!this.ctx.current() || this.abort.signal.aborted) return;
-        const chosen = await ports.chooseWhatToKeep({ name: noteName(path), regions: joined.regions, fromBase: joined.fromBase, other: "github", settle: () => null, signal: this.abort.signal });
+        const chosen = await ports.chooseWhatToKeep(buildReviewRequest(path, review, { other: "github", signal: this.abort.signal }));
         if (chosen === null) return void this.declined.set(path, main.sha);
         if (!this.ctx.current()) return;
         const text = withEol(chosen, eolOf(mine));
@@ -534,13 +595,22 @@ export class Inbound {
     const { ports, activity } = this.ctx;
     const [from, to] = [ports.documentFor(move.from), ports.documentFor(move.to)];
     if (!from || !to) return this.settled(move.from, null);
+    if (this.caseIndex.collision(move.to, move.from) !== null) return this.holdCaseCollision(move.to, move.sha, move.from);
     if (ports.phaseOf(move.to) !== "local" || !(await this.free(move.from, from, move.sha))) return this.wait(move.from, move.sha);
     const mirror = this.looked?.repo;
     if (!mirror || mirror.has(move.from) || mirror.get(move.to) !== move.sha || !this.ctx.current()) return this.wait(move.from, move.sha);
     const current = await ports.vault.read(move.from);
     if (current === null || gitBlobShaOfText(current) !== move.held || ports.vault.exists(move.to)) return this.wait(move.from, move.sha);
     activity.ownWrite(move.from, move.to);
-    if ((await ports.vault.rename(move.from, move.to)) !== "renamed") return this.unwritten(move.from, move.sha, move.to);
+    const moved = await ports.vault.rename(move.from, move.to);
+    if (moved === "exists" && !ports.vault.exists(move.to)) {
+      activity.notWritten(move.from, move.to);
+      return this.holdCaseCollision(move.to, move.sha, move.from);
+    }
+    if (moved !== "renamed") return this.unwritten(move.from, move.sha, move.to);
+    this.caseIndex.removeFile(move.from, (dir) => ports.vault.exists(dir));
+    this.caseIndex.add(move.to);
+    if (move.from !== move.to) ports.forgetDelete(move.from);
     this.settled(move.from, null);
     this.settled(move.to, move.sha);
     said.moved.push(noteName(move.to));
@@ -550,7 +620,11 @@ export class Inbound {
     const { ports, state, activity } = this.ctx;
     const entry = looked.files.get(path);
     const doc = ports.documentFor(path);
-    if (!entry || !doc) return this.settled(path, null);
+    if (!entry) {
+      if (doc && !looked.repo.has(path) && looked.deleted.some((gone) => gone.path === path)) ports.forgetDelete(path);
+      return this.settled(path, null);
+    }
+    if (!doc) return this.settled(path, null);
     if (entry.sha !== sha && !unchangedHere(entry)) {
       if (!state.data.kept.includes(path)) state.data.kept.push(path);
       const moved = this.pendingRenames.get(path);
@@ -577,6 +651,8 @@ export class Inbound {
     }
     activity.ownWrite(path);
     if (!(await ports.vault.trash(path, entry.sha))) return this.unwritten(path, sha);
+    this.caseIndex.removeFile(path, (dir) => ports.vault.exists(dir));
+    ports.forgetDelete(path);
     this.settled(path, null);
     said.trashed.push(noteName(path));
   }

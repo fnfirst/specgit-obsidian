@@ -15,8 +15,10 @@ export interface StayData {
   endedOwn?: Record<string, { sent: string; ended: "published" | "discarded" }>;
   typed?: Record<string, { sha: string; at: number }>;
   heldWhy?: Record<string, "closed" | "stopped" | "ended" | "closedElsewhere" | "flurry" | "github" | "tries" | "deleted">;
+  flurryUntil?: Record<string, number>;
   deletedAt?: Record<string, number>;
   offerTold?: number;
+  caseHeld?: Record<string, string>;
   attachments?: Record<string, { problems: Array<{ name: string; why: string; server?: true }>; tries: number }>;
 }
 
@@ -52,15 +54,19 @@ function read(stored: unknown): StayData {
   const why = record.heldWhy;
   const reasons = ["closed", "stopped", "ended", "closedElsewhere", "flurry", "github", "tries", "deleted"];
   const heldWhy = typeof why === "object" && why !== null && !Array.isArray(why) && Object.values(why).every((one) => typeof one === "string" && reasons.includes(one)) ? { heldWhy: why as NonNullable<StayData["heldWhy"]> } : {};
+  const flurry = record.flurryUntil;
+  const flurryUntil = typeof flurry === "object" && flurry !== null && !Array.isArray(flurry) && Object.values(flurry).every((at) => typeof at === "number" && Number.isFinite(at)) ? { flurryUntil: flurry as Record<string, number> } : {};
   const gone = record.deletedAt;
   const deletedAt = typeof gone === "object" && gone !== null && !Array.isArray(gone) && Object.values(gone).every((at) => typeof at === "number" && Number.isFinite(at)) ? { deletedAt: gone as Record<string, number> } : {};
   const toldCount = record.offerTold;
   const offerTold = typeof toldCount === "number" && Number.isInteger(toldCount) && toldCount >= 0 ? { offerTold: toldCount } : {};
+  const caseMap = record.caseHeld;
+  const caseHeld = typeof caseMap === "object" && caseMap !== null && !Array.isArray(caseMap) && Object.values(caseMap).every((sha) => typeof sha === "string") ? { caseHeld: caseMap as Record<string, string> } : {};
   const left = record.attachments;
   const isProblem = (one: unknown): boolean => typeof one === "object" && one !== null && typeof (one as { name?: unknown }).name === "string" && (one as { name: string }).name.length <= WORDS_MAX && typeof (one as { why?: unknown }).why === "string" && (one as { why: string }).why.length <= WORDS_MAX && ((one as { server?: unknown }).server === undefined || (one as { server?: unknown }).server === true);
   const isKept = (one: unknown): boolean => typeof one === "object" && one !== null && Array.isArray((one as { problems?: unknown }).problems) && (one as { problems: unknown[] }).problems.length > 0 && (one as { problems: unknown[] }).problems.length <= ATTACHMENTS_PER_NOTE && (one as { problems: unknown[] }).problems.every(isProblem) && Number.isInteger((one as { tries?: unknown }).tries) && (one as { tries: number }).tries >= 0 && (one as { tries: number }).tries <= 20;
   const attachments = typeof left === "object" && left !== null && !Array.isArray(left) && Object.keys(left).length <= ATTACHMENTS_KEPT && Object.values(left).every(isKept) ? { attachments: left as NonNullable<StayData["attachments"]> } : {};
-  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...deletedAt, ...offerTold, ...attachments };
+  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...flurryUntil, ...deletedAt, ...offerTold, ...caseHeld, ...attachments };
 }
 
 export class StayState {

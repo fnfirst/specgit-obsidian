@@ -100,4 +100,6 @@ export interface ChangesDeps {
   now?(): number;
   sameAsRepo?: (path: string, doc: DocumentRef, sha: string, repoSha: string, mayRead: boolean) => Promise<Sameness>;
   prefetchBlobs?: (reads: ReadonlyArray<{ doc: DocumentRef; sha: string }>) => Promise<void>;
+  refreshIgnore?: () => Promise<void>;
+  isIgnored?: (path: string) => boolean;
 }

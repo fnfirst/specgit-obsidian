@@ -34,8 +34,12 @@ export function publishReason(pr: PublishablePr, err?: { message?: string; code?
   return "This document can't be published yet. Check the pull request on GitHub and try again.";
 }
 
-export function canMergeNow(pr: Pick<PublishablePr, "state" | "isDraft" | "mergeable" | "mergeableState">): boolean {
+export function canMergeNow(
+  pr: Pick<PublishablePr, "state" | "isDraft" | "mergeable" | "mergeableState">,
+  err?: { message?: string; code?: string },
+): boolean {
   if (pr.state === "merged" || pr.isDraft) return false;
   if (pr.mergeableState === "dirty" || pr.mergeableState === "blocked") return false;
+  if (err && classifyRefusal(err, pr) === "method") return false;
   return pr.mergeable !== false;
 }

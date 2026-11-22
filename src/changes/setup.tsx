@@ -30,7 +30,8 @@ import { writeIfHolds } from "./guarded-write";
 import { openNote } from "./open-note";
 import { keepGitBase } from "./main-base";
 import { DISCARD } from "./discard-words";
-import type { Dialogs } from "./flow-deps";
+import { fileAttachmentLinks } from "./attachment-links";
+import type { AttachmentQuery, Dialogs } from "./flow-deps";
 import { ChangesFlows } from "./flows";
 import { FILES_PER_BATCH } from "./copy-in";
 import { collectAttachments } from "./collect-attachments";
@@ -38,10 +39,12 @@ import { attachmentRenamed, RENAME_LOOKS_AFTER_MS } from "./attachment-rename";
 import { LiveFiles } from "./live-files";
 import { type Attachment, AttachmentMemory } from "./attachment-memory";
 import { MirrorClient } from "./mirror";
+import type { OwnLinks } from "./own-links";
 import { ReviewEvents } from "./review-events";
 import { sameAsRepo } from "./same-text";
-import { CHECK_EVERY_MS, restingSignals, Watch } from "./watch";
+import { CHECK_EVERY_MS, restingSignals, Watch, watchSignature } from "./watch";
 import { ChangesModel } from "./model";
+import { type IgnoreAdapter, VaultIgnore } from "../onboard/ignore";
 import type { OwnRestarts } from "../room/own-restarts";
 import { appHidden, watchWindows } from "../windows";
 
@@ -83,6 +86,7 @@ export interface ChangesSetup {
   addOffered?: () => void;
   bringInNewer?: () => Promise<unknown>;
   bringInDraft?: (path: string) => Promise<BroughtDraft>;
+  ownLinks?: OwnLinks;
 }
 
 const LOOK_AFTER_MS = 1_500;
@@ -93,6 +97,18 @@ const base64Of = (buffer: ArrayBuffer): string => {
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return window.btoa(binary);
 };
+
+function ignoreAdapterOf(vault: { adapter?: unknown }): IgnoreAdapter | null {
+  const candidate = vault.adapter;
+  if (typeof candidate !== "object" || candidate === null) return null;
+  const stat = Reflect.get(candidate, "stat") as unknown;
+  const read = Reflect.get(candidate, "read") as unknown;
+  if (typeof stat !== "function" || typeof read !== "function") return null;
+  return {
+    stat: (path) => (stat as IgnoreAdapter["stat"]).call(candidate, path),
+    read: (path) => (read as IgnoreAdapter["read"]).call(candidate, path),
+  };
+}
 
 export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { model: ChangesModel; flows: ChangesFlows; review: ReviewApi; settingsChanged: () => void; attachments: () => AttachmentMemory; liveFiles: LiveFiles; live: { heard: (event: LiveEvent) => void; catchUp: (first?: boolean) => void } } {
   const { app } = plugin;
@@ -115,6 +131,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   };
   const activePath = (): string | null => app.workspace.getActiveFile()?.path ?? null;
   const fetched = new Map<string, string>();
+  const vaultIgnore = new VaultIgnore(ignoreAdapterOf(app.vault));
   const model = new ChangesModel({
     prefetchBlobs: async (reads) => {
       fetched.clear();
@@ -169,23 +186,78 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     deletedOnMain: (path) => deps.deletedOnMain?.(path) === true,
     heldWhy: (path) => deps.heldWhy?.(path) ?? null,
     isLive: (path) => deps.isLive(path),
+    refreshIgnore: () => vaultIgnore.refresh(),
+    isIgnored: (path) => vaultIgnore.isIgnored(path),
   });
   const repoPathOf = (path: string): string | null => underFolder(folder(), path);
-  const attachmentsOf = async (path: string): Promise<Attachment[]> => {
+  const ownOnly = (path: string): ((link: string) => boolean) => (link) => deps.ownLinks?.has(path, link) === true;
+  const mineFor = async (path: string, links: readonly string[], query: AttachmentQuery): Promise<(link: string) => boolean> => {
+    if (deps.isLive(path)) return ownOnly(path);
+    const known: string[] = [...(query.baselines ?? [])];
+    const stored = deps.bases.read(path);
+    if (stored.status === "found") known.push(stored.base.text);
+    const cacheEntry = placed().cache.get(path);
+    const draft = model.draftFor(path);
+    const theirs = model.theirReview(path);
+    const row = model.row(path);
+    const onMain = model.vault()?.files.get(path)?.repoSha != null;
+    const tracked =
+      onMain ||
+      cacheEntry?.base != null ||
+      cacheEntry?.sent !== undefined ||
+      draft !== undefined ||
+      theirs !== undefined ||
+      row?.review?.reviewBranch != null ||
+      stored.status !== "none";
+    const doc = mapped(path);
+    const branch = query.branch !== undefined ? query.branch : (draft?.branch ?? theirs?.branch ?? row?.review?.reviewBranch ?? null);
+    if (query.baselines === undefined) {
+      if (!doc || branch === null) return ownOnly(path);
+      const [branchResult, mainCopy] = await Promise.all([
+        deps.branchFile(doc, branch).catch((): BranchFile => ({ kind: "unreadable" })),
+        onMain ? deps.gitCopy(doc).catch(() => null) : Promise.resolve<string | null>(null),
+      ]);
+      if (branchResult.kind === "unreadable") return ownOnly(path);
+      if (onMain && mainCopy === null && stored.status !== "found") return ownOnly(path);
+      if (branchResult.kind === "file") known.push(branchResult.text);
+      if (mainCopy !== null) known.push(mainCopy);
+    } else if (branch !== null) {
+      if (!doc) return ownOnly(path);
+      const branchResult = await deps.branchFile(doc, branch).catch((): BranchFile => ({ kind: "unreadable" }));
+      if (branchResult.kind === "unreadable") return ownOnly(path);
+      if (branchResult.kind === "file") known.push(branchResult.text);
+    }
+    if (!tracked && known.length === 0) return () => true;
+    if (known.length === 0) return ownOnly(path);
+    const baselineLinks = new Set<string>();
+    for (const copy of known) for (const link of fileAttachmentLinks(path, copy)) baselineLinks.add(link);
+    const authored = links.filter((link) => !baselineLinks.has(link));
+    if (authored.length > 0) deps.ownLinks?.added(path, authored);
+    return (link) => deps.ownLinks?.has(path, link) === true || !baselineLinks.has(link);
+  };
+  const attachmentsOf = async (path: string, query?: AttachmentQuery): Promise<Attachment[]> => {
     const file = app.vault.getFileByPath(path);
     if (!file) return [];
     const text = await app.vault.read(file);
+    await vaultIgnore.refresh();
     const memory = placed().attachments;
     const bytesOf = async (one: { path: string }): Promise<ArrayBuffer> => {
       const target = app.vault.getFileByPath(one.path);
       if (!target) throw new Error("gone");
       return app.vault.readBinary(target);
     };
+    const links = query?.onlyMine ? fileAttachmentLinks(path, text) : [];
+    const mine = query?.onlyMine && links.length > 0 ? await mineFor(path, links, query) : undefined;
     return collectAttachments(
       {
         resolve: (link, from) => {
           const target = app.metadataCache.getFirstLinkpathDest(link, from);
-          return target ? { path: target.path, mtime: target.stat.mtime, size: target.stat.size } : null;
+          if (!target) return null;
+          const targetRepoPath = repoPathOf(target.path);
+          const published = model.attachmentSha(target.path);
+          const heldOnGitHub = (targetRepoPath !== null && memory.agreedOf(targetRepoPath) !== undefined) || (published !== undefined && published !== null);
+          if (!heldOnGitHub && vaultIgnore.isIgnored(target.path)) return null;
+          return { path: target.path, mtime: target.stat.mtime, size: target.stat.size };
         },
         repoPathOf,
         sha: (one) => memory.hash(one.path, { mtime: one.mtime, size: one.size }, () => hashVaultBinary(app, one.path, one.size)),
@@ -193,6 +265,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
         base64: async (one) => base64Of(await bytesOf(one)),
         agreedOf: (repoPath) => memory.agreedOf(repoPath),
         publishedSha: (vaultPath) => model.attachmentSha(vaultPath),
+        ...(mine ? { mine } : {}),
       },
       path,
       text,
@@ -311,7 +384,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     timer = window.setTimeout(() => void model.refresh(), LOOK_AFTER_MS);
   };
   const watch = (file: { path: string }): void => {
-    if (!LISTED_FILE.test(file.path)) return;
+    if (!LISTED_FILE.test(file.path) && file.path !== ".gitignore") return;
     unquiet();
     lookSoon();
   };
@@ -333,7 +406,14 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   plugin.register(() => liveFiles.dispose());
   const renames = new Set<number>();
   plugin.registerEvent(
-    app.vault.on("rename", (file) => {
+    app.vault.on("rename", (file, oldPath) => {
+      if (typeof oldPath === "string") {
+        deps.ownLinks?.moved(oldPath, file.path);
+        if (oldPath === ".gitignore") {
+          unquiet();
+          lookSoon();
+        }
+      }
       if (LISTED_FILE.test(file.path) || underFolder(folder(), file.path) === null) return;
       const timer = window.setTimeout(() => {
         renames.delete(timer);
@@ -347,16 +427,17 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   );
   plugin.register(() => renames.forEach((timer) => window.clearTimeout(timer)));
   plugin.registerEvent(app.vault.on("modify", watch));
-  plugin.registerEvent(app.vault.on("delete", watch));
+  plugin.registerEvent(
+    app.vault.on("delete", (file) => {
+      deps.ownLinks?.forget(file.path);
+      watch(file);
+    }),
+  );
   plugin.registerEvent(app.vault.on("rename", watch));
   const signals = pageSignals(plugin, deps.live);
   const watcher = new Watch({ signals, moved: () => placed().mirror.moved(), live: () => deps.live?.() === true, look: lookSoon, stay: () => deps.stayOn?.() === true });
   const unquiet = (): void => watcher.unquiet();
-  plugin.register(
-    model.onLooked((looked) => {
-      watcher.looked(looked === null ? "off" : `${looked.repo.size}|${looked.rows.map((row) => `${row.change.path}:${row.change.sha}:${row.entry?.prNumber ?? 0}:${row.entry?.isDraft ?? ""}`).join(",")}`);
-    }),
-  );
+  plugin.register(model.onLooked((looked) => watcher.looked(watchSignature(looked))));
   const resumed = (): void => {
     if (appHidden()) return;
     unquiet();
@@ -382,7 +463,10 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     lookSoon();
   });
   plugin.register(reaction.start());
-  app.workspace.onLayoutReady(() => void model.refresh());
+  app.workspace.onLayoutReady(() => {
+    unquiet();
+    void model.refresh();
+  });
   plugin.addCommand({
     id: "discard-all",
     name: DISCARD.command,

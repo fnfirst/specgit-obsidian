@@ -67,7 +67,7 @@ import { CHECKING_WORDS } from "./words";
 import { type ChangeRow, ChangesModel, type Doing } from "./model";
 import type { SendHooks } from "../stay/types";
 import { type ReadBackDeps, ReadBacks, reviewHolds } from "./read-back";
-import type { Dialogs, FlowDeps } from "./flow-deps";
+import type { AttachmentQuery, Dialogs, FlowDeps } from "./flow-deps";
 import type { ChangesContext } from "../review/words";
 import type { VaultFile } from "./vault-state";
 import { readSince, type SinceView } from "./vault-since";
@@ -184,7 +184,7 @@ export class ChangesFlows {
       meter: this.meter,
       goneAt: this.goneAt,
       sendOnce: (row, options) => this.sendOnce(row, options),
-      sendAttachmentsAlone: (row, deps) => this.sendAttachmentsAlone(row, deps),
+      sendAttachmentsAlone: (row, deps) => this.sendAttachmentsAlone(row, deps, false, { onlyMine: true, branch: row.review?.reviewBranch ?? null }),
     });
   }
 
@@ -280,7 +280,7 @@ export class ChangesFlows {
       if (main.kind === "file") return { ok: false, held: true };
       const existing = await deps.review.status(doc);
       if (existing === null) return { ok: false, unreadable: true, message: UNREADABLE(name) };
-      if (reviewIsOpen(existing)) return this.alreadyThere(doc, existing, text);
+      if (reviewIsOpen(existing)) return this.alreadyThere(change.path, doc, existing, text, memory);
     }
     const branch = options.quiet ? options.branch : (row.theirs?.branch ?? row.review?.reviewBranch ?? undefined);
     const found = options.found ?? (branch ? await deps.branchFile(doc, branch) : undefined);
@@ -311,12 +311,12 @@ export class ChangesFlows {
     });
   }
 
-  private async nameAttachments(row: FileRow, deps: FlowDeps): Promise<{ named: Array<NamedAttachment & { key: string }>; problems: Array<{ name: string; why: string; server?: true }> }> {
+  private async nameAttachments(row: FileRow, deps: FlowDeps, query?: AttachmentQuery): Promise<{ named: Array<NamedAttachment & { key: string }>; problems: Array<{ name: string; why: string; server?: true }> }> {
     const { change, doc } = row;
     const named: Array<NamedAttachment & { key: string }> = [];
     const problems: Array<{ name: string; why: string; server?: true }> = [];
     if (!carriesAttachments(change.path)) return { named, problems };
-    const used = await deps.attachments(change.path);
+    const used = await deps.attachments(change.path, query);
     deps.attachmentTold?.(change.path, toldOf(used));
     for (const attachment of used) {
       if ("skipped" in attachment) continue;
@@ -335,8 +335,8 @@ export class ChangesFlows {
     return { named, problems };
   }
 
-  private async sendAttachmentsAlone(row: FileRow, deps: FlowDeps, onlyDue = false): Promise<Sent | null> {
-    const picked = await this.nameAttachments(row, deps);
+  private async sendAttachmentsAlone(row: FileRow, deps: FlowDeps, onlyDue = false, query?: AttachmentQuery): Promise<Sent | null> {
+    const picked = await this.nameAttachments(row, deps, query);
     const { problems } = picked;
     const named = onlyDue ? picked.named.filter((attachment) => deps.attachmentHeld?.(attachment.repoPath, attachment.sha) !== true) : picked.named;
     for (const attachment of named) {
@@ -363,7 +363,7 @@ export class ChangesFlows {
   async sendLiveFiles(path: string): Promise<void> {
     const doc = this.deps.documentFor(path);
     if (doc === null) return;
-    await this.sendAttachmentsAlone({ doc, change: { path }, review: null }, this.deps, true);
+    await this.sendAttachmentsAlone({ doc, change: { path }, review: null }, this.deps, true, { onlyMine: true });
   }
 
   private async saveToReview(row: ChangeRow, step: { text: string; body: string; there: BranchHead | undefined; main: MainFile; merged: boolean; levelledWith: string | null; options: SendOptions }): Promise<Sent | Behind> {
@@ -372,7 +372,12 @@ export class ChangesFlows {
     const { text, body, there, main, merged, levelledWith, options } = step;
     const expectMain = main.kind === "file" ? main.sha : null;
     const lenient = step.options.auto !== undefined;
-    const { named, problems } = await this.nameAttachments(row, deps);
+    const automatic = lenient || step.options.quiet === true;
+    const baselines: string[] = [];
+    if (main.kind === "file") baselines.push(main.text);
+    if (there !== undefined) baselines.push(there.text);
+    const branch = there !== undefined ? null : (options.branch ?? row.review?.reviewBranch ?? null);
+    const { named, problems } = await this.nameAttachments(row, deps, automatic ? { onlyMine: true, baselines, ...(branch !== null ? { branch } : {}) } : undefined);
     const probe = change.kind !== "new" || Boolean(row.review?.reviewBranch);
     const carried = probe ? new Set<NamedAttachment>() : attachmentsToCarry(named);
     const like = main.kind === "file" ? main.text : options.toReview ? there?.text : undefined;
@@ -467,10 +472,12 @@ export class ChangesFlows {
     return null;
   }
 
-  private async alreadyThere(doc: DocumentRef, existing: NonNullable<Awaited<ReturnType<ReviewApi["status"]>>>, text: string): Promise<Sent> {
+  private async alreadyThere(path: string, doc: DocumentRef, existing: NonNullable<Awaited<ReturnType<ReviewApi["status"]>>>, text: string, memory: SentMemory = this.memory): Promise<Sent> {
     const holds = await reviewHolds(this.back, doc, text, existing);
     if (holds === null) return { ok: false, unreadable: true, message: UNREADABLE(noteName(doc.path)) };
-    return holds ? { ok: true, expectMain: null } : { ok: false, held: true };
+    if (!holds) return { ok: false, held: true };
+    await memory.accepted(path, text, text, null, { pr: existing.pr });
+    return { ok: true, expectMain: null };
   }
 
   private get back(): ReadBackDeps {
@@ -492,7 +499,7 @@ export class ChangesFlows {
     if (quiet) {
       const text = await this.deps.readText(change.path);
       const existing = text === null ? null : await this.deps.review.status(doc);
-      if (existing !== null && text !== null && reviewIsOpen(existing)) return this.alreadyThere(doc, existing, text);
+      if (existing !== null && text !== null && reviewIsOpen(existing)) return this.alreadyThere(change.path, doc, existing, text);
     }
     const from = this.deps.documentFor(fromPath);
     if (!from) return { ok: false, message: COULDNT_FINISH };
@@ -502,7 +509,10 @@ export class ChangesFlows {
     if (old.sha !== change.sha) return { ok: false, decide: true, message: `${noteName(fromPath)} changed on GitHub, so it wasn't renamed. Nothing was lost.` };
     if (target.kind === "file") return { ok: false, decide: true, message: `${noteName(change.path)} already exists on GitHub, so ${noteName(fromPath)} wasn't renamed to it.` };
     const renamed = await this.deps.review.rename(from, doc.path, old.sha);
-    if (renamed.ok) return { ok: true, expectMain: null };
+    if (renamed.ok) {
+      await this.memory.accepted(change.path, old.text, old.text, null, renamed.body);
+      return { ok: true, expectMain: null };
+    }
     const transient = transientFailure(renamed, COULDNT_FINISH);
     if (transient !== null) return transient;
     if (isDenied(renamed)) return { ok: false, message: this.refusal(renamed, doc, COULDNT_FINISH), decide: true };

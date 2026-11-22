@@ -20,6 +20,7 @@ export interface OnboardSetupDeps {
   binary?: Pick<SpecgitBinaryFetch, "uploadVaultPack">;
   signedIn: () => boolean;
   signIn: (options?: { install?: boolean }) => Promise<void>;
+  isWaiting?: () => boolean;
   onAuth: (listener: (event: AuthEvent) => void) => () => void;
   apply: (mapping: { repo: string; folder: string }) => Promise<void>;
   repoChosen: () => boolean;
@@ -73,15 +74,23 @@ export function setUpOnboard(plugin: Plugin, deps: OnboardSetupDeps): VaultOnboa
     signedIn: deps.signedIn,
     signIn: (options) =>
       new Promise((resolve) => {
+        let settled = false;
+        const finish = (outcome: "signed_in" | "unfinished"): void => {
+          if (settled) return;
+          settled = true;
+          stop();
+          resolve(outcome);
+        };
         const stop = deps.onAuth((event) => {
           if (event.kind === "started") return;
-          stop();
-          resolve(event.kind === "signed_in" ? "signed_in" : "unfinished");
+          finish(event.kind === "signed_in" ? "signed_in" : "unfinished");
         });
-        deps.signIn(options).catch(() => {
-          stop();
-          resolve("unfinished");
-        });
+        deps.signIn(options).then(
+          () => {
+            if (deps.isWaiting && !deps.isWaiting() && !deps.signedIn()) finish("unfinished");
+          },
+          () => finish("unfinished"),
+        );
       }),
     call,
     plan: async () => planVault(reads.listed(), await reads.config(), reads.configDir, await reads.ownGitignore()),
@@ -95,6 +104,7 @@ export function setUpOnboard(plugin: Plugin, deps: OnboardSetupDeps): VaultOnboa
         now: Date.now,
         isCurrent: () => control.isCurrent(),
         progress: (state) => control.progress(state),
+        ...(control.expectPrivate !== undefined ? { expectPrivate: control.expectPrivate } : {}),
       }).run(repo),
     record: new UploadRecords({ load: (key) => app.loadLocalStorage(key) as unknown, save: (key, value) => app.saveLocalStorage(key, value) }),
     openUrl: (url) => void window.open(url),

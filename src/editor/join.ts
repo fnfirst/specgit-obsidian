@@ -105,7 +105,7 @@ export class Join {
     const roomText = toLf(room.text.toJSON());
     if (tooLarge(editor) || tooLarge(roomText)) return { kind: "block", why: TOO_LARGE_MESSAGE };
     if (room.readOnly && editor !== "" && roomIsUnwritten(roomText, editor)) return { kind: "block", why: SAID.emptyRoom };
-    const meeting = { editor, room: roomText, base: apart.base, emptied: editor === "" && !!this.letOutWith, git: this.git, baseIsGit: apart.fromGit, readOnly: room.readOnly };
+    const meeting = { editor, room: roomText, base: apart.base, emptied: editor === "" && !!this.letOutWith, git: this.git, baseIsGit: apart.fromGit, readOnly: room.readOnly, source: "room" as const };
     const joined = reconcile(meeting, new Budget(MERGE_MS));
     switch (joined.kind) {
       case "needs-git": {

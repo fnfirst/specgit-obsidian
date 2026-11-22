@@ -1,6 +1,77 @@
+import type { ComponentChildren } from "preact";
 import type { Shown } from "../disk/regions";
 import type { WordPart } from "../disk/word-diff";
 import { MERGE } from "../shared/review-flow/merge-copy";
+
+export interface ReviewShellProps {
+  intro?: string | null;
+  told?: string | null;
+  clean?: { title: string; body: string } | null;
+  total: number;
+  made: number;
+  complete: boolean;
+  keeps: string;
+  onPickAll?: (side: "ours" | "theirs") => void;
+  extraProgress?: ComponentChildren;
+  error: string | null;
+  onCancel: () => void;
+  onApply: () => void;
+  children: ComponentChildren;
+  afterBody?: ComponentChildren;
+}
+
+export function ReviewShell(props: ReviewShellProps) {
+  return (
+    <div class="specgit-review">
+      {props.intro && <p class="specgit-review-intro">{props.intro}</p>}
+      {props.told && (
+        <p class="specgit-review-told" role="status">
+          {props.told}
+        </p>
+      )}
+      {props.clean && (
+        <p class="specgit-review-clean">
+          <strong>{props.clean.title}.</strong> {props.clean.body}
+        </p>
+      )}
+      <div class="specgit-review-body">{props.children}</div>
+      {props.afterBody}
+      <footer class="specgit-review-footer">
+        {props.total > 0 && (
+          <div class="specgit-review-progress">
+            <span class={`specgit-review-count${props.complete ? " is-done" : ""}`} role="status">
+              {MERGE.resolved(props.made, props.total)}
+            </span>
+            {props.total > 1 && props.onPickAll && (
+              <>
+                <button type="button" class="specgit-button" onClick={() => props.onPickAll!("ours")}>
+                  {MERGE.keepAll("ours", props.keeps)}
+                </button>
+                <button type="button" class="specgit-button" onClick={() => props.onPickAll!("theirs")}>
+                  {MERGE.keepAll("theirs", props.keeps)}
+                </button>
+              </>
+            )}
+            {props.extraProgress}
+          </div>
+        )}
+        {props.error !== null && (
+          <p class="specgit-review-error" role="alert">
+            {props.error}
+          </p>
+        )}
+        <div class="specgit-review-actions">
+          <button type="button" class="specgit-button" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button type="button" class="specgit-button is-primary" disabled={!props.complete} onClick={props.onApply}>
+            Apply
+          </button>
+        </div>
+      </footer>
+    </div>
+  );
+}
 
 export function Unchanged({ text }: { text: string }) {
   const lines = text.split("\n").filter((line) => line.trim() !== "");

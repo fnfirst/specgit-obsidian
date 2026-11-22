@@ -13,7 +13,8 @@ import { joinFailedWords } from "../status";
 import type { Room } from "../room/room";
 import type { RoomSteps } from "../token-source";
 import type { Stop } from "../room/transport";
-import { Binding, fromRoom } from "./binding";
+import { fileAttachmentLinks } from "../changes/attachment-links";
+import { addedAttachmentLinks, Binding, fromRoom, type LocalLinkSink } from "./binding";
 import { DELETED_WORDS } from "../deleted-words";
 import { Join, type Outcome, TOO_LARGE_MESSAGE } from "./join";
 import { isNoteEditor } from "./kind";
@@ -131,8 +132,15 @@ export class NoteEditor implements PluginValue {
     if (update.docChanged) {
       this.ownWrites.remember(update.state.doc);
       this.textVersion += 1;
-      if (!this.binding && update.transactions.some((tr) => tr.docChanged && tr.annotation(fromRoom) === undefined && !tr.isUserEvent("set"))) {
-        this.locallyEdited = true;
+      if (!this.binding) {
+        for (const tr of update.transactions) {
+          if (!tr.docChanged || tr.annotation(fromRoom) !== undefined || tr.isUserEvent("set")) continue;
+          this.locallyEdited = true;
+          if (this.services.ownLinks && this.path !== "") {
+            const added = addedAttachmentLinks(this.path, tr);
+            if (added.length > 0) this.services.ownLinks.added(this.path, added);
+          }
+        }
       }
     }
     this.binding?.update(update);
@@ -435,7 +443,8 @@ export class NoteEditor implements PluginValue {
       recorded: null,
     };
     this.locallyEdited = false;
-    const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), text);
+    this.seedLinks(before, roomBefore, base, git, text);
+    const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), text, this.linkSink());
     this.binding = binding;
     this.join.bound();
     if (this.answered !== null) this.services.ownRestarts.settle(this.answered.key, this.answered.steps, true);
@@ -510,7 +519,9 @@ export class NoteEditor implements PluginValue {
       const base = ancestor !== null && (ancestor !== roomText || this.locallyEdited) ? ancestor : null;
       const merged = !room.readOnly && base !== null ? mergeRegions(base, followerText, roomText, new Budget(250)) : null;
       if (merged !== null && conflictsIn(merged) === 0) {
-        const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), theirsStanding(merged));
+        const kept = theirsStanding(merged);
+        this.seedLinks(followerText, roomText, base, undefined, kept);
+        const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), kept, this.linkSink());
         this.binding = binding;
         this.locallyEdited = false;
         this.join.bound();
@@ -519,7 +530,7 @@ export class NoteEditor implements PluginValue {
       }
       this.services.notify(SAID.followerReplaced, this.path);
     }
-    const binding = Binding.follow(this.view, room, () => later(() => this.lost(binding)));
+    const binding = Binding.follow(this.view, room, () => later(() => this.lost(binding)), this.linkSink());
     this.binding = binding;
     this.locallyEdited = false;
     this.join.bound();
@@ -594,6 +605,33 @@ export class NoteEditor implements PluginValue {
     }
   }
 
+  private linkSink(): LocalLinkSink | undefined {
+    const ownLinks = this.services.ownLinks;
+    if (!ownLinks) return undefined;
+    const currentPath = (): string => this.path;
+    return {
+      get path() {
+        return currentPath();
+      },
+      added: (links) => ownLinks.added(currentPath(), links),
+    };
+  }
+
+  private seedLinks(before: string, roomBefore: string, base: string | null, git: string | null | undefined, kept: string): void {
+    const ownLinks = this.services.ownLinks;
+    if (!ownLinks || this.path === "") return;
+    const local = fileAttachmentLinks(this.path, before);
+    if (local.length === 0) return;
+    const inKept = new Set(fileAttachmentLinks(this.path, kept));
+    const known = new Set(fileAttachmentLinks(this.path, roomBefore));
+    if (base !== null) for (const link of fileAttachmentLinks(this.path, base)) known.add(link);
+    if (git !== undefined && git !== null) for (const link of fileAttachmentLinks(this.path, git)) known.add(link);
+    const stored = this.services.bases.read(this.path);
+    if (stored.status === "found") for (const link of fileAttachmentLinks(this.path, stored.base.text)) known.add(link);
+    const authored = local.filter((link) => inKept.has(link) && !known.has(link));
+    if (authored.length > 0) ownLinks.added(this.path, authored);
+  }
+
   private renamed(from: string, to: string): void {
     if (from === this.path) this.placeAt(to);
   }
@@ -606,19 +644,37 @@ export class NoteEditor implements PluginValue {
       this.registry.move(from, to);
       this.path = to;
       this.services.bases.move(from, to);
+      this.services.ownLinks?.moved(from, to);
       this.services.report(from, null);
       this.report();
       return;
     }
     const old = this.ref;
     this.leave();
-    this.locallyEdited = false;
-    this.join.forget();
-    this.answered = null;
+    this.resetDocument();
     if (old) this.services.connections.move(old, next);
+    if (from !== to) this.services.ownLinks?.moved(from, to);
     this.path = to;
     this.moveTo("off");
     if (next) this.enter(next);
+  }
+
+  private resetDocument(): void {
+    this.locallyEdited = false;
+    this.takenText = null;
+    this.refusedTold = false;
+    this.join.forget();
+    this.answered = null;
+    if (!this.mayOnlyRead && !this.documentDeleted) return;
+    const clearReader = this.mayOnlyRead;
+    const clearDeleted = this.documentDeleted;
+    this.mayOnlyRead = false;
+    this.documentDeleted = false;
+    later(() => {
+      if (this.destroyed) return;
+      const effects = [...(clearReader ? [setReader.of(this.mayOnlyRead)] : []), ...(clearDeleted ? [setDeleted.of(this.documentDeleted)] : [])];
+      this.view.dispatch({ effects });
+    });
   }
 
   private deleted(path: string): void {
@@ -626,6 +682,7 @@ export class NoteEditor implements PluginValue {
     const old = this.ref;
     this.leave();
     if (old) this.services.connections.forget(old);
+    this.services.ownLinks?.forget(path);
     this.moveTo("off");
   }
 

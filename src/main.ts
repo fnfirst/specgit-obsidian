@@ -8,6 +8,7 @@ import { Board } from "./board";
 import { SpecgitApi } from "./api";
 import { obsidianDialogs } from "./changes/dialogs";
 import { listRepository } from "./changes/mirror-listing";
+import { OwnLinks } from "./changes/own-links";
 import { setUpChanges } from "./changes/setup";
 import { setUpComments } from "./comments/setup";
 import { setUpEvents } from "./events/setup";
@@ -37,9 +38,10 @@ import { setUpReport } from "./report/setup";
 import { OwnRestarts } from "./room/own-restarts";
 import { RoomPool } from "./room/pool";
 import { hocuspocusTransport } from "./room/transport";
-import { DEFAULT_SETTINGS, DeviceSettings, identityFrom, readSettings, type Settings, type SettingsHost, SpecgitSettingTab, withoutDeviceSettings } from "./settings";
+import { DEFAULT_SETTINGS, DeviceSettings, identityFrom, readSettings, sameStayPlace, type Settings, type SettingsHost, SpecgitSettingTab, type StayPlace, stayPlaceOf, withoutDeviceSettings } from "./settings";
 import { Signal } from "./signal";
 import { StatusBoard, statusText, statusTip, wordFor } from "./status";
+import { customServerQuestion, STAY_PAUSED_NOTICE } from "./stay/words";
 
 const DISCONNECTED_KEY = "specgit-disconnected";
 
@@ -53,10 +55,35 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
   override async onload(): Promise<void> {
     this.device = new DeviceSettings({ load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) });
     this.config = { ...readSettings(await this.loadData()), ...this.device.read() };
+    let stayPaused = false;
+    if (this.config.stayConnected) {
+      const current = stayPlaceOf(this.config);
+      const placed = this.device.readStayPlace();
+      if (placed === null) {
+        if (isRepoName(this.config.repo)) this.device.writeStayPlace(current);
+      } else if (!sameStayPlace(placed, current)) {
+        this.config.stayConnected = false;
+        this.device.write(this.config);
+        stayPaused = true;
+      }
+    }
     registerMark();
+    if (stayPaused) showNotice(STAY_PAUSED_NOTICE, true);
 
     const ownRestarts = new OwnRestarts(undefined, { load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) });
-    const { auth, tokens, gitCopy, roomPeople, binary, signIn } = setUpAuth(this, { server: this.config.server, pendingSteps: (doc) => ownRestarts.asking(docKey(doc)) });
+    const ownLinks = new OwnLinks();
+    let askCustomServer: ((host: string) => Promise<boolean>) | null = null;
+    const { auth, tokens, gitCopy, roomPeople, binary, signIn } = setUpAuth(this, {
+      server: this.config.server,
+      pendingSteps: (doc) => ownRestarts.asking(docKey(doc)),
+      confirmServer: async (host) => {
+        if (this.device.isTrustedServer(host)) return true;
+        if (!askCustomServer) return false;
+        const ok = await askCustomServer(host);
+        if (ok) this.device.trustServer(host);
+        return ok;
+      },
+    });
     addAuthCommands(this, { auth, signIn });
     const account = new SpecgitAccount(auth, signIn, this);
     this.account = account;
@@ -145,6 +172,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         gitCopy: (doc) => gitCopy.read(doc),
         gitBases,
         ownRestarts,
+        ownLinks,
         ...disk,
       }),
     );
@@ -166,12 +194,22 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     });
     const listing = (repo: string) => listRepository(api, repo, (ms) => new Promise((resume) => window.setTimeout(resume, ms)));
     const dialogs = obsidianDialogs(this.app, (title, description) => report.openForAlert(title, description));
-    const apply = async (mapping: { repo: string; folder: string }): Promise<void> => {
+    askCustomServer = (host) => dialogs.confirm({ title: "Sign in", description: customServerQuestion(host), confirmLabel: "Sign in", cancelLabel: "Cancel" });
+    const apply = async (mapping: { repo: string; folder: string }, options?: { fromLink?: boolean }): Promise<void> => {
       const before = this.config.repo;
-      await this.applyMapping(mapping);
+      await this.applyMapping(mapping, options);
       if (mapping.repo !== before) void checkConnected();
     };
-    const onboarding = setUpOnboard(this, { api, binary, signedIn: () => auth.isSignedIn(), signIn, onAuth: (listener) => auth.onChange(listener), apply, repoChosen: () => isRepoName(this.config.repo) });
+    const onboarding = setUpOnboard(this, {
+      api,
+      binary,
+      signedIn: () => auth.isSignedIn(),
+      signIn,
+      isWaiting: () => auth.isWaiting(),
+      onAuth: (listener) => auth.onChange(listener),
+      apply,
+      repoChosen: () => isRepoName(this.config.repo),
+    });
     const picker = setUpPick(this, {
       api,
       dialogs,
@@ -258,6 +296,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       copyIn: (files, skipped) => this.stay?.copyIn(files, skipped) ?? Promise.resolve(),
       bringInNewer: () => this.stay?.bringInNewer() ?? Promise.resolve({ brought: 0, skipped: 0 }),
       bringInDraft: (path) => this.stay?.bringInDraft(path) ?? Promise.resolve({ kind: "none" as const }),
+      ownLinks,
     });
     comments.env.offline = { is: () => changes.model.offline(), subscribe: (listener) => changes.model.subscribe(listener) };
     events.onEvent((event) => {
@@ -390,25 +429,44 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
   async setStayConnected(on: boolean): Promise<void> {
     this.config.stayConnected = on;
     this.config.stayOffered = true;
-    await this.saveConfig();
+    await this.saveConfig(on && isRepoName(this.config.repo) ? { stayPlace: stayPlaceOf(this.config) } : undefined);
+  }
+
+  recordStayPlace(): void {
+    if (this.config.stayConnected && isRepoName(this.config.repo)) this.device.writeStayPlace(stayPlaceOf(this.config));
   }
 
   onSaved(listener: () => void): () => void {
     return this.settingsSaved.subscribe(listener);
   }
 
-  async saveConfig(): Promise<void> {
+  async saveConfig(deviceOptions?: { stayPlace?: StayPlace | null }): Promise<void> {
     await this.saveData(withoutDeviceSettings(this.config));
-    this.device.write(this.config);
+    this.device.write(this.config, deviceOptions);
     this.settingsSaved.emit();
   }
 
-  private async applyMapping(mapping: { repo: string; folder: string }): Promise<void> {
+  private async applyMapping(mapping: { repo: string; folder: string }, options?: { fromLink?: boolean }): Promise<void> {
     const before = this.config.repo;
     this.config.repo = mapping.repo;
     this.config.folder = mapping.folder;
-    await this.saveConfig();
-    if (mapping.repo !== before) this.linked();
+    const nextPlace = stayPlaceOf(this.config);
+    let pausedFromLink = false;
+    let deviceOptions: { stayPlace?: StayPlace | null } | undefined;
+    if (options?.fromLink) {
+      if (this.config.stayConnected) {
+        const placed = this.device.readStayPlace();
+        if (placed === null || !sameStayPlace(placed, nextPlace)) {
+          this.config.stayConnected = false;
+          pausedFromLink = true;
+        }
+      }
+    } else if (this.config.stayConnected && isRepoName(this.config.repo)) {
+      deviceOptions = { stayPlace: nextPlace };
+    }
+    await this.saveConfig(deviceOptions);
+    if (pausedFromLink) showNotice(STAY_PAUSED_NOTICE, true);
+    else if (mapping.repo !== before) this.linked();
   }
 
   linked(): void {

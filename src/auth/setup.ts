@@ -2,7 +2,7 @@ import { type App, Notice, type Plugin } from "obsidian";
 import { randomToken } from "./pkce";
 import type { DocumentRef } from "../mapping";
 import type { AskedStep } from "../token-source";
-import { AUTH_ACTION, DEFAULT_SERVER } from "./config";
+import { AUTH_ACTION, DEFAULT_SERVER, isDefaultServer, serverHost } from "./config";
 import { SpecgitBinaryFetch } from "./binary-fetch";
 import { SIGNED_OUT_MESSAGE } from "./errors";
 import { SpecgitGitCopy } from "./git-copy";
@@ -27,6 +27,7 @@ export interface AuthSetupOptions {
   notify?: (message: string) => void;
   notifyUntilDismissed?: (message: string) => void;
   pendingSteps?: (doc: DocumentRef) => readonly AskedStep[];
+  confirmServer?: (host: string) => Promise<boolean>;
 }
 
 export const SIGN_IN_NOT_KEPT_NOTICE =
@@ -88,11 +89,13 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
     modal = null;
   };
 
+  const target = isDefaultServer(server) ? "specgit" : serverHost(server);
+
   const heard = (event: AuthEvent): void => {
     switch (event.kind) {
       case "signed_in":
         closeModal();
-        notify("Signed in to specgit.");
+        notify(`Signed in to ${target}.`);
         break;
       case "declined":
         closeModal();
@@ -103,7 +106,7 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
         notify(event.error.message);
         break;
       case "signed_out":
-        notify(event.reason === "chosen" ? "Signed out of specgit." : SIGNED_OUT_MESSAGE);
+        notify(event.reason === "chosen" ? `Signed out of ${target}.` : SIGNED_OUT_MESSAGE);
         break;
       case "started":
         break;
@@ -114,9 +117,10 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
 
   plugin.registerObsidianProtocolHandler(AUTH_ACTION, (params) => auth.handleLink(params));
 
-  const signIn = async (options: { install?: boolean } = {}): Promise<void> => {
+  const signIn = async (signInOptions: { install?: boolean } = {}): Promise<void> => {
+    if (!isDefaultServer(server) && options.confirmServer && !(await options.confirmServer(serverHost(server)))) return;
     closeModal();
-    await auth.signIn(options);
+    await auth.signIn(signInOptions);
     modal = new PasteCodeModal(app, (code) => auth.completeWithCode(code), () => void auth.reopenBrowser(), { signInAgain: () => void signIn() });
     modal.open();
   };

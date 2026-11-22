@@ -1,8 +1,11 @@
 import { type App, type DataAdapter, requireApiVersion } from "obsidian";
 import { attachmentMove } from "../changes/attachment-memory";
 import { gitBlobSha, gitBlobShaOfStream, readStreamBounded, StreamingSha1 } from "../changes/blob-sha";
+import { isVaultTarget } from "../mapping";
 import { MAX_ATTACHMENT_BYTES } from "../shared/review-flow";
-import { guardedBinaryCreate } from "./guarded-vault";
+import { guardedBinaryCreate, hasVaultCaseCollision } from "./guarded-vault";
+
+const configDirOf = (app: App): string => (app.vault as { configDir?: string }).configDir ?? "";
 
 export const WRITE_CHUNK_BYTES = 2 * 1024 * 1024;
 
@@ -15,6 +18,7 @@ export type StreamReplaceResult = { outcome: "replaced"; sha: string } | { outco
 export type CommitScope = <T>(run: () => Promise<T>) => Promise<T>;
 
 export interface StreamingVaultPorts {
+  configDir?: string;
   exists(path: string): Promise<boolean> | boolean;
   ensureFolder(path: string): Promise<void>;
   writeBinary(path: string, data: ArrayBuffer): Promise<void>;
@@ -158,6 +162,10 @@ export async function createBinaryFromStream(
   maxBytes = MAX_ATTACHMENT_BYTES,
   commit: CommitScope = (run) => run(),
 ): Promise<StreamCreateResult> {
+  if (!isVaultTarget(path, ports.configDir)) {
+    await stream.cancel().catch(() => undefined);
+    return { status: "failed" };
+  }
   if (await ports.exists(path)) {
     await stream.cancel().catch(() => undefined);
     return { status: "exists" };
@@ -196,6 +204,10 @@ export async function replaceBinaryFromStream(
   maxBytes = MAX_ATTACHMENT_BYTES,
   commit: CommitScope = (run) => run(),
 ): Promise<StreamReplaceResult> {
+  if (!isVaultTarget(path, ports.configDir)) {
+    await stream.cancel().catch(() => undefined);
+    return { outcome: "skipped" };
+  }
   if (!ports.appendBinary) {
     const got = await readStreamBounded(stream, maxBytes, options.size);
     if (!got.ok) return { outcome: got.outage ? "outage" : "skipped" };
@@ -316,8 +328,10 @@ function obsidianStreamingPorts(app: App): StreamingVaultPorts {
   const canAppend = requireApiVersion("1.12.3") && adapter !== undefined && typeof adapter.appendBinary === "function";
   const binaryCreate = guardedBinaryCreate(app);
   return {
+    configDir: configDirOf(app),
     exists: async (path) => {
       if (vault.getAbstractFileByPath(path) !== null) return true;
+      if (hasVaultCaseCollision(vault, path)) return true;
       if (!adapter || typeof adapter.exists !== "function") return false;
       try {
         return await adapter.exists(path);
@@ -378,12 +392,24 @@ function obsidianStreamingPorts(app: App): StreamingVaultPorts {
 
 export function guardedBinaryCreateStream(app: App): (path: string, stream: ReadableStream<Uint8Array>, size?: number, commit?: CommitScope) => Promise<StreamCreateResult> {
   const ports = obsidianStreamingPorts(app);
-  return (path, stream, size, commit) => createBinaryFromStream(ports, path, stream, size, MAX_ATTACHMENT_BYTES, commit);
+  return async (path, stream, size, commit) => {
+    if (!isVaultTarget(path, configDirOf(app))) {
+      await stream.cancel().catch(() => undefined);
+      return { status: "failed" };
+    }
+    return createBinaryFromStream(ports, path, stream, size, MAX_ATTACHMENT_BYTES, commit);
+  };
 }
 
 export function replaceAttachmentStream(
   app: App,
 ): (path: string, stream: ReadableStream<Uint8Array>, options: { agreed: string; vaultSha: string; size?: number }, commit?: CommitScope) => Promise<StreamReplaceResult> {
   const ports = obsidianStreamingPorts(app);
-  return (path, stream, options, commit) => replaceBinaryFromStream(ports, path, stream, options, MAX_ATTACHMENT_BYTES, commit);
+  return async (path, stream, options, commit) => {
+    if (!isVaultTarget(path, configDirOf(app))) {
+      await stream.cancel().catch(() => undefined);
+      return { outcome: "skipped" };
+    }
+    return replaceBinaryFromStream(ports, path, stream, options, MAX_ATTACHMENT_BYTES, commit);
+  };
 }

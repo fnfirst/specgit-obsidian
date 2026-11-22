@@ -10,25 +10,42 @@ export interface CollectPorts {
   binary?: (file: { path: string; size: number }) => Promise<Blob | Uint8Array>;
   agreedOf(repoPath: string): string | undefined;
   publishedSha(vaultPath: string): string | null | undefined;
+  mine?: (link: string) => boolean;
 }
 
 export async function collectAttachments(ports: CollectPorts, notePath: string, text: string): Promise<Attachment[]> {
-  const found = new Map<string, Attachment>();
+  const targets = new Map<string, { target: { path: string; mtime: number; size: number }; mine: boolean }>();
   for (const link of fileAttachmentLinks(notePath, text)) {
     const target = ports.resolve(link, notePath);
-    if (!target || !isAttachmentPath(target.path) || found.has(target.path)) continue;
+    if (!target || !isAttachmentPath(target.path)) continue;
+    const isMine = ports.mine ? ports.mine(link) : true;
+    const known = targets.get(target.path);
+    if (known) {
+      if (isMine) known.mine = true;
+    } else {
+      targets.set(target.path, { target, mine: isMine });
+    }
+  }
+  const found: Attachment[] = [];
+  for (const { target, mine } of targets.values()) {
     const repoPath = ports.repoPathOf(target.path);
     if (repoPath === null) {
-      found.set(target.path, { repoPath: target.path, skipped: "outsideFolder" });
+      found.push({ repoPath: target.path, skipped: "outsideFolder" });
+      continue;
+    }
+    const agreed = ports.agreedOf(repoPath);
+    const published = ports.publishedSha(target.path);
+    if (!mine && agreed === undefined && (published === undefined || published === null)) {
+      found.push({ repoPath, skipped: "notMine" });
       continue;
     }
     if (target.size > MAX_ATTACHMENT_BYTES) {
-      found.set(target.path, { repoPath, skipped: "tooLarge" });
+      found.push({ repoPath, skipped: "tooLarge" });
       continue;
     }
     const sha = await ports.sha(target);
-    const expectSha = ports.agreedOf(repoPath) ?? ports.publishedSha(target.path);
-    found.set(target.path, {
+    const expectSha = agreed ?? published;
+    found.push({
       repoPath,
       sha,
       size: target.size,
@@ -37,5 +54,5 @@ export async function collectAttachments(ports: CollectPorts, notePath: string, 
       ...(expectSha === undefined ? {} : { expectSha }),
     });
   }
-  return [...found.values()];
+  return found;
 }

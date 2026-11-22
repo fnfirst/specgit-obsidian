@@ -1,16 +1,17 @@
-import { Component, MarkdownRenderer, Notice, Platform, type Plugin, type Editor, type MarkdownFileInfo, type MarkdownView } from "obsidian";
+import { Notice, Platform, type Plugin, type Editor, type MarkdownFileInfo, type MarkdownView } from "obsidian";
 import { MARK_ICON } from "../brand/mark";
 import { type Bearer } from "../auth/bearer";
 import { obsidianTransport } from "../auth/obsidian-transport";
 import type { Dialogs } from "../changes/flow-deps";
 import type { DocumentRef } from "../mapping";
-import { linkifyMentions, mediaAsWords, type PollSignals, type ThreadsStoreDeps } from "../shared/review-flow";
+import { type PollSignals, type ThreadsStoreDeps } from "../shared/review-flow";
 import type { StatusBoard } from "../status";
 import { CommentsApi } from "./api";
 import { CommentsHub } from "./hub";
 import { CommentMarks } from "./marks";
 import { commentableIn, startCommentOn } from "./commentable";
 import type { Span } from "./place";
+import { renderCommentBody } from "./render-body";
 import type { CommentsTabEnv } from "./tab";
 import { toolbarOffer, type ToolbarWorld } from "./toolbar";
 import { PLUGIN_COMMENT_WORDS } from "./words";
@@ -213,19 +214,7 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
 
   const env: CommentsTabEnv = {
     hub,
-    renderBody: (element, markdown) => {
-      const component = new Component();
-      component.load();
-      void MarkdownRenderer.render(app, linkifyMentions(mediaAsWords(markdown)), element, "", component).then(() => {
-        element.querySelectorAll("pre > code.language-suggestion").forEach((code) => {
-          const block = code.parentElement;
-          if (!block) return;
-          block.addClass("specgit-suggestion");
-          block.parentElement?.insertBefore(createEl("p", { cls: "specgit-suggestion-label", text: PLUGIN_COMMENT_WORDS.after }), block);
-        });
-      });
-      return () => component.unload();
-    },
+    renderBody: (element, markdown) => renderCommentBody(element, markdown, (url) => env.openUrl(url)),
     canApply: (path) => {
       const view = marks.editorOf(path);
       return !!view && !view.state.readOnly;

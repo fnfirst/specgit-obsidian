@@ -12,6 +12,7 @@ export interface OutboundInput {
   committed: ReadonlySet<string>;
   held: ReadonlySet<string>;
   kept: ReadonlySet<string>;
+  released?: ReadonlySet<string>;
   suspect(path: string): boolean;
   allowed(row: ChangeRow): boolean;
   settling?: boolean;
@@ -41,9 +42,10 @@ export function planOutbound(input: OutboundInput): OutboundPlan {
     const key = changeKey(row.change);
     return !input.baseline.has(key) && !input.held.has(key) && !(kind === "new" && input.kept.has(row.change.path)) && input.allowed(row) && input.settling !== true;
   });
+  const isReleased = (row: ChangeRow): boolean => input.released?.has(row.change.path) === true;
   const wantedAll = edits ? input.rows.filter((row) => isEdit(row, input.committed) && edits.own(row) && !edits.held(row) && input.allowed(row)) : [];
   const editsAtStart = input.editsAtStart ?? input.atStart;
-  const heldAtStart = editsAtStart ? wantedAll.filter((row) => edits?.typed?.(row) !== true && edits?.after?.(row) !== true) : [];
+  const heldAtStart = editsAtStart ? wantedAll.filter((row) => !isReleased(row) && edits?.typed?.(row) !== true && edits?.after?.(row) !== true) : [];
   const wanted = wantedAll.filter((row) => !heldAtStart.includes(row));
   const waits = edits ? wanted.map((row) => edits.wait(row)) : [];
   const ready = wanted.filter((_, at) => waits[at] === 0);
@@ -51,8 +53,10 @@ export function planOutbound(input: OutboundInput): OutboundPlan {
   const wait = later.length > 0 ? Math.min(...later) : null;
   const flagged = (row: ChangeRow, edit: boolean, start = false): OutboundPlan["hold"][number] => ({ key: changeKey(row.change), path: row.change.path, ...(edit ? { edit: true as const } : {}), ...(start ? { atStart: true as const } : {}) });
   const byList = (pairs: Array<{ row: ChangeRow; edit: boolean }>): Array<{ row: ChangeRow; edit: boolean }> => pairs.sort((a, b) => input.rows.indexOf(a.row) - input.rows.indexOf(b.row));
-  const atStart = byList([...(input.atStart ? created : []).map((row) => ({ row, edit: false })), ...heldAtStart.map((row) => ({ row, edit: true }))]).map(({ row, edit }) => flagged(row, edit, true));
-  const pending = byList([...(input.atStart ? [] : created).map((row) => ({ row, edit: false })), ...ready.map((row) => ({ row, edit: true }))]);
+  const atStartCreated = input.atStart ? created.filter((row) => !isReleased(row)) : [];
+  const pendingCreated = input.atStart ? created.filter((row) => isReleased(row)) : created;
+  const atStart = byList([...atStartCreated.map((row) => ({ row, edit: false })), ...heldAtStart.map((row) => ({ row, edit: true }))]).map(({ row, edit }) => flagged(row, edit, true));
+  const pending = byList([...pendingCreated.map((row) => ({ row, edit: false })), ...ready.map((row) => ({ row, edit: true }))]);
   const soonest = wait;
   if (pending.length > BURST_FILES) return { send: [], hold: [...atStart, ...pending.map(({ row, edit }) => flagged(row, edit))], burst: pending.length, wait: soonest };
   const hold: OutboundPlan["hold"] = [];

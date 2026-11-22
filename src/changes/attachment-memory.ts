@@ -11,7 +11,7 @@ export type Attachment =
       size?: number;
       expectSha?: string | null;
     }
-  | { repoPath: string; skipped: "tooLarge" | "outsideFolder" };
+  | { repoPath: string; skipped: "tooLarge" | "outsideFolder" | "notMine" };
 
 export const ATTACHMENT_LATER = "it could not be sent just now, and specgit will try again shortly";
 export const ATTACHMENT_NOT_SENT = "It could not be sent.";
@@ -89,7 +89,7 @@ export const ATTACHMENT_RECHECK_MS = 5 * 60_000;
 
 export function toldOf(attachments: readonly Attachment[]): string[] {
   const kinds = new Set(attachments.flatMap((one) => ("skipped" in one ? [one.skipped] : [])));
-  return (["tooLarge", "outsideFolder"] as const).filter((kind) => kinds.has(kind)).map((kind) => ATTACHMENT_WORDS[kind]);
+  return (["tooLarge", "outsideFolder", "notMine"] as const).filter((kind) => kinds.has(kind)).map((kind) => ATTACHMENT_WORDS[kind]);
 }
 
 export async function withBytes(attachments: readonly Attachment[]): Promise<{ attachments: Array<{ repoPath: string; base64: string }>; told: string[] }> {

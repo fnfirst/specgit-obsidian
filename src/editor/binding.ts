@@ -1,11 +1,46 @@
 import { Annotation, type ChangeSpec, Transaction } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import type * as Y from "yjs";
+import { fileAttachmentLinks } from "../changes/attachment-links";
 import { Budget, splices } from "../disk/diff";
 import { type Eol, eolOf, LineEndingMap, toLf } from "../disk/line-endings";
 import type { Splice } from "./splice";
 import { cellFocus, restoreCellFocus } from "./table-focus";
 import type { RoomUndo } from "./undo";
+
+export interface LocalLinkSink {
+  readonly path: string;
+  added(links: readonly string[]): void;
+}
+
+export function addedAttachmentLinks(path: string, transaction: Transaction): string[] {
+  let check = false;
+  const after = transaction.state.doc;
+  transaction.changes.iterChanges((_fromA, _toA, fromB, toB, inserted) => {
+    if (check) return;
+    if (inserted.length > 1) {
+      check = true;
+      return;
+    }
+    const text = inserted.sliceString(0);
+    if (text.includes("]") || text.includes(")")) {
+      check = true;
+      return;
+    }
+    const startLine = after.lineAt(fromB).number;
+    const endLine = after.lineAt(toB).number;
+    for (let n = startLine; n <= endLine; n++) {
+      const line = after.line(n).text;
+      if (line.includes("[[") || line.includes("](")) {
+        check = true;
+        return;
+      }
+    }
+  });
+  if (!check) return [];
+  const beforeLinks = new Set(fileAttachmentLinks(path, transaction.startState.doc.toString()));
+  return fileAttachmentLinks(path, after.toString()).filter((link) => !beforeLinks.has(link));
+}
 
 export const fromRoom = Annotation.define<true>();
 
@@ -74,11 +109,12 @@ export class Binding {
     private readonly room: BoundRoom,
     private readonly lost: () => void,
     private readonly lens: Lens,
+    private readonly links?: LocalLinkSink,
   ) {
     room.text.observe(this.onRoomChange);
   }
 
-  static bind(view: EditorView, room: BoundRoom, lost: () => void, note: string): Binding {
+  static bind(view: EditorView, room: BoundRoom, lost: () => void, note: string, links?: LocalLinkSink): Binding {
     const { text } = room;
     const lens = new Lens(text);
     const [inRoom, editor] = [lens.projected, view.state.doc.toString()];
@@ -91,11 +127,11 @@ export class Binding {
     }
     const toEditor = splices(editor, target, budget);
     if (toEditor.length > 0) view.dispatch({ changes: toEditor.map(({ from, to, insert }): ChangeSpec => ({ from, to, insert })), annotations: ROOM_CHANGE });
-    return new Binding(view, room, lost, lens);
+    return new Binding(view, room, lost, lens, links);
   }
 
-  static follow(view: EditorView, room: BoundRoom, lost: () => void): Binding {
-    return Binding.bind(view, room, lost, toLf(room.text.toJSON()));
+  static follow(view: EditorView, room: BoundRoom, lost: () => void, links?: LocalLinkSink): Binding {
+    return Binding.bind(view, room, lost, toLf(room.text.toJSON()), links);
   }
 
   update(update: ViewUpdate): void {
@@ -131,6 +167,10 @@ export class Binding {
       write(this.room.text, changes);
     }, this.room.origin);
     this.lens.changed(changes.map((change) => change.insert).join(""));
+    if (this.links) {
+      const added = addedAttachmentLinks(this.links.path, transaction);
+      if (added.length > 0) this.links.added(added);
+    }
   }
 
   private readonly onRoomChange = (event: Y.YTextEvent, transaction: Y.Transaction): void => {

@@ -43,8 +43,8 @@ export interface ThreadAnchorLines {
 }
 
 export interface NewThread {
-  lineStart: number;
-  lineEnd: number;
+  lineStart: number | null;
+  lineEnd: number | null;
   body: string;
   quotedText: string;
 }
@@ -104,6 +104,8 @@ interface Flight {
   intent: boolean;
   running: boolean;
   dirty: boolean;
+  confirmed?: { resolved: boolean; status: ThreadStatus | undefined };
+  done?: Promise<boolean>;
 }
 
 interface Core {
@@ -394,12 +396,15 @@ export class ThreadsStore {
 
   createThread = async (input: NewThread, ensureSaved?: () => Promise<void | ThreadAnchorLines>): Promise<AnchoredThreadView> => {
     const tempId = `temp:${this.now()}`;
+    const hasLines = input.lineStart != null && input.lineEnd != null;
     const optimistic: AnchoredThreadView = {
       id: tempId,
       resolved: false,
-      subjectType: "line",
-      reanchorStatus: "exact",
-      anchor: { lineStart: input.lineStart, lineEnd: input.lineEnd, quotedText: input.quotedText, exactText: input.quotedText },
+      subjectType: hasLines ? "line" : "file",
+      reanchorStatus: hasLines ? "exact" : "outdated",
+      anchor: hasLines
+        ? { lineStart: input.lineStart!, lineEnd: input.lineEnd!, quotedText: input.quotedText, exactText: input.quotedText }
+        : null,
       displayComments: [
         {
           id: `${tempId}:c`,
@@ -421,7 +426,18 @@ export class ThreadsStore {
           lineStart = revised.lineStart;
           lineEnd = revised.lineEnd;
           this.setThreads((threads) =>
-            threads.map((thread) => (thread.id === tempId && thread.anchor ? { ...thread, anchor: { ...thread.anchor, lineStart, lineEnd } } : thread)),
+            threads.map((thread) =>
+              thread.id === tempId
+                ? {
+                    ...thread,
+                    subjectType: "line",
+                    reanchorStatus: "exact",
+                    anchor: thread.anchor
+                      ? { ...thread.anchor, lineStart: revised.lineStart, lineEnd: revised.lineEnd }
+                      : { lineStart: revised.lineStart, lineEnd: revised.lineEnd, quotedText: input.quotedText, exactText: input.quotedText },
+                  }
+                : thread,
+            ),
           );
         }
       }
@@ -538,9 +554,17 @@ export class ThreadsStore {
     return this.flights.get(this.current(threadId));
   }
 
-  resolve = (threadId: string, resolved: boolean): Promise<void> => {
+  resolve = (threadId: string, resolved: boolean): Promise<boolean> => {
     const id = this.current(threadId);
-    const flight = this.flightOf(id) ?? { id, intent: resolved, running: false, dirty: false };
+    const existing = this.flightOf(id);
+    const before = existing ? undefined : findConversation(this.core.threads, id);
+    const flight: Flight = existing ?? {
+      id,
+      intent: resolved,
+      running: false,
+      dirty: false,
+      confirmed: before ? { resolved: before.resolved, status: before.status } : undefined,
+    };
     flight.intent = resolved;
     flight.dirty = true;
     this.flights.set(flight.id, flight);
@@ -550,10 +574,10 @@ export class ThreadsStore {
       return threads.map((thread) => (thread === target ? { ...thread, resolved, status } : thread));
     });
     this.rememberIntent(id, resolved);
-    if (flight.running) return Promise.resolve();
+    if (flight.running) return flight.done ?? Promise.resolve(true);
 
     flight.running = true;
-    return (async () => {
+    const run = (async (): Promise<boolean> => {
       try {
         while (flight.dirty) {
           flight.dirty = false;
@@ -565,11 +589,23 @@ export class ThreadsStore {
           } catch {
             if (flight.intent !== intent) continue;
             this.forgetIntent(flight.id);
+            if (!flight.dirty) {
+              const reverted = flight.confirmed ?? { resolved: !intent, status: (!intent ? "resolved_current" : "open") as ThreadStatus };
+              this.setThreads((threads) => {
+                const target = findConversation(threads, this.current(flight.id));
+                return threads.map((thread) =>
+                  thread === target
+                    ? { ...thread, resolved: reverted.resolved, ...(reverted.status !== undefined ? { status: reverted.status } : {}) }
+                    : thread,
+                );
+              });
+            }
             void this.reload();
-            return;
+            return false;
           }
           if (flight.intent !== intent) continue;
           const landed: ThreadStatus = intent ? "resolved_current" : "open";
+          flight.confirmed = { resolved: intent, status: landed };
           this.setThreads((threads) => {
             const target = findConversation(threads, this.current(flight.id));
             return threads.map((thread) => (thread === target ? { ...thread, resolved: intent, status: landed } : thread));
@@ -577,12 +613,16 @@ export class ThreadsStore {
           this.rememberIntent(flight.id, intent);
           if (confirmed) this.absorb({ written: flight.id, answer: { thread: confirmed }, since });
         }
+        return true;
       } finally {
         flight.running = false;
+        flight.done = undefined;
         if (flight.dirty) void this.resolve(flight.id, flight.intent);
         else if (this.flights.get(flight.id) === flight) this.flights.delete(flight.id);
       }
     })();
+    flight.done = run;
+    return run;
   };
 
   resolveAllLocally(): AnchoredThreadView[] {

@@ -1,3 +1,4 @@
+import { ignoredBy } from "./ignore";
 import {
   VAULT_FILE_MAX_BYTES,
   VAULT_PACK_MAX_BYTES,
@@ -103,6 +104,7 @@ export function packBinaryParts(files: ReadonlyArray<{ path: string; size: numbe
 export interface VaultPlan {
   files: Array<{ path: string; size: number }>;
   tooLarge: string[];
+  ignored: number;
   notes: number;
   others: number;
   othersAndNotesBytes: number;
@@ -114,13 +116,19 @@ const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 
 
 export function planVault(listed: ReadonlyArray<{ path: string; size: number }>, config: ReadonlyArray<{ path: string; size: number }>, configDir: string, ownGitignore: string | null): VaultPlan {
   const gitignore = ownGitignore ?? gitignoreText(configDir);
+  const isIgnored = ownGitignore === null ? null : ignoredBy(ownGitignore);
   const files: VaultPlan["files"] = [];
   const tooLarge: string[] = [];
+  let ignored = 0;
   let notes = 0;
   let others = 0;
   let othersAndNotesBytes = 0;
   const keep = (file: { path: string; size: number }, counted: boolean): void => {
     if (file.path === ".gitignore" || !planRule(file.path, configDir)) return;
+    if (counted && isIgnored?.(file.path)) {
+      ignored++;
+      return;
+    }
     if (file.size > VAULT_FILE_MAX_BYTES) return void tooLarge.push(file.path);
     files.push(file);
     if (!counted) return;
@@ -133,5 +141,5 @@ export function planVault(listed: ReadonlyArray<{ path: string; size: number }>,
   files.push({ path: ".gitignore", size: new TextEncoder().encode(gitignore).length });
   files.sort((a, b) => byCodePoint(a.path, b.path));
   tooLarge.sort(byCodePoint);
-  return { files, tooLarge, notes, others, othersAndNotesBytes, totalBytes: files.reduce((sum, file) => sum + file.size, 0), gitignore };
+  return { files, tooLarge, ignored, notes, others, othersAndNotesBytes, totalBytes: files.reduce((sum, file) => sum + file.size, 0), gitignore };
 }

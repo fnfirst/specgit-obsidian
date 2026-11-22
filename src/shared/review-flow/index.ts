@@ -38,6 +38,7 @@ export * from "./status-list";
 export * from "./doc-set-words";
 export * from "./summary-line";
 export * from "./suggestion-block";
+export * from "./suggestion-retry";
 export * from "./threads";
 export * from "./timer";
 export * from "./threads-ledger";

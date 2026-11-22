@@ -32,6 +32,7 @@ export interface StatusDoc extends StatusPeople {
   hasChanges?: boolean;
   button?: StatusRowButton;
   hasReview?: boolean;
+  draft?: boolean;
   bringIn?: boolean;
   propose?: string;
   tipPeople?: readonly string[];
@@ -63,6 +64,7 @@ export interface StatusGroup extends StatusPeople {
   lane?: Lane;
   changed?: number;
   hasReview?: boolean;
+  draft?: boolean;
   openComments?: number;
   autoPublish?: boolean;
   ending?: boolean;
@@ -93,6 +95,8 @@ export interface StatusPinned extends StatusPeople {
   note?: string;
   groupId?: string;
   hasReview?: boolean;
+  draft?: boolean;
+  reviewMenu?: boolean;
   teammate?: boolean;
   nothingToSend?: boolean;
   publishable?: boolean;

@@ -18,6 +18,7 @@ import {
   FREE_IN_USE,
   GIVE_ACCESS,
   HIDE,
+  ignoredLine,
   KEEP_OPEN,
   LEAD,
   LOOK_AGAIN,
@@ -219,6 +220,7 @@ export class OnboardModal extends SpecgitModal {
       const points: Array<{ icon: string; text: string; skipped?: readonly string[] }> = [
         { icon: "file-text", text: filesLine(plan.notes, plan.others, plan.othersAndNotesBytes) },
         { icon: "settings", text: SETTINGS_LINE },
+        ...(plan.ignored > 0 ? [{ icon: "eye-off", text: ignoredLine(plan.ignored) }] : []),
         ...(plan.tooLarge.length > 0 ? [{ icon: "alert-triangle", text: tooLargeLine(plan.tooLarge.length), skipped: plan.tooLarge }] : []),
         ...(view.account?.freeInUse ? [{ icon: "info", text: FREE_IN_USE }] : []),
       ];

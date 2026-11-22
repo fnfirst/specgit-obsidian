@@ -10,9 +10,14 @@ export const GIT_PROVIDER = "github-app";
 
 export const NOTE_BRANCH = "main";
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
 export function isServerAddress(value: string): boolean {
   try {
-    return /^https?:$/.test(new URL(value).protocol);
+    const url = new URL(value);
+    if (url.protocol === "https:") return url.hostname !== "";
+    if (url.protocol === "http:") return LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+    return false;
   } catch {
     return false;
   }
@@ -20,6 +25,23 @@ export function isServerAddress(value: string): boolean {
 
 export function normalizeServer(server: string): string {
   return server.trim().replace(/\/+$/, "");
+}
+
+export function isDefaultServer(server: string): boolean {
+  try {
+    const url = new URL(server.trim());
+    return url.origin === DEFAULT_SERVER && (url.pathname === "" || url.pathname === "/");
+  } catch {
+    return normalizeServer(server).toLowerCase() === DEFAULT_SERVER;
+  }
+}
+
+export function serverHost(server: string): string {
+  try {
+    return new URL(server).host;
+  } catch {
+    return normalizeServer(server);
+  }
 }
 
 export function clientId(server: string): string {

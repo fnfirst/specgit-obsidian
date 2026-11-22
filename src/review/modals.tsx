@@ -3,9 +3,10 @@ import { render, type VNode } from "preact";
 import { SpecgitModal } from "../brand/modal";
 import type { Shown } from "../disk/regions";
 import type { ReviewRequest } from "../editor/services";
+import { CanvasConflictReview } from "./canvas-conflict-review";
 import { ChangesView } from "./changes-view";
 import { ConflictReview } from "./conflict-review";
-import { type ChangesContext, changesWords, MERGED_REVIEW } from "./words";
+import { type ChangesContext, changesWords, MERGED_BOARD, MERGED_REVIEW } from "./words";
 
 abstract class ScreenModal extends SpecgitModal {
   constructor(app: App, title: string) {
@@ -31,23 +32,44 @@ class ConflictModal extends ScreenModal {
     private readonly request: ReviewRequest,
     private readonly done: (text: string | null) => void,
   ) {
-    super(app, request.merged ? MERGED_REVIEW.title : `Choose what to keep in ${request.name}`);
+    super(
+      app,
+      request.kind === "canvas" && request.result.conflicts.length === 0
+        ? MERGED_BOARD.title
+        : request.kind === "text" && request.merged
+          ? MERGED_REVIEW.title
+          : `Choose what to keep in ${request.name}`,
+    );
   }
 
   protected screen(): VNode {
     const { request } = this;
+    const apply = (text: string): void => {
+      this.done(text);
+      this.close();
+    };
+    const cancel = (): void => this.close();
+    if (request.kind === "canvas") {
+      return (
+        <CanvasConflictReview
+          result={request.result}
+          fromBase={request.fromBase}
+          other={request.other}
+          apply={apply}
+          cancel={cancel}
+        />
+      );
+    }
     return (
       <ConflictReview
         regions={request.regions}
         merged={request.merged}
         fromBase={request.fromBase}
+        format={request.format}
         other={request.other}
         settle={request.settle}
-        apply={(text) => {
-          this.done(text);
-          this.close();
-        }}
-        cancel={() => this.close()}
+        apply={apply}
+        cancel={cancel}
       />
     );
   }

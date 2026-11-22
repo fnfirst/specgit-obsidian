@@ -60,6 +60,7 @@ export class FileCache {
   private removed = new Map<string, Gone>();
   private foreign = new Map<string, string>();
   private readonly copied = new Map<string, { sha: string; at: number }>();
+  private readonly activeScans = new Set<Set<string>>();
   private dirty = false;
 
   private readonly key: string;
@@ -134,69 +135,80 @@ export class FileCache {
     pause: () => Promise<void> = () => new Promise((resolve) => window.setTimeout(resolve, 0)),
     clock: () => number = () => performance.now(),
   ): Promise<Scanned> {
+    const scanDropped = new Set<string>();
     const next = new Map<string, CacheEntry>();
-    const stale: Listed[] = [];
-    for (const file of listed) {
-      const before = this.entries.get(file.path);
-      if (before && before.mtime === file.mtime && before.size === file.size && before.at - file.mtime > RACY_MS) next.set(file.path, before);
-      else stale.push(file);
-    }
-    let hashed = 0;
-    let at = 0;
-    let sliceStart = clock();
-    const work = async (): Promise<void> => {
-      while (at < stale.length) {
-        const file = stale[at++]!;
+    this.activeScans.add(scanDropped);
+    try {
+      const stale: Listed[] = [];
+      for (const file of listed) {
         const before = this.entries.get(file.path);
-        let bytes: ArrayBuffer;
-        try {
-          bytes = await read(file.path);
-        } catch {
-          if (before) next.set(file.path, before);
-          continue;
+        if (before && before.mtime === file.mtime && before.size === file.size && before.at - file.mtime > RACY_MS) next.set(file.path, before);
+        else stale.push(file);
+      }
+      let hashed = 0;
+      let at = 0;
+      let sliceStart = clock();
+      const work = async (): Promise<void> => {
+        while (at < stale.length) {
+          const file = stale[at++]!;
+          if (scanDropped.has(file.path)) continue;
+          let bytes: ArrayBuffer;
+          try {
+            bytes = await read(file.path);
+          } catch {
+            const before = this.entries.get(file.path);
+            if (before && !scanDropped.has(file.path)) next.set(file.path, before);
+            continue;
+          }
+          if (scanDropped.has(file.path)) continue;
+          const sha = await gitBlobSha(bytes);
+          if (scanDropped.has(file.path)) continue;
+          const before = this.entries.get(file.path);
+          hashed++;
+          const written = this.copied.get(file.path)?.sha;
+          this.copied.delete(file.path);
+          next.set(file.path, { mtime: file.mtime, size: file.size, sha, at: this.now(), base: before?.base ?? this.removed.get(file.path)?.base ?? (written === sha ? sha : null), ...sentOf(before), ...(before?.same && before.sha === sha ? { same: before.same, ...(before.sameBy ? { sameBy: before.sameBy } : {}) } : {}), ...(before?.differs && before.sha === sha ? { differs: before.differs } : {}) });
+          this.removed.delete(file.path);
+          if (clock() - sliceStart >= SLICE_MS && at < stale.length) {
+            await pause();
+            sliceStart = clock();
+          }
         }
-        const sha = await gitBlobSha(bytes);
-        hashed++;
-        const written = this.copied.get(file.path)?.sha;
-        this.copied.delete(file.path);
-        next.set(file.path, { mtime: file.mtime, size: file.size, sha, at: this.now(), base: before?.base ?? this.removed.get(file.path)?.base ?? (written === sha ? sha : null), ...sentOf(before), ...(before?.same && before.sha === sha ? { same: before.same, ...(before.sameBy ? { sameBy: before.sameBy } : {}) } : {}), ...(before?.differs && before.sha === sha ? { differs: before.differs } : {}) });
-        this.removed.delete(file.path);
-        if (clock() - sliceStart >= SLICE_MS && at < stale.length) {
-          await pause();
-          sliceStart = clock();
+      };
+      await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, stale.length) }, work));
+      const present = new Set<string>();
+      const files = new Map<string, CacheEntry>();
+      for (const file of listed) {
+        if (scanDropped.has(file.path)) continue;
+        present.add(file.path);
+        const entry = next.get(file.path);
+        if (!entry) continue;
+        const live = this.entries.get(file.path);
+        if (live && (live.base !== entry.base || live.sent !== entry.sent || live.sentTo !== entry.sentTo || live.agreed !== entry.agreed || live.sentCommit !== entry.sentCommit || live.sentAt !== entry.sentAt || (live.sha === entry.sha && (live.same !== entry.same || live.sameBy !== entry.sameBy || live.differs !== entry.differs)))) {
+          const { sent: _was, sentTo: _to, agreed: _agreed, sentCommit: _commit, sentAt: _at, same: _same, sameBy: _by, differs: _differs, ...rest } = entry;
+          files.set(file.path, { ...rest, base: live.base, ...sentOf(live), ...(live.same && live.sha === entry.sha ? { same: live.same, ...(live.sameBy ? { sameBy: live.sameBy } : {}) } : {}), ...(live.differs && live.sha === entry.sha ? { differs: live.differs } : {}) });
+        } else files.set(file.path, entry);
+      }
+      const gone: Gone[] = [];
+      for (const [path, entry] of this.entries) {
+        if (present.has(path) || scanDropped.has(path)) continue;
+        const lost = { path, sha: entry.sha, base: entry.base };
+        this.removed.set(path, lost);
+        gone.push(lost);
+      }
+      this.entries = files;
+      for (const [path, one] of this.copied) {
+        if (!present.has(path) && this.now() - one.at > COPIED_KEPT_MS) {
+          this.copied.delete(path);
+          this.dirty = true;
         }
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, stale.length) }, work));
-    const present = new Set<string>();
-    const files = new Map<string, CacheEntry>();
-    for (const file of listed) {
-      present.add(file.path);
-      const entry = next.get(file.path);
-      if (!entry) continue;
-      const live = this.entries.get(file.path);
-      if (live && (live.base !== entry.base || live.sent !== entry.sent || live.sentTo !== entry.sentTo || live.agreed !== entry.agreed || live.sentCommit !== entry.sentCommit || live.sentAt !== entry.sentAt || (live.sha === entry.sha && (live.same !== entry.same || live.sameBy !== entry.sameBy || live.differs !== entry.differs)))) {
-        const { sent: _was, sentTo: _to, agreed: _agreed, sentCommit: _commit, sentAt: _at, same: _same, sameBy: _by, differs: _differs, ...rest } = entry;
-        files.set(file.path, { ...rest, base: live.base, ...sentOf(live), ...(live.same && live.sha === entry.sha ? { same: live.same, ...(live.sameBy ? { sameBy: live.sameBy } : {}) } : {}), ...(live.differs && live.sha === entry.sha ? { differs: live.differs } : {}) });
-      } else files.set(file.path, entry);
+      this.dirty ||= hashed > 0 || gone.length > 0;
+      this.save();
+      return { files, gone, hashed };
+    } finally {
+      this.activeScans.delete(scanDropped);
     }
-    const gone: Gone[] = [];
-    for (const [path, entry] of this.entries) {
-      if (present.has(path)) continue;
-      const lost = { path, sha: entry.sha, base: entry.base };
-      this.removed.set(path, lost);
-      gone.push(lost);
-    }
-    this.entries = files;
-    for (const [path, one] of this.copied) {
-      if (!present.has(path) && this.now() - one.at > COPIED_KEPT_MS) {
-        this.copied.delete(path);
-        this.dirty = true;
-      }
-    }
-    this.dirty ||= hashed > 0 || gone.length > 0;
-    this.save();
-    return { files, gone, hashed };
   }
 
   copiedFrom(path: string, sha: string): void {
@@ -251,7 +263,15 @@ export class FileCache {
   }
 
   settled(path: string): void {
-    this.dirty ||= this.removed.delete(path);
+    this.dirty = this.removed.delete(path) || this.dirty;
     this.save();
+  }
+
+  dropped(path: string): void {
+    for (const scanDropped of this.activeScans) scanDropped.add(path);
+    const hadEntry = this.entries.delete(path);
+    const hadCopied = this.copied.delete(path);
+    if (hadEntry || hadCopied) this.dirty = true;
+    this.settled(path);
   }
 }

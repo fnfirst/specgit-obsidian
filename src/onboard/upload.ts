@@ -19,7 +19,7 @@ export type UploadProgress =
   | { kind: "waiting"; why: "slow" | "offline" }
   | { kind: "done"; repo: string; commit: string }
   | { kind: "stopped" }
-  | { kind: "failed"; why: "changed" | "gone" | "not_empty" | "failed" };
+  | { kind: "failed"; why: "changed" | "gone" | "not_empty" | "public" | "failed" };
 
 export interface UploadDeps {
   call(action: string, body: Record<string, unknown>): Promise<ApiAnswer>;
@@ -36,6 +36,7 @@ export interface UploadDeps {
   isCurrent(): boolean;
   progress(state: UploadProgress): void;
   configDir: string;
+  expectPrivate?: boolean;
 }
 
 const OFFLINE_WAITS_MS = [5_000, 15_000, 30_000, 60_000];
@@ -192,11 +193,12 @@ export class VaultUpload {
   }
 
   private async start(repo: string, plan: VaultPlan): Promise<Branch | "again" | "ended"> {
-    const asked = await this.request("start", { repo, gitignore: plan.gitignore });
+    const asked = await this.request("start", { repo, gitignore: plan.gitignore, ...(this.deps.expectPrivate === true ? { expectPrivate: true } : {}) });
     if (typeof asked === "string") return asked;
     const { answer } = asked;
     if (answer.status === 404) return this.end("gone");
     if (answer.code === "not_empty") return this.end("not_empty");
+    if (answer.code === "repo_public" || (answer.status === 200 && this.deps.expectPrivate === true && answer.body?.private === false)) return this.end("public");
     const workHead = asString(answer.body?.workHead);
     const files = asFiles(answer.body?.files);
     if (answer.status !== 200 || workHead === null || files === null) return this.end("failed");

@@ -36,6 +36,12 @@ export interface Dialogs {
   pickReviewer(candidates: readonly Reviewer[], description: string): Promise<Reviewer | null>;
 }
 
+export interface AttachmentQuery {
+  onlyMine?: boolean;
+  baselines?: readonly string[];
+  branch?: string | null;
+}
+
 export interface FlowDeps {
   review: ReviewApi;
   model: ChangesModel;
@@ -58,7 +64,7 @@ export interface FlowDeps {
   pause?(ms: number): Promise<void>;
   gitBlob(doc: DocumentRef, sha: string): Promise<string | null>;
   chooseWhatToKeep(request: ReviewRequest): Promise<string | null>;
-  attachments(path: string): Promise<Attachment[]>;
+  attachments(path: string, query?: AttachmentQuery): Promise<Attachment[]>;
   attachmentAgreed?(repoPath: string, sha: string): void;
   bringFor?(path: string, text: string): Promise<void>;
   attachmentHeld?(repoPath: string, sha: string): boolean;

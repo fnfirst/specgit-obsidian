@@ -106,6 +106,7 @@ export function layoutOf(model: StatusPanelModel): Layout {
         lane: pinned.lane,
         hasChanges: pinned.hasChanges,
         hasReview: pinned.hasReview,
+        ...(pinned.draft ? { draft: true } : {}),
         teammate: pinned.teammate,
         openComments: pinned.openComments,
         reason: pinned.reason,

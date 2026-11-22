@@ -19,7 +19,7 @@ export interface PickerUi {
 export interface PickerDeps {
   ui: PickerUi;
   settings(): { repo: string; folder: string };
-  apply(mapping: { repo: string; folder: string }): Promise<void>;
+  apply(mapping: { repo: string; folder: string }, options?: { fromLink?: boolean }): Promise<void>;
   repoFiles(repo: string): Promise<string[] | null>;
   listing?(repo: string): Promise<{ commit: string | null; files: ReadonlyMap<string, string> } | null>;
   vaultPaths(): string[];
@@ -58,7 +58,7 @@ export class RepoPicker {
     await this.alone(async () => {
       if (repo === undefined || !isRepoName(repo)) return this.deps.notify(SETUP_BAD_LINK);
       if (!this.deps.signedIn()) return this.deps.notifyWithAction(SETUP_SIGN_IN, SIGN_IN, () => void this.deps.signIn());
-      if (await this.deps.ui.confirmSetup(repo)) await this.link(repo);
+      if (await this.deps.ui.confirmSetup(repo)) await this.link(repo, { fromLink: true });
     });
   }
 
@@ -75,14 +75,15 @@ export class RepoPicker {
     }
   }
 
-  private async link(repo: string): Promise<void> {
+  private async link(repo: string, options?: { fromLink?: boolean }): Promise<void> {
     const from = this.deps.settings().repo;
     const unsent = from !== repo && isRepoName(from) ? await this.deps.unsent() : 0;
     if ((unsent === null || unsent > 0) && !(await this.deps.ui.confirmSwitch({ from, to: repo, unsent }))) return;
     const settled = await this.folderFor(repo);
     if (settled === null) return;
     await this.offerCopy(repo, settled);
-    await this.deps.apply({ repo, folder: settled.folder });
+    if (options?.fromLink) await this.deps.apply({ repo, folder: settled.folder }, options);
+    else await this.deps.apply({ repo, folder: settled.folder });
     this.deps.notify(linked(repo));
   }
 

@@ -45,7 +45,12 @@ export function attachmentType(path: string): { kind: AttachmentKind; mime: stri
   return SHOWN[extensionOf(path)] ?? { kind: "file", mime: "application/octet-stream" };
 }
 
+export function isEmbeddableMediaKind(kind: AttachmentKind): boolean {
+  return kind === "image" || kind === "audio" || kind === "video";
+}
+
 export const ATTACHMENT_WORDS = {
   tooLarge: "Uses a file over 100 MB, not sent.",
   outsideFolder: "Uses a file outside the linked folder.",
+  notMine: "Uses a file from your vault that isn't on GitHub yet.",
 } as const;

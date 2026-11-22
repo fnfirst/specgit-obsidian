@@ -539,7 +539,13 @@ export class ChangesModel {
     const everyFile = this.deps.listFiles();
     const listed = everyFile.filter((file) => this.deps.documentFor(file.path) !== null);
     if (this.current.phase !== "ready" && this.current.phase !== "offline") this.set({ phase: "loading" });
-    const [scanned, repo, groups, presence] = await Promise.all([this.deps.cache.scan(listed, (path) => this.deps.readBytes(path)), this.deps.mirror.read(), this.deps.groups?.() ?? Promise.resolve<GroupsRead>({ kind: "off" }), this.awareness.read(this.askPresence())]);
+    const [scanned, repo, groups, presence] = await Promise.all([
+      this.deps.cache.scan(listed, (path) => this.deps.readBytes(path)),
+      this.deps.mirror.read(),
+      this.deps.groups?.() ?? Promise.resolve<GroupsRead>({ kind: "off" }),
+      this.awareness.read(this.askPresence()),
+      this.deps.refreshIgnore?.(),
+    ]);
     if (this.movedFrom(place)) return;
     this.awareness.heard(presence);
     if (presence.kind === "unknown" && this.deps.presence) this.retryPresence();
@@ -604,7 +610,9 @@ export class ChangesModel {
     cache.save();
     const theirs = this.theirReviews();
     if (theirs) this.theirs = theirs;
-    const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: cache.deleted(), foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs });
+    const isIgnored = this.deps.isIgnored;
+    const leftOut = isIgnored ? (path: string): boolean => !repoFiles.has(path) && (scanned.files.get(path)?.base ?? null) === null && isIgnored(path) : undefined;
+    const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: cache.deleted(), foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs, ...(leftOut ? { leftOut } : {}) });
     this.notHere = states.missing.copy.flatMap((path) => {
       const doc = this.deps.documentFor(path);
       return doc ? [{ path, doc, sha: repoFiles.get(path) ?? null }] : [];
@@ -1052,7 +1060,7 @@ export class ChangesModel {
   }
 
   settledDelete(path: string): void {
-    this.deps.cache.settled(path);
+    this.deps.cache.dropped(path);
   }
 
   row(path: string): ChangeRow | undefined {

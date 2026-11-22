@@ -33,6 +33,7 @@ export class Review {
     this.snapshot = outcome.snapshot;
     try {
       const text = await this.services.review({
+        kind: "text",
         name: this.host.name(),
         regions: outcome.regions,
         fromBase: outcome.fromBase,

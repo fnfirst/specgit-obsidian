@@ -24,7 +24,7 @@ export interface PickDeps {
   signedIn: () => boolean;
   signIn: () => Promise<void>;
   settings: () => { repo: string; folder: string };
-  apply: (mapping: { repo: string; folder: string }) => Promise<void>;
+  apply: (mapping: { repo: string; folder: string }, options?: { fromLink?: boolean }) => Promise<void>;
   unsent: () => Promise<number | null>;
   copyIn: (files: readonly CopyInFile[], skipped?: readonly string[]) => Promise<void>;
   listing?: (repo: string) => Promise<{ commit: string | null; files: ReadonlyMap<string, string> } | null>;

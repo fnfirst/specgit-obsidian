@@ -1,10 +1,22 @@
 import { IDLE_AFTER_MS, IDLE_FOCUSED_AFTER_MS, type PollSignals } from "../shared/review-flow";
+import type { Looked } from "./model";
 
 export const CHECK_EVERY_MS = 20_000;
+export const POST_START_RECHECK_MS = 30_000;
 export const QUIET_MS = 5 * 60_000;
 
 export function restingSignals(signals: PollSignals, stayOn: () => boolean): PollSignals {
   return { ...signals, lastActivityAt: () => (stayOn() && !signals.hidden() ? signals.now() : signals.lastActivityAt()) };
+}
+
+export function watchSignature(looked: Looked | null): string {
+  if (looked === null) return "off";
+  const rows = looked.rows.map((row) => `${row.change.path}:${row.change.sha}:${row.entry?.prNumber ?? 0}:${row.entry?.isDraft ?? ""}`).join(",");
+  const drafts = [...(looked.drafts?.byPath ?? [])]
+    .map(([path, draft]) => `${path}:${draft.blob ?? ""}`)
+    .sort()
+    .join(",");
+  return `${looked.repo.size}|${rows}|${drafts}`;
 }
 
 export interface WatchDeps {
@@ -20,18 +32,29 @@ export class Watch {
   private nextAt = 0;
   private seen = "";
   private checking = false;
+  private recheck: "armed" | number | null = null;
 
   constructor(private readonly deps: WatchDeps) {}
 
   unquiet(): void {
     this.wait = CHECK_EVERY_MS;
     this.nextAt = 0;
+    this.recheck = this.deps.stay?.() === true ? "armed" : null;
   }
 
   looked(signature: string): void {
+    const now = this.deps.signals.now();
+    const moved = this.seen !== "" && signature !== this.seen;
     this.wait = this.deps.live() ? QUIET_MS : signature === this.seen ? Math.min(this.wait * 2, QUIET_MS) : CHECK_EVERY_MS;
     this.seen = signature;
-    this.nextAt = this.deps.signals.now() + this.wait;
+    this.nextAt = now + this.wait;
+    if (this.deps.stay?.() !== true || moved) {
+      this.recheck = null;
+      return;
+    }
+    if (this.recheck === "armed") this.recheck = this.wait > POST_START_RECHECK_MS ? now + POST_START_RECHECK_MS : null;
+    else if (typeof this.recheck === "number" && now >= this.recheck) this.recheck = null;
+    if (typeof this.recheck === "number") this.nextAt = Math.min(this.nextAt, this.recheck);
   }
 
   private inUse(): boolean {
@@ -40,9 +63,18 @@ export class Watch {
     return signals.now() - signals.lastActivityAt() < (signals.focused?.() ? IDLE_FOCUSED_AFTER_MS : IDLE_AFTER_MS);
   }
 
+  private triggerLook(now: number): void {
+    if (typeof this.recheck === "number" && now >= this.recheck) {
+      this.recheck = null;
+      this.nextAt = now + this.wait;
+    }
+    this.deps.look();
+  }
+
   async tick(): Promise<void> {
+    const now = this.deps.signals.now();
     if (!this.inUse()) {
-      if (this.deps.stay?.() === true && !this.deps.signals.hidden() && this.deps.signals.now() >= this.nextAt) this.deps.look();
+      if (this.deps.stay?.() === true && !this.deps.signals.hidden() && now >= this.nextAt) this.triggerLook(now);
       return;
     }
     if (this.checking) return;
@@ -50,7 +82,8 @@ export class Watch {
     try {
       const moved = await this.deps.moved();
       if (moved) this.unquiet();
-      if (moved || this.deps.signals.now() >= this.nextAt) this.deps.look();
+      const after = this.deps.signals.now();
+      if (moved || after >= this.nextAt) this.triggerLook(after);
     } finally {
       this.checking = false;
     }
