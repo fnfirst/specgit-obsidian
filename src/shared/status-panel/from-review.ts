@@ -231,9 +231,10 @@ export interface ItemsInput {
   viewer: string;
   now: number;
   exclude?: ReadonlySet<string>;
+  holdOf?: (path: string) => string | null;
 }
 
-export function itemsFromInFlight({ inFlight, facts, rooms, viewer, now, exclude }: ItemsInput): StatusItem[] {
+export function itemsFromInFlight({ inFlight, facts, rooms, viewer, now, exclude, holdOf }: ItemsInput): StatusItem[] {
   const skip = exclude ?? new Set<string>();
   const entries = inFlightEntries(inFlight, viewer, inFlight.base);
   const branches = new Map<string, InFlightBranch>();
@@ -245,7 +246,8 @@ export function itemsFromInFlight({ inFlight, facts, rooms, viewer, now, exclude
   for (const entry of entries) {
     if (grouped.has(entry.path) || skip.has(entry.path)) continue;
     listed.add(entry.path);
-    items.push(docItemOf({ entry, branch: branches.get(entry.path), facts: entry.prNumber > 0 ? facts.get(entry.prNumber) : null, here: rooms.get(entry.path), viewer, now }));
+    const held = holdOf?.(entry.path) ?? null;
+    items.push(docItemOf({ entry, branch: branches.get(entry.path), facts: entry.prNumber > 0 ? facts.get(entry.prNumber) : null, here: rooms.get(entry.path), viewer, now, ...(held !== null ? { extra: { held } } : {}) }));
   }
   for (const [branch, overview] of overviews) {
     const own = overview.paths.flatMap((path) => (inFlight.paths[path] ?? []).filter((one) => one.branch === branch).slice(0, 1));

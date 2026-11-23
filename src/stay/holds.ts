@@ -2,7 +2,7 @@ import { gitBlobShaOfText } from "../changes/blob-sha";
 import { agreedOf } from "../changes/cache";
 import type { Looked } from "../changes/model";
 import type { GuardedVault } from "../disk/guarded-vault";
-import { CasePathIndex } from "../mapping";
+import { CasePathIndex, type DocumentRef } from "../mapping";
 import type { Activity } from "./activity";
 import { changeKey, hasOwnOrAgreedRow, isEdit } from "./outbound";
 import type { StayData, StayState } from "./state";
@@ -25,6 +25,8 @@ export interface HoldPorts {
   login(): string;
   inGroup(path: string): boolean;
   now(): number;
+  documentFor(path: string): DocumentRef | null;
+  disconnected(doc: DocumentRef): boolean;
   holdsChanged?(): void;
 }
 
@@ -371,6 +373,9 @@ export class StayHolds {
   }
 
   why(looked: Looked | null, path: string, on: boolean, attachmentNote: string | null): string | null {
+    if (!on) return null;
+    const doc = this.ports.documentFor(path);
+    if (doc !== null && this.ports.disconnected(doc)) return attachmentNote !== null ? `${STAY_HELD.offline} ${attachmentNote}` : STAY_HELD.offline;
     const { data } = this.state;
     const held = data.editsHeld?.[path];
     const reason = data.heldWhy?.[path] ?? "github";
@@ -388,9 +393,8 @@ export class StayHolds {
             : STAY_HELD.held
         : null;
     const baseline = key !== null && heldNew === null && (data.baseline?.includes(key) ?? false) ? STAY_HELD.baseline : null;
-    const grouped = on && own === null && heldNew === null && baseline === null && this.ports.inGroup(path) && looked?.drafts?.byPath.get(path)?.inGroup !== true && looked?.rows.some((one) => one.change.path === path && one.change.kind === "edited") === true ? STAY_HELD.group : null;
-    const found = on ? (own ?? heldNew ?? baseline ?? grouped) : null;
-    const attachments = on ? attachmentNote : null;
-    return found !== null && attachments !== null ? `${found} ${attachments}` : (found ?? attachments);
+    const grouped = own === null && heldNew === null && baseline === null && this.ports.inGroup(path) && looked?.drafts?.byPath.get(path)?.inGroup !== true && looked?.rows.some((one) => one.change.path === path && one.change.kind === "edited") === true ? STAY_HELD.group : null;
+    const found = own ?? heldNew ?? baseline ?? grouped;
+    return found !== null && attachmentNote !== null ? `${found} ${attachmentNote}` : (found ?? attachmentNote);
   }
 }

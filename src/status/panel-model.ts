@@ -8,6 +8,7 @@ import {
   type ActionAnswer,
   type DocExtra,
   type PanelAction,
+  type PluginLiveAction,
   type ReviewFacts,
   type StatusDoc,
   type StatusFold,
@@ -45,6 +46,8 @@ export interface PanelInput {
   heldDeletes: number;
   offered: number;
   isLive: (path: string) => boolean;
+  stay?: boolean;
+  isPaused?: (path: string) => boolean;
   openComments: (path: string) => number;
   linked: string;
   plansUrl: string;
@@ -140,7 +143,8 @@ export function panelModelOf(input: PanelInput): Built {
   const drawn = (path: string, from: Drawn): StatusDoc => {
     rows.set(path, from.acts);
     if (from.url !== null) urls.set(path, from.url);
-    const item = docItemOf({ entry: from.entry, branch: branches.get(path) ?? null, facts: from.facts, here: rooms.get(path), viewer, now, extra: { ...from.extra, ...folderOf(path) } });
+    const held = from.extra?.held !== undefined ? from.extra.held : input.holdOf(path);
+    const item = docItemOf({ entry: from.entry, branch: branches.get(path) ?? null, facts: from.facts, here: rooms.get(path), viewer, now, extra: { ...from.extra, held, ...folderOf(path) } });
     const views = input.viewsOf(path);
     const comments = input.openComments(path);
     return joinable({ ...item, ...(views.length > 0 ? { views } : {}), ...(comments > 0 ? { openComments: comments } : {}) });
@@ -172,7 +176,6 @@ export function panelModelOf(input: PanelInput): Built {
         deleted,
         edited: unsent && !deleted,
         changedInBoth: state.choices.has(path) || input.both.has(path) || (unsent && row.change.mainMoved),
-        held: input.holdOf(path),
         ...(told === null ? {} : { reason: told }),
         behind: input.active?.path === path ? input.active.behind : undefined,
         ...(row.change.kind === "renamed" && from ? { renamedFrom: noteName(from) } : {}),
@@ -204,7 +207,7 @@ export function panelModelOf(input: PanelInput): Built {
 
   const named = new Set<string>([...docs.map((one) => one.id), ...state.groups.flatMap((card) => card.group?.files.map((file) => file.path) ?? [])]);
   const listed: StatusItem[] = flight
-    ? itemsFromInFlight({ inFlight: flight, facts: input.facts, rooms, viewer, now, exclude: named }).flatMap((item): StatusItem[] => {
+    ? itemsFromInFlight({ inFlight: flight, facts: input.facts, rooms, viewer, now, exclude: named, holdOf: (path) => (input.vaultHas(path) ? input.holdOf(path) : null) }).flatMap((item): StatusItem[] => {
         if (item.kind === "group") return [];
         const entry = flight.paths[item.id]?.find((one) => one.prUrl);
         if (entry?.prUrl) urls.set(item.id, entry.prUrl);
@@ -295,17 +298,34 @@ function pinnedOf(
   const publishable = entry !== null && entry.prNumber > 0 && isMine && (own?.state === "in-review" || own?.state === "changes-requested");
   const canApprove = submitted && entry !== null && facts?.state === "open" && !isMine && !asksYouOf(entry, facts, input.viewer);
   const comments = input.openComments(path);
+  const hold = input.holdOf(path);
+  const paused = input.stay === true && input.isPaused?.(path) === true;
+  const publishedHeld = own === undefined && !state.choices.has(path) && !groupedBehind && hold !== null;
+  const noChangesToShow = publishedHeld && row === undefined && memberRow === null;
+  const reason = own?.reason ?? (publishedHeld ? hold : undefined);
+  const pluginAction: PluginLiveAction | undefined =
+    !input.stay || phase === "joining"
+      ? undefined
+      : phase === "live"
+        ? "work-offline"
+        : phase !== "local"
+          ? "disconnect"
+          : paused
+            ? "resume-sync"
+            : "connect";
   return {
     id: path,
     name: noteName(path),
-    state: own?.state ?? (state.choices.has(path) ? "changed-in-both" : groupedBehind ? "out-of-date" : "published"),
+    state: own?.state ?? (state.choices.has(path) ? "changed-in-both" : groupedBehind ? "out-of-date" : hold !== null ? "held" : "published"),
     ...(own?.when ? { when: own.when } : {}),
     ...(own?.changed === undefined ? {} : { changed: own.changed }),
     people: own?.people ?? [],
     ...(own?.asksYou ? { asksYou: true } : {}),
     here,
     ...(own?.check ? { check: own.check } : {}),
+    ...(publishedHeld ? { lane: "none" as const } : {}),
     ...(own?.hasChanges ? { hasChanges: true } : {}),
+    ...(noChangesToShow ? { hideChanges: true } : {}),
     showChanges: input.showChanges,
     ...(submitted && facts ? { reviewers: reviewerChips(facts) } : {}),
     ...(state.choices.has(path) || own?.state === "changed-in-both" ? { step: "choose" as const } : {}),
@@ -318,9 +338,14 @@ function pinnedOf(
     ...(canApprove ? { canApprove: true } : {}),
     ...(comments > 0 ? { openComments: comments } : {}),
     ...(own?.autoPublish ? { autoPublish: true } : {}),
-    ...(own?.reason ? { reason: own.reason } : {}),
+    ...(reason ? { reason } : {}),
     ...(own?.views ? { views: own.views } : {}),
     menu: ["open-in-specgit", "copy-link"],
-    plugin: { connected: phase !== "local", joining: phase === "joining", ...(phase === "local" && (active.people ?? 0) > 0 ? { people: active.people! } : {}) },
+    plugin: {
+      connected: phase !== "local",
+      joining: phase === "joining",
+      ...(pluginAction ? { action: pluginAction } : {}),
+      ...(phase === "local" && (active.people ?? 0) > 0 ? { people: active.people! } : {}),
+    },
   };
 }

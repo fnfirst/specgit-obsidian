@@ -49,6 +49,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
   config: Settings = DEFAULT_SETTINGS;
   private stay: StayHandle | null = null;
   private account: SpecgitAccount | null = null;
+  private connections: Connections | null = null;
   private device = new DeviceSettings({ load: () => null, save: () => undefined });
   private readonly settingsSaved = new Signal();
 
@@ -115,6 +116,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         save: (keys) => this.app.saveLocalStorage(DISCONNECTED_KEY, keys),
       },
     );
+    this.connections = connections;
     const disk = diskPath(this.app);
     const gitBases = new GitBases({
       bases: disk.bases,
@@ -135,6 +137,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     let mainMoved = (_path: string): boolean => false;
     let draftBy = (_path: string): Promise<string | null> => Promise.resolve(null);
     let liveJoined = (_path: string): void => undefined;
+    let sentBase = (_path: string, _doc: DocumentRef, _since?: number): Promise<string | null> | null => null;
     let deletedOnMain = (_path: string): boolean => false;
     let checkConnected = (): Promise<void> => Promise.resolve();
     let unsent = (): Promise<number | null> => Promise.resolve(null);
@@ -174,6 +177,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         review: (request) => chooseWhatToKeep(this.app, request),
         draftBy: (path) => draftBy(path),
         joined: (path) => liveJoined(path),
+        sentBase: (path, doc, since) => sentBase(path, doc, since),
         cameIn: (path, shown, words) => this.tellWhatCameIn(cameIn, path, shown, words),
         gitCopy: (doc) => gitCopy.read(doc),
         gitBases,
@@ -291,6 +295,10 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       live: () => events.connected(),
       signals,
       stayOn: () => this.config.stayConnected,
+      isPaused: (path) => {
+        const doc = documentFor(this.config, path);
+        return this.config.stayConnected && doc !== null && connections.isDisconnected(doc);
+      },
       stopped: (path) => this.stay?.stopped(path),
       deleted: (path, at) => this.stay?.deletedOnGithub(path, at),
       deletedAt: (path) => this.stay?.deletedAt(path) ?? null,
@@ -375,6 +383,8 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     mainMoved = (path) => changes.model.row(path)?.change.mainMoved === true;
     draftBy = (path) => changes.model.draftAuthor(path);
     liveJoined = (path) => changes.liveFiles.joined(path);
+    sentBase = (path, doc, since) => changes.sentBase(path, doc, since);
+    this.register(connections.onChoice(() => changes.model.redraw()));
     setUpNoteBar(this, { model: changes.model, isLive: (path) => board.phaseOf(path) === "live", onStatus: (listener) => board.subscribe(listener), join: (path) => void joinNote(path), addToMyNote: (path) => this.stay?.addToMyNote(path) });
     this.register(changes.model.subscribe(() => setAwareNotices(changes.model.state().aware !== null)));
     checkConnected = async () => {
@@ -438,9 +448,13 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
   }
 
   async setStayConnected(on: boolean): Promise<void> {
+    const turningOn = on && !this.config.stayConnected;
     this.config.stayConnected = on;
     this.config.stayOffered = true;
-    await this.saveConfig(on && isRepoName(this.config.repo) ? { stayPlace: stayPlaceOf(this.config) } : undefined);
+    await this.saveConfig(
+      on && isRepoName(this.config.repo) ? { stayPlace: stayPlaceOf(this.config) } : undefined,
+      turningOn && isRepoName(this.config.repo) ? () => this.connections?.clearDisconnected(this.config.repo, { notify: false }) : undefined,
+    );
   }
 
   recordStayPlace(): void {
@@ -451,9 +465,10 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     return this.settingsSaved.subscribe(listener);
   }
 
-  async saveConfig(deviceOptions?: { stayPlace?: StayPlace | null }): Promise<void> {
+  async saveConfig(deviceOptions?: { stayPlace?: StayPlace | null }, beforeEmit?: () => void): Promise<void> {
     await this.saveData(withoutDeviceSettings(this.config));
     this.device.write(this.config, deviceOptions);
+    beforeEmit?.();
     this.settingsSaved.emit();
   }
 

@@ -11,6 +11,7 @@ import type { Reviewer, ReviewApi } from "../review/review-api";
 import type { ChangesContext } from "../review/words";
 import type { OwnRestarts } from "../room/own-restarts";
 import type { ChangesModel } from "./model";
+import type { SentRecord } from "./sent-memory";
 
 export interface Point {
   icon: string;
@@ -61,6 +62,8 @@ export interface FlowDeps {
   branchFile(doc: DocumentRef, branch: string): Promise<BranchFile>;
   baseText(path: string): string | null;
   sentCommit?(path: string): string | undefined;
+  sentText?: Map<string, SentRecord>;
+  now?: () => number;
   pause?(ms: number): Promise<void>;
   gitBlob(doc: DocumentRef, sha: string): Promise<string | null>;
   chooseWhatToKeep(request: ReviewRequest): Promise<string | null>;

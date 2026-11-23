@@ -61,6 +61,8 @@ export const STATUS_CARD = {
   connect: "Connect Live",
   connecting: "Connecting…",
   disconnect: "Disconnect",
+  workOffline: "Work offline",
+  resumeSync: "Resume sync",
   openInSpecgit: "Open in specgit",
   copyLink: "Copy link",
   viewOnGitHub: "View on GitHub",
@@ -216,4 +218,6 @@ export const STATUS_CONTROL_TIPS = {
   all: { name: "All", line: "Everything in this list, yours and your teammates'." },
   select: { name: "Select", line: "Check notes to act on them together." },
   more: { name: "More", line: "Other things you can do with this note." },
+  workOffline: { name: "Work offline", line: "Pause live editing and auto-sync for this note only. Your other notes stay connected." },
+  resumeSync: { name: "Resume sync", line: "Reconnect this note and merge any changes with GitHub." },
 } as const;

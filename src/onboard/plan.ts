@@ -15,12 +15,20 @@ export function safeRepoName(typed: string): string | null {
 
 const NOT_SENT = new Set(["thumbs.db", "desktop.ini"]);
 
+export const ONBOARD_CONFIG_FILES: ReadonlySet<string> = new Set([
+  "app.json",
+  "appearance.json",
+  "hotkeys.json",
+  "core-plugins.json",
+  "community-plugins.json",
+]);
+
 export function planRule(path: string, configDir: string): boolean {
   const config = `${configDir}/`;
   if (path.startsWith(config)) {
     const rest = path.slice(config.length);
     if (rest.startsWith("themes/") || rest.startsWith("snippets/")) return true;
-    return !rest.includes("/") && rest.endsWith(".json") && rest !== "workspace.json" && rest !== "workspace-mobile.json";
+    return ONBOARD_CONFIG_FILES.has(rest);
   }
   if (path === ".gitignore") return true;
   if (path.startsWith(".")) return false;

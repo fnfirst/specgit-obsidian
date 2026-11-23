@@ -31,6 +31,7 @@ interface Apart {
   readonly base: string | null;
   readonly startedOver: boolean;
   readonly fromGit: boolean;
+  readonly at?: number;
 }
 
 const NO_BASE: Apart = { base: null, startedOver: false, fromGit: false };
@@ -61,6 +62,8 @@ export class Join {
   private apart: Apart | null = null;
   private either: { kept: (room: Room) => string | null; theirs: Apart | null } | null = null;
   private git: string | null | undefined = undefined;
+  private sent: string | null | undefined = undefined;
+  private sentEpoch = 0;
   private settling = false;
   private letOutWith: string | null = null;
 
@@ -71,16 +74,22 @@ export class Join {
 
   cutOff(base: string, startedOver: boolean): void {
     this.apart = { base, startedOver, fromGit: false };
+    this.sent = undefined;
+    this.sentEpoch++;
   }
 
   cutOffEither(kept: (room: Room) => string | null, agreed: string | null): void {
     this.either = { kept, theirs: agreed === null ? null : { base: agreed, startedOver: true, fromGit: false } };
+    this.sent = undefined;
+    this.sentEpoch++;
   }
 
   forget(): void {
     this.apart = null;
     this.either = null;
     this.git = undefined;
+    this.sent = undefined;
+    this.sentEpoch++;
   }
 
   letOut(text: string): void {
@@ -89,6 +98,8 @@ export class Join {
 
   leave(): void {
     this.git = undefined;
+    this.sent = undefined;
+    this.sentEpoch++;
   }
 
   bound(): void {
@@ -96,6 +107,8 @@ export class Join {
     this.either = null;
     this.letOutWith = null;
     this.git = undefined;
+    this.sent = undefined;
+    this.sentEpoch++;
   }
 
   meet(editor: string, room: Room): Outcome {
@@ -105,7 +118,27 @@ export class Join {
     const roomText = toLf(room.text.toJSON());
     if (tooLarge(editor) || tooLarge(roomText)) return { kind: "block", why: TOO_LARGE_MESSAGE };
     if (room.readOnly && editor !== "" && roomIsUnwritten(roomText, editor)) return { kind: "block", why: SAID.emptyRoom };
-    const meeting = { editor, room: roomText, base: apart.base, emptied: editor === "" && !!this.letOutWith, git: this.git, baseIsGit: apart.fromGit, readOnly: room.readOnly, source: "room" as const };
+    const emptied = editor === "" && !!this.letOutWith;
+    if (
+      this.sent === undefined &&
+      this.services.sentBase !== undefined &&
+      !(editor === "" && !emptied) &&
+      editor !== roomText &&
+      withoutFinalBreaks(editor) !== withoutFinalBreaks(roomText) &&
+      !roomIsUnwritten(roomText, editor) &&
+      (apart.base === null || apart.fromGit || apart.at !== undefined)
+    ) {
+      const ref = this.host.ref();
+      const since = apart.fromGit || apart.base === null ? undefined : apart.at;
+      const pending = ref ? this.services.sentBase(this.host.path(), ref, since) : null;
+      if (pending === null) this.sent = null;
+      else {
+        void this.askSentBase(ref!, pending);
+        return WAIT;
+      }
+    }
+    const effective: Apart = this.sent !== null && this.sent !== undefined ? { base: this.sent, startedOver: false, fromGit: false } : apart;
+    const meeting = { editor, room: roomText, base: effective.base, emptied, git: this.git, baseIsGit: effective.fromGit, readOnly: room.readOnly, source: "room" as const };
     const joined = reconcile(meeting, new Budget(MERGE_MS));
     switch (joined.kind) {
       case "needs-git": {
@@ -116,10 +149,10 @@ export class Join {
       case "apart":
         return { kind: "apart", why: SAID.apart };
       case "review":
-        return { kind: "review", regions: joined.regions, fromBase: joined.fromBase, snapshot: { mine: editor, theirs: roomText }, base: joined.fromBase ? apart.base : null };
+        return { kind: "review", regions: joined.regions, fromBase: joined.fromBase, snapshot: { mine: editor, theirs: roomText }, base: joined.fromBase ? effective.base : null };
       case "text": {
         const base =
-          apart.base ??
+          effective.base ??
           (withoutFinalBreaks(editor) === withoutFinalBreaks(roomText)
             ? roomText
             : !roomIsUnwritten(roomText, editor) && this.git != null && withoutFinalBreaks(editor) === withoutFinalBreaks(this.git)
@@ -128,13 +161,21 @@ export class Join {
         return {
           kind: "bind",
           text: joined.text,
-          notice: apart.startedOver && joined.text !== roomText ? SAID.startedOver : null,
-          kept: apart.base !== null && withoutFinalBreaks(editor) !== withoutFinalBreaks(apart.base) && joined.text !== roomText,
+          notice: effective.startedOver && joined.text !== roomText ? SAID.startedOver : null,
+          kept: effective.base !== null && withoutFinalBreaks(editor) !== withoutFinalBreaks(effective.base) && joined.text !== roomText,
           base,
           ...(this.git !== undefined ? { git: this.git } : {}),
         };
       }
     }
+  }
+
+  private askSentBase(ref: DocumentRef, pending: Promise<string | null>): Promise<void> {
+    const epoch = this.sentEpoch;
+    return this.settle(async () => {
+      const held = await within(pending.catch(() => null), GIT_COPY_PATIENCE_MS, null);
+      if (!this.host.destroyed() && this.host.ref() === ref && epoch === this.sentEpoch) this.sent = held === null ? null : toLf(held);
+    });
   }
 
   private askGit(): Promise<void> {
@@ -174,6 +215,6 @@ export class Join {
       return ref && base.doc === docKey(ref) ? { base: base.text, startedOver: false, fromGit: true } : NO_BASE;
     }
     if (base.room !== room.name) return NO_BASE;
-    return { base: base.text, startedOver: !holdsLineage(room.doc, base.lineage), fromGit: false };
+    return { base: base.text, startedOver: !holdsLineage(room.doc, base.lineage), fromGit: false, at: base.at };
   }
 }

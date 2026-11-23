@@ -61,6 +61,7 @@ export const STAY_HELD = {
   deleted: "Deleted on GitHub. Submit it to bring it back.",
   baseline: "Here before Stay connected was turned on. Not saved yet.",
   held: "Not saved automatically. Edit it to try again.",
+  offline: "Working offline on this note only. Resume sync to reconnect.",
 } as const;
 
 export { ATTACHMENTS_SAID } from "../changes/attachment-memory";

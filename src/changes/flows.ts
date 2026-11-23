@@ -129,7 +129,7 @@ export class ChangesFlows {
 
   constructor(deps: FlowDeps) {
     this.deps = { ...deps, review: this.watched(deps.review, deps.model) };
-    this.memory = new SentMemory({ deps: this.deps, model: this.deps.model });
+    this.memory = new SentMemory({ deps: this.deps, model: this.deps.model }, undefined, deps.sentText);
     this.catchUps = new CatchUpFlows({ deps: this.deps, model: this.deps.model, memory: this.memory, busy: (work, doing) => this.busy(work, doing), alert: (options) => this.alert(options), send: (row, options) => this.send(row, options) });
     this.moving = new MoveFlows(this.deps);
     this.publishing = new PublishFlows({ deps: this.deps, sendUnit: (row) => this.sendUnit(row), alert: (options) => this.alert(options), refusal: (result, doc, fallback) => this.refusal(result, doc, fallback) });

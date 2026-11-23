@@ -41,7 +41,9 @@ import { type Attachment, AttachmentMemory } from "./attachment-memory";
 import { MirrorClient } from "./mirror";
 import type { OwnLinks } from "./own-links";
 import { ReviewEvents } from "./review-events";
+import type { ReviewKey } from "./review-key";
 import { sameAsRepo } from "./same-text";
+import { sentBaseFor, type SentRecord } from "./sent-memory";
 import { CHECK_EVERY_MS, restingSignals, Watch, watchSignature } from "./watch";
 import { ChangesModel } from "./model";
 import { type IgnoreAdapter, VaultIgnore } from "../onboard/ignore";
@@ -73,6 +75,7 @@ export interface ChangesSetup {
   live?: () => boolean;
   signals?: PollSignals;
   stayOn?: () => boolean;
+  isPaused?: (path: string) => boolean;
   stopped?: (path: string) => void;
   deleted?: (path: string, at: number) => void;
   deletedAt?: (path: string) => number | null;
@@ -111,12 +114,14 @@ function ignoreAdapterOf(vault: { adapter?: unknown }): IgnoreAdapter | null {
   };
 }
 
-export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { model: ChangesModel; flows: ChangesFlows; review: ReviewApi; settingsChanged: () => void; attachments: () => AttachmentMemory; liveFiles: LiveFiles; live: { heard: (event: LiveEvent) => void; catchUp: (first?: boolean) => void } } {
+export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { model: ChangesModel; flows: ChangesFlows; review: ReviewApi; settingsChanged: () => void; attachments: () => AttachmentMemory; liveFiles: LiveFiles; sentBase: (path: string, doc: DocumentRef, since?: number) => Promise<string | null> | null; live: { heard: (event: LiveEvent) => void; catchUp: (first?: boolean) => void } } {
   const { app } = plugin;
   const repo = (): string => deps.settings().repo;
   const folder = (): string => normalizeFolder(deps.settings().folder);
   const mapped = (path: string): DocumentRef | null => fileFor(deps.settings(), path);
   const review = new ReviewApi(deps.api, deps.binary);
+  const sentText = new Map<string, SentRecord>();
+  const heldCommits = new Set<string>();
   const placeKey = (): string => `${repo()}\n${folder()}`;
   let lookedAt = placeKey();
   let current: { key: string; cache: FileCache; mirror: MirrorClient; attachments: AttachmentMemory } | null = null;
@@ -125,6 +130,8 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     if (current?.key !== key) {
       const left = current;
       left?.cache.flush();
+      sentText.clear();
+      heldCommits.clear();
       const cache = new FileCache(key, { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) });
       if (left) cache.inherit(new Map([...left.cache.foreignFiles(), ...left.cache.matchedFiles()]));
       current = { key, cache, mirror: new MirrorClient(deps.api, repo(), folder(), { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) }), attachments: new AttachmentMemory(key, { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) }) };
@@ -312,6 +319,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
       return read.status === "found" && read.base.room === null ? read.base.text : null;
     },
     sentCommit: (path) => placed().cache.get(path)?.sentCommit,
+    sentText,
     chooseWhatToKeep: (request) => chooseWhatToKeep(app, request),
     attachments: attachmentsOf,
     attachmentTold: (path, words) => model.attachmentTold(path, words),
@@ -368,6 +376,8 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     bringInDraft: (path) => deps.bringInDraft?.(path) ?? Promise.resolve({ kind: "none" as const }),
     inVault: (path) => app.vault.getFileByPath(path) !== null,
     isLive: (path) => deps.isLive(path),
+    ...(deps.stayOn ? { stayOn: deps.stayOn } : {}),
+    ...(deps.isPaused ? { isPaused: deps.isPaused } : {}),
     openComments: (path) => deps.openComments?.(path) ?? 0,
     ...(deps.offered ? { offered: deps.offered } : {}),
     ...(deps.addOffered ? { addOffered: deps.addOffered } : {}),
@@ -485,15 +495,43 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     },
   });
 
+  const sentBase = (path: string, doc: DocumentRef, since?: number): Promise<string | null> | null =>
+    sentBaseFor(
+      {
+        sentText,
+        heldCommits,
+        cacheEntry: (one, targetRepo) => {
+          if (repo() !== targetRepo) return null;
+          const entry = placed().cache.get(one);
+          return entry?.sent ? { sha: entry.sent, to: (entry.sentTo as ReviewKey | undefined) ?? null, commit: entry.sentCommit, at: entry.sentAt } : null;
+        },
+        review,
+        gitBlob: deps.gitBlob,
+        publishedBranch: NOTE_BRANCH,
+        forget: (one) => {
+          if (repo() !== doc.repo) return;
+          flows.forgetSent(one);
+          model.learnSent(one, null);
+        },
+      },
+      path,
+      doc,
+      since,
+    );
+
   return {
     model,
     flows,
     review,
     liveFiles,
+    sentBase,
     attachments: () => placed().attachments,
     settingsChanged: () => {
       void model.refreshPresence(true);
-      if (placeKey() === lookedAt) return;
+      if (placeKey() === lookedAt) {
+        model.redraw();
+        return;
+      }
       lookedAt = placeKey();
       lookSoon();
     },

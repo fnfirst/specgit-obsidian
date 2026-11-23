@@ -9,6 +9,7 @@ export class Connections {
   private readonly chosen = new Map<string, boolean>();
   private readonly off: Set<string>;
   private readonly listeners = new Set<() => void>();
+  private readonly choiceListeners = new Set<() => void>();
 
   constructor(
     private readonly byDefault: (doc: DocumentRef) => boolean = () => false,
@@ -31,11 +32,18 @@ export class Connections {
     this.store?.save([...this.off]);
   }
 
+  private notifyChoices(): void {
+    this.listeners.forEach((listener) => listener());
+    this.choiceListeners.forEach((listener) => listener());
+  }
+
   choose(doc: DocumentRef, on: boolean, lasting = true): void {
     const key = keyOf(doc);
-    this.chosen.set(key, on);
-    if (lasting && (on ? this.off.delete(key) : (this.off.add(key), true))) this.keepOff();
-    this.listeners.forEach((listener) => listener());
+    if (on && this.byDefault(doc)) this.chosen.delete(key);
+    else this.chosen.set(key, on);
+    const offChanged = lasting && (on ? this.off.delete(key) : !this.off.has(key) && (this.off.add(key), true));
+    if (offChanged) this.keepOff();
+    this.notifyChoices();
   }
 
   defaultsChanged(): void {
@@ -60,13 +68,40 @@ export class Connections {
     if (this.off.delete(keyOf(doc))) this.keepOff();
   }
 
+  clearDisconnected(repo?: string, options: { notify?: boolean } = {}): void {
+    const prefix = repo !== undefined ? `${repo}\0` : null;
+    const matches = (key: string): boolean => prefix === null || key.startsWith(prefix);
+    let offChanged = false;
+    let chosenChanged = false;
+    for (const key of [...this.off]) {
+      if (matches(key)) {
+        this.off.delete(key);
+        offChanged = true;
+      }
+    }
+    for (const [key, on] of [...this.chosen]) {
+      if (!on && matches(key)) {
+        this.chosen.delete(key);
+        chosenChanged = true;
+      }
+    }
+    if (!offChanged && !chosenChanged) return;
+    if (offChanged) this.keepOff();
+    if (options.notify !== false) this.notifyChoices();
+  }
+
   reset(): void {
     this.chosen.clear();
-    this.listeners.forEach((listener) => listener());
+    this.notifyChoices();
   }
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onChoice(listener: () => void): () => void {
+    this.choiceListeners.add(listener);
+    return () => this.choiceListeners.delete(listener);
   }
 }

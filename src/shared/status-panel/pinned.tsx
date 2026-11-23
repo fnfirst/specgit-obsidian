@@ -20,9 +20,25 @@ export function cardButtons(pinned: Pick<StatusPinned, "state" | "asksYou" | "ca
   return [];
 }
 
+function liveControl(plugin: NonNullable<StatusPinned["plugin"]>): { label: string; tip: { name: string; line: string } | null } {
+  if (plugin.joining) return { label: STATUS_CARD.connecting, tip: null };
+  const action = plugin.action ?? (plugin.connected ? "disconnect" : "connect");
+  switch (action) {
+    case "work-offline":
+      return { label: STATUS_CARD.workOffline, tip: STATUS_CONTROL_TIPS.workOffline };
+    case "resume-sync":
+      return { label: STATUS_CARD.resumeSync, tip: STATUS_CONTROL_TIPS.resumeSync };
+    case "disconnect":
+      return { label: STATUS_CARD.disconnect, tip: null };
+    case "connect":
+      return { label: STATUS_CARD.connect, tip: null };
+  }
+}
+
 export function PinnedCard({ pinned, ctx, quiet, hasMore, onButton, onMore }: { pinned: StatusPinned; ctx: Ctx; quiet: boolean; hasMore: boolean; onButton: (button: CardButton) => void; onMore: (anchor: HTMLElement) => void }) {
   const here = othersOf(pinned.here ?? []);
   const plugin = pinned.plugin;
+  const live = plugin ? liveControl(plugin) : null;
   const showTip = { picture: "changes" as const, name: STATUS_PINNED.showChanges, line: STATUS_TIPS.showChanges };
   const buttons = ctx.readOnly ? [] : cardButtons(pinned);
   const label = (button: CardButton): string => {
@@ -77,9 +93,18 @@ export function PinnedCard({ pinned, ctx, quiet, hasMore, onButton, onMore }: { 
             ) : plugin && !plugin.connected && (plugin.people ?? 0) > 0 ? (
               <span className="sp-grow">{statusPeopleHere(plugin.people ?? 0)}</span>
             ) : null}
-            {plugin ? (
-              <button type="button" className={cx("sp-link sp-live-link", !plugin.connected && "sp-live-connect")} disabled={plugin.joining} onClick={() => ctx.act({ type: "pinned", action: plugin.connected ? "disconnect" : "connect-live" })}>
-                {plugin.joining ? STATUS_CARD.connecting : plugin.connected ? STATUS_CARD.disconnect : STATUS_CARD.connect}
+            {plugin && live ? (
+              <button
+                type="button"
+                className={cx("sp-link sp-live-link", !plugin.connected && "sp-live-connect")}
+                disabled={plugin.joining}
+                {...(live.tip ? ctx.tips.bind(`${pinned.id}:live`, live.tip) : {})}
+                onClick={() => {
+                  ctx.tips.hide();
+                  ctx.act({ type: "pinned", action: plugin.connected ? "disconnect" : "connect-live" });
+                }}
+              >
+                {live.label}
               </button>
             ) : null}
           </div>

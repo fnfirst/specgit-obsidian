@@ -78,6 +78,8 @@ export interface StatusReviewer {
   mark?: "approved" | "changes";
 }
 
+export type PluginLiveAction = "connect" | "disconnect" | "work-offline" | "resume-sync";
+
 export interface StatusPinned extends StatusPeople {
   id: string;
   name: string;
@@ -111,7 +113,7 @@ export interface StatusPinned extends StatusPeople {
   fixBelow?: boolean;
   openComments?: number;
   autoPublish?: boolean;
-  plugin?: { connected: boolean; joining?: boolean; people?: number };
+  plugin?: { connected: boolean; joining?: boolean; people?: number; action?: PluginLiveAction };
 }
 
 export type PinnedMenuItem = "open-in-specgit" | "copy-link" | "view-on-github";

@@ -92,6 +92,11 @@ export class Inbound {
     );
   }
 
+  private isPaused(path: string): boolean {
+    const doc = this.ctx.ports.documentFor(path);
+    return doc !== null && this.ctx.ports.disconnected(doc);
+  }
+
   private clearPending(path: string): void {
     this.waiting.delete(path);
     this.deferredUnsaved.delete(path);
@@ -156,7 +161,7 @@ export class Inbound {
       }
       await this.guarded(path, sha, () => this.add(looked, path, sha, said));
     }
-    const here = deletes.filter(([path]) => looked.files.has(path)).map(([path]) => path);
+    const here = deletes.filter(([path]) => looked.files.has(path) && !this.isPaused(path)).map(([path]) => path);
     const still = new Set(here);
     for (const path of this.releasedDeletes) if (!still.has(path)) this.releasedDeletes.delete(path);
     const asked = here.filter((path) => !this.releasedDeletes.has(path));
@@ -185,6 +190,7 @@ export class Inbound {
     }
     for (const [path, sha] of deferredCaseAdds) {
       if (!this.ctx.current()) break;
+      if (this.isPaused(path)) continue;
       if (this.caseIndex.collision(path) === null) {
         if (this.ready(path, sha)) await this.guarded(path, sha, () => this.add(looked, path, sha, said));
       } else if (!this.cut && !holdDeletes && !deletes.some(([gone]) => looked.files.has(gone) && topSegmentKey(gone) === topSegmentKey(path) && state.data.seen?.[gone] !== undefined)) {
@@ -206,7 +212,7 @@ export class Inbound {
     this.reads = 0;
     this.waiting.delete(path);
     const said: Said = { updated: [], merged: [], created: [], moved: [], trashed: [], came: [] };
-    await this.guarded(path, sha, () => this.add(looked, path, sha, said));
+    await this.guarded(path, sha, () => this.add(looked, path, sha, said, true));
     this.ctx.state.save();
     return said.updated.length > 0;
   }
@@ -219,7 +225,7 @@ export class Inbound {
     for (const [path, sha] of added) {
       const doc = ports.documentFor(path);
       const entry = looked.files.get(path);
-      if (!doc || inMove.has(path) || seen.has(sha) || entry?.sha === sha || (!entry && this.caseIndex.collision(path) !== null) || (entry && this.followsDraft(looked, path, doc, entry.sentTo)) || !this.ready(path, sha, false)) continue;
+      if (!doc || ports.disconnected(doc) || inMove.has(path) || seen.has(sha) || entry?.sha === sha || (!entry && this.caseIndex.collision(path) !== null) || (entry && this.followsDraft(looked, path, doc, entry.sentTo)) || !this.ready(path, sha, false)) continue;
       seen.add(sha);
       asked.push({ doc, sha });
       if (asked.length >= TEXTS_PER_PASS) break;
@@ -240,7 +246,7 @@ export class Inbound {
     for (const [path, sha] of deletes) {
       const entry = looked.files.get(path);
       const doc = ports.documentFor(path);
-      if (!entry || !doc || looked.repo.has(path) || (hold && !this.releasedDeletes.has(path)) || (entry.sha !== sha && !unchangedHere(entry)) || !this.ready(path, sha, false)) continue;
+      if (!entry || !doc || ports.disconnected(doc) || looked.repo.has(path) || (hold && !this.releasedDeletes.has(path)) || (entry.sha !== sha && !unchangedHere(entry)) || !this.ready(path, sha, false)) continue;
       asked.push(doc);
     }
     if (asked.length === 0) return new Map();
@@ -307,6 +313,7 @@ export class Inbound {
     const now = this.ctx.ports.now();
     const here = new Set<string>();
     for (const [path, sha] of added) {
+      if (this.isPaused(path)) continue;
       const entry = looked.files.get(path);
       if (!entry || entry.sha === sha || entry.sha === seen[path] || unchangedHere(entry)) continue;
       here.add(path);
@@ -448,10 +455,11 @@ export class Inbound {
     return false;
   }
 
-  private async add(looked: Looked, path: string, sha: string, said: Said): Promise<void> {
+  private async add(looked: Looked, path: string, sha: string, said: Said, explicit = false): Promise<void> {
     const { ports } = this.ctx;
     const doc = ports.documentFor(path);
     if (!doc) return this.settled(path, sha);
+    if (!explicit && ports.disconnected(doc)) return;
     const entry = looked.files.get(path);
     if (entry?.sha === sha || (!entry && looked.deleted.some((gone) => gone.path === path))) return this.settled(path, sha);
     if (!entry && this.caseIndex.collision(path) !== null) return this.holdCaseCollision(path, sha);
@@ -595,6 +603,7 @@ export class Inbound {
     const { ports, activity } = this.ctx;
     const [from, to] = [ports.documentFor(move.from), ports.documentFor(move.to)];
     if (!from || !to) return this.settled(move.from, null);
+    if (ports.disconnected(from) || ports.disconnected(to)) return;
     if (this.caseIndex.collision(move.to, move.from) !== null) return this.holdCaseCollision(move.to, move.sha, move.from);
     if (ports.phaseOf(move.to) !== "local" || !(await this.free(move.from, from, move.sha))) return this.wait(move.from, move.sha);
     const mirror = this.looked?.repo;
@@ -625,6 +634,7 @@ export class Inbound {
       return this.settled(path, null);
     }
     if (!doc) return this.settled(path, null);
+    if (ports.disconnected(doc)) return;
     if (entry.sha !== sha && !unchangedHere(entry)) {
       if (!state.data.kept.includes(path)) state.data.kept.push(path);
       const moved = this.pendingRenames.get(path);

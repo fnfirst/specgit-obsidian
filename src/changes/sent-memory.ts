@@ -1,13 +1,96 @@
 import { eolOf, toLf, withEol } from "../disk/line-endings";
+import { docKey, type DocumentRef } from "../mapping";
+import { reviewIsOpen, type ReviewApi } from "../review/review-api";
 import { gitBlobShaOfText } from "./blob-sha";
 import { blobShasOf } from "./flow-helpers";
 import type { FlowDeps } from "./flow-deps";
 import type { ChangeRow, ChangesModel } from "./model";
 import { type ReviewKey, reviewKey, sentToThis } from "./review-key";
 
+export interface SentRecord {
+  text: string;
+  to: ReviewKey | null;
+  doc: string;
+  at: number;
+  commit?: string;
+}
+
+export interface SentCacheEntry {
+  sha: string;
+  to: ReviewKey | null;
+  commit?: string;
+  at?: number;
+}
+
+export interface SentBaseDeps {
+  readonly sentText: ReadonlyMap<string, SentRecord>;
+  readonly heldCommits: Set<string>;
+  cacheEntry(path: string, repo: string): SentCacheEntry | null;
+  readonly review: Pick<ReviewApi, "status" | "mergePreview">;
+  gitBlob(doc: DocumentRef, sha: string): Promise<string | null>;
+  readonly publishedBranch: string;
+  forget(path: string): void;
+}
+
 export interface SentMemoryHost {
   readonly deps: FlowDeps;
   readonly model: ChangesModel;
+}
+
+async function branchHoldsCommit(
+  review: Pick<ReviewApi, "mergePreview">,
+  publishedBranch: string,
+  heldCommits: Set<string>,
+  doc: DocumentRef,
+  branch: string | undefined,
+  commit: string | undefined,
+): Promise<boolean | "unchecked" | null> {
+  if (commit === undefined || branch === undefined) return "unchecked";
+  const key = `${doc.repo}\n${branch}\n${commit}`;
+  if (heldCommits.has(key)) return true;
+  const seen = await review.mergePreview(doc, branch, publishedBranch, commit);
+  if (!seen.ok) return null;
+  const answer = (seen.body as { holds?: unknown } | null)?.holds;
+  if (answer === undefined) return "unchecked";
+  if (answer === true) heldCommits.add(key);
+  return typeof answer === "boolean" ? answer : null;
+}
+
+export function sentBaseFor(deps: SentBaseDeps, path: string, doc: DocumentRef, since?: number): Promise<string | null> | null {
+  const raw = deps.sentText.get(path);
+  const kept = raw !== undefined && raw.doc === docKey(doc) ? raw : undefined;
+  const entry = kept === undefined ? deps.cacheEntry(path, doc.repo) : null;
+  if (kept === undefined && entry === null) return null;
+  if (since !== undefined) {
+    const at = kept !== undefined ? kept.at : entry!.at;
+    if (at === undefined || at <= since) return null;
+  }
+  return (async (): Promise<string | null> => {
+    const status = await deps.review.status(doc);
+    if (status === null || !reviewIsOpen(status)) return null;
+    const sentTo = kept !== undefined ? kept.to : entry!.to;
+    const current = reviewKey(status.pr);
+    if (sentTo === null || current === null) return null;
+    const commit = kept !== undefined ? kept.commit : entry!.commit;
+    const branch = status.reviewBranch ?? undefined;
+    if (sentTo === current) {
+      if (commit !== undefined) {
+        const held = await branchHoldsCommit(deps.review, deps.publishedBranch, deps.heldCommits, doc, branch, commit);
+        if (held === false) {
+          deps.forget(path);
+          return null;
+        }
+        if (held === null) return null;
+      }
+    } else {
+      if (!sentTo.startsWith("pr:") || !current.startsWith("group:")) return null;
+      const held = await branchHoldsCommit(deps.review, deps.publishedBranch, deps.heldCommits, doc, branch, commit);
+      if (held !== true) return null;
+    }
+    if (kept !== undefined) return toLf(kept.text);
+    const blob = await deps.gitBlob(doc, entry!.sha);
+    return blob === null ? null : toLf(blob);
+  })();
 }
 
 function verifiedSource(answer: Record<string, unknown> | null | undefined): { source: string | null; sha: string | null } {
@@ -34,7 +117,7 @@ export class SentMemory {
   constructor(
     private readonly host: SentMemoryHost,
     private readonly write: (path: string, text: string, expected: string) => Promise<boolean> = (path, text, expected) => host.deps.writeText(path, text, expected),
-    private readonly sentText: Map<string, { text: string; to: ReviewKey | null; commit?: string }> = new Map(),
+    private readonly sentText: Map<string, SentRecord> = new Map(),
     private readonly acrossReviews = false,
   ) {}
 
@@ -51,9 +134,12 @@ export class SentMemory {
 
   async rememberMany(sent: ReadonlyArray<readonly [string, string]>, to?: ReviewKey | null, held?: ReadonlyMap<string, { held: string; commit?: string; same?: true }>): Promise<void> {
     const review = (path: string): ReviewKey | null => to ?? this.host.model.reviewOf(path);
+    const at = (this.host.deps.now ?? Date.now)();
     for (const [path, text] of sent) {
       const commit = held?.get(path)?.commit;
-      this.sentText.set(path, { text, to: review(path), ...(commit === undefined ? {} : { commit }) });
+      const mapped = this.host.deps.documentFor(path);
+      const doc = mapped ? docKey(mapped) : "";
+      this.sentText.set(path, { text, to: review(path), doc, at, ...(commit === undefined ? {} : { commit }) });
     }
     const texts = new Map(sent);
     const agreements = new Map<string, { agreed?: string; commit?: string }>();
@@ -72,7 +158,8 @@ export class SentMemory {
 
   async lastSent(row: ChangeRow, there: { text: string; sha: string }, branch?: string): Promise<{ text: string } | "never" | "unreadable"> {
     const path = row.change.path;
-    const kept = this.sentText.get(path);
+    const raw = this.sentText.get(path);
+    const kept = raw !== undefined && raw.doc === docKey(row.doc) ? raw : undefined;
     const sha = kept === undefined ? this.host.model.sentSha(path) : null;
     if (kept === undefined && sha === null) return "never";
     const holds = kept !== undefined ? kept.text === there.text : sha === there.sha;
@@ -97,15 +184,8 @@ export class SentMemory {
   private async branchHolds(row: ChangeRow, branch: string | undefined, commit: string | undefined): Promise<boolean | null> {
     if (commit === undefined) return true;
     const name = branch ?? row.theirs?.branch ?? row.review?.reviewBranch ?? (await this.host.deps.review.status(row.doc))?.reviewBranch ?? undefined;
-    if (name === undefined) return true;
-    const key = `${row.doc.repo}\n${name}\n${commit}`;
-    if (this.heldCommits.has(key)) return true;
-    const seen = await this.host.deps.review.mergePreview(row.doc, name, this.host.deps.publishedBranch, commit);
-    if (!seen.ok) return null;
-    const answer = (seen.body as { holds?: unknown } | null)?.holds;
-    if (answer === undefined) return true;
-    if (answer === true) this.heldCommits.add(key);
-    return typeof answer === "boolean" ? answer : null;
+    const held = await branchHoldsCommit(this.host.deps.review, this.host.deps.publishedBranch, this.heldCommits, row.doc, name, commit);
+    return held === "unchecked" ? true : held;
   }
 
   private async reviewNow(row: ChangeRow): Promise<ReviewKey | null> {

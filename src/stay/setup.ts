@@ -511,18 +511,21 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     },
   });
 
+  let lastWanted = deps.settings().stayConnected;
   let settling: number | undefined;
   plugin.register(() => window.clearTimeout(settling));
   const settingsChanged = (): void => {
     window.clearTimeout(settling);
     const wanted = deps.settings().stayConnected;
+    const flipped = wanted !== lastWanted;
+    lastWanted = wanted;
     if (engine !== null && engineIdentity !== identity()) {
       moving = true;
       if (wanted) engine.stop();
       else engine.disable();
       engine = null;
     }
-    if (wanted === (engine !== null) || (moving && wanted)) settling = window.setTimeout(sync, PLACE_SETTLES_MS);
+    if (!flipped && (wanted === (engine !== null) || (moving && wanted))) settling = window.setTimeout(sync, PLACE_SETTLES_MS);
     else sync();
   };
 
