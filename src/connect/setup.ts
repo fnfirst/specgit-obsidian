@@ -3,12 +3,13 @@ import type { Dialogs } from "../changes/flow-deps";
 import type { SpecgitAccount } from "../account";
 import type { Board } from "../board";
 import type { Shown } from "../disk/regions";
-import { noteUrl } from "../links";
+import { noteUrl, openExternalUrl } from "../links";
 import type { DocumentRef, Place } from "../mapping";
 import { showNotice } from "../notices";
 import type { OnboardingWatch, PanelComments } from "../panel/panel";
 import { type PanelHandle, setUpPanel } from "../panel/setup";
 import { showChanges } from "../review/modals";
+import type { PollSignals } from "../shared/review-flow";
 import type { StatusBoard } from "../status";
 import { addNoteCommands } from "./commands";
 import type { Connections } from "./connections";
@@ -38,6 +39,7 @@ export interface ConnectDeps {
   comments: PanelComments;
   disconnected?: () => void;
   tryNow?: () => void;
+  signals?: PollSignals;
 }
 
 export async function ensureOpen(plugin: Plugin, path: string): Promise<void> {
@@ -60,7 +62,7 @@ export function setUpConnect(plugin: Plugin, deps: ConnectDeps): PanelHandle {
     ensureOpen: (path) => ensureOpen(plugin, path),
     notify: showNotice,
     noteUrl: (doc) => noteUrl(deps.server(), doc),
-    openUrl: (url) => void window.open(url),
+    openUrl: (url) => void openExternalUrl(url, deps.server()),
     copyText: (text) => navigator.clipboard.writeText(text),
     disconnected: deps.disconnected,
     choose: (options) => deps.dialogs.choose(options),
@@ -68,7 +70,7 @@ export function setUpConnect(plugin: Plugin, deps: ConnectDeps): PanelHandle {
   });
   const panel = setUpPanel(
     plugin,
-    { activeNote: noteOpen, placeOf: deps.placeOf, status: deps.status, cameIn: deps.cameIn, signedIn: deps.signedIn, mapped: deps.mapped, repo: deps.repo, folder: deps.folder, stayConnected: deps.stayConnected, peopleIn: deps.peopleIn },
+    { activeNote: noteOpen, placeOf: deps.placeOf, status: deps.status, cameIn: deps.cameIn, signedIn: deps.signedIn, mapped: deps.mapped, repo: deps.repo, folder: deps.folder, stayConnected: deps.stayConnected, peopleIn: deps.peopleIn, ...(deps.signals ? { signals: deps.signals } : {}) },
     {
       connect: (path) => void flows.connect(path),
       disconnect: (path) => flows.disconnect(path),

@@ -1,6 +1,6 @@
 import type { App } from "obsidian";
 import { FileSystemAdapter, Platform } from "obsidian";
-import { findGitDir, gitPortsIn, reflogEntries } from "./git-dir";
+import { findGitDir, gitPortsIn, reflogEntries, resolveHeadText } from "./git-dir";
 import type { GitPorts } from "./git-watch";
 
 export async function locateGit(app: App): Promise<GitPorts | null> {
@@ -29,5 +29,11 @@ export async function locateGit(app: App): Promise<GitPorts | null> {
     log: async () => (await adapter.stat(".git/logs/HEAD").catch(() => null))?.mtime ?? null,
     entries: async () => reflogEntries(await adapter.read(".git/logs/HEAD").catch(() => null)),
     stash: async () => (await adapter.stat(".git/logs/refs/stash").catch(() => null))?.mtime ?? null,
+    head: async () =>
+      resolveHeadText(
+        await adapter.read(".git/HEAD").catch(() => null),
+        (ref) => adapter.read(`.git/${ref}`).catch(() => null),
+        () => adapter.read(".git/packed-refs").catch(() => null),
+      ),
   };
 }

@@ -4,11 +4,17 @@ import type { Looked } from "../changes/model";
 import type { GuardedVault } from "../disk/guarded-vault";
 import { CasePathIndex } from "../mapping";
 import type { Activity } from "./activity";
-import { changeKey, isEdit } from "./outbound";
+import { changeKey, hasOwnOrAgreedRow, isEdit } from "./outbound";
 import type { StayData, StayState } from "./state";
 import { STAY_HELD } from "./words";
 
 export type HoldReason = NonNullable<StayData["heldWhy"]>[string];
+
+const hasPendingDraft = (looked: Looked, path: string): boolean => {
+  const draft = looked.drafts?.byPath.get(path);
+  const entry = looked.files.get(path);
+  return draft !== undefined && draft.blob !== null && entry?.sent !== undefined && draft.blob !== entry.sent;
+};
 
 export const caseCollisionWords = (name: string): string => `${name} on GitHub differs from a note here only in capital letters, so it was not copied in.`;
 
@@ -60,13 +66,14 @@ export class StayHolds {
     this.noteChanged();
   }
 
-  holdEdit(looked: Looked, path: string, why: HoldReason, options?: { flurryUntil?: number }): void {
+  holdEdit(looked: Looked, path: string, why: HoldReason, options?: { flurryUntil?: number }): boolean {
     const sha = looked.files.get(path)?.sha;
-    if (sha === undefined) return;
+    if (sha === undefined) return false;
     (this.state.data.editsHeld ??= {})[path] = sha;
     (this.state.data.heldWhy ??= {})[path] = why;
     this.setFlurryUntil(path, why === "flurry" ? (options?.flurryUntil ?? null) : null);
     this.noteChanged();
+    return hasPendingDraft(looked, path);
   }
 
   holdNew(looked: Looked, key: string, path: string, why: HoldReason, options?: { flurryUntil?: number; burst?: boolean }): void {
@@ -301,15 +308,66 @@ export class StayHolds {
       }
       if (Object.keys(data.flurryUntil).length === 0) delete data.flurryUntil;
     }
+    const blockedNew = { baseline: new Set(data.baseline ?? []), held: new Set(data.held), kept: new Set(data.kept) };
+    const login = this.ports.login();
     const own = new Set(
       looked.rows.flatMap((row) => {
         const entry = looked.files.get(row.change.path);
-        return isEdit(row, committed) && entry !== undefined && (agreedOf(entry) === undefined || entry.sha !== agreedOf(entry)) ? [row.change.path] : [];
+        return isEdit(row, committed, { looked, login, blockedNew }) && entry !== undefined && (agreedOf(entry) === undefined || entry.sha !== agreedOf(entry)) ? [row.change.path] : [];
       }),
     );
     for (const path of Object.keys(data.typed ?? {})) if (!own.has(path)) delete data.typed![path];
     if (changed) this.noteChanged();
     return { changed, releasedFlurry };
+  }
+
+  isEditHeld(path: string, sha: string): boolean {
+    return this.state.data.editsHeld?.[path] === sha;
+  }
+
+  advanceEditHold(path: string, fromSha: string, toSha: string): void {
+    const { data } = this.state;
+    if (data.editsHeld?.[path] !== fromSha) return;
+    data.editsHeld[path] = toSha;
+    this.state.save();
+    this.noteChanged();
+  }
+
+  clearEditHold(path: string): void {
+    const { data } = this.state;
+    if (data.editsHeld?.[path] === undefined) return;
+    delete data.editsHeld[path];
+    if (data.heldWhy && !data.held.some((key) => heldKeyForPath(key, path))) delete data.heldWhy[path];
+    this.setFlurryUntil(path, null);
+    this.state.save();
+    this.noteChanged();
+  }
+
+  recordHeld(
+    looked: Looked,
+    hold: ReadonlyArray<{ key: string; path: string; edit?: true; atStart?: true }>,
+    options: { startReason: "baseline" | "closed"; burst: boolean },
+  ): { closedEdits: number; atStartNew: number; arrived: number; pendingDraft: boolean } {
+    let closedEdits = 0;
+    let atStartNew = 0;
+    let arrived = 0;
+    let pendingDraft = false;
+    const flurryUntil = (path: string, isStart: boolean): number | undefined =>
+      !isStart && !options.burst && !this.activity.isGit(path) ? this.activity.flurryDeadline(path) : undefined;
+    for (const held of hold) {
+      const isStart = held.atStart === true;
+      const until = flurryUntil(held.path, isStart);
+      if (held.edit === true) {
+        if (this.holdEdit(looked, held.path, isStart ? options.startReason : "flurry", until !== undefined ? { flurryUntil: until } : undefined)) pendingDraft = true;
+        if (isStart && options.startReason === "closed") closedEdits++;
+      } else {
+        this.holdNew(looked, held.key, held.path, isStart ? options.startReason : "flurry", { ...(isStart ? {} : { burst: true }), ...(until !== undefined ? { flurryUntil: until } : {}) });
+        if (isStart) atStartNew++;
+      }
+      if (!isStart) arrived++;
+    }
+    for (const { path } of hold) this.activity.settled(path);
+    return { closedEdits, atStartNew, arrived, pendingDraft };
   }
 
   why(looked: Looked | null, path: string, on: boolean, attachmentNote: string | null): string | null {
@@ -318,7 +376,7 @@ export class StayHolds {
     const reason = data.heldWhy?.[path] ?? "github";
     const own = held !== undefined && looked?.files.get(path)?.sha === held ? (reason === "closedElsewhere" && looked?.drafts?.byPath.has(path) ? STAY_HELD.closedElsewhereNew : STAY_HELD[reason]) : null;
     const row = own === null ? looked?.rows.find((one) => one.change.path === path && (one.change.kind === "new" || one.change.kind === "renamed")) : undefined;
-    const onGithub = row !== undefined && (row.entry !== null || looked?.drafts?.byPath.has(path) === true || looked?.files.get(path)?.sent !== undefined);
+    const onGithub = row !== undefined && hasOwnOrAgreedRow(row, looked, this.ports.login());
     const key = row && !onGithub ? changeKey(row.change) : null;
     const newWhy = data.heldWhy?.[path];
     const heldNew =

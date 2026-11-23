@@ -1,5 +1,6 @@
 import { EmptyState } from "../brand/parts";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { safeExternalUrl } from "../links";
 import { useWatch } from "../panel/use-watch";
 import { Face } from "../people/face";
 import { OFFLINE_WHY } from "../review/words";
@@ -51,6 +52,7 @@ export interface CommentsTabEnv {
   onEditorSelection: (listener: () => void) => () => void;
   openInSpecgit(path: string): void;
   openUrl(url: string): void;
+  server?: string;
   error(title: string, description: string): void;
   offline: { is: () => boolean; subscribe: (listener: () => void) => () => void };
   now(): number;
@@ -343,13 +345,14 @@ function Card({ env, note, thread, filter, selected, applying, offline, revision
       {thread.displayComments.map((comment, index) => {
         const divider = revisionDivider(thread.displayComments, index);
         const name = commenterName(comment.author) ?? COMMENT_WORDS.unknownAuthor;
-        const url = divider === null ? null : (thread.segments?.find((segment) => segment.prNumber === divider)?.prUrl ?? null);
+        const rawUrl = divider === null ? null : (thread.segments?.find((segment) => segment.prNumber === divider)?.prUrl ?? null);
+        const url = rawUrl ? safeExternalUrl(rawUrl, env.server) : null;
         return (
           <div key={comment.id}>
             {divider !== null && (
               <div class="specgit-revision">
                 {url ? (
-                  <a href={url} onClick={(event) => (event.stopPropagation(), env.openUrl(url), event.preventDefault())}>
+                  <a href={url} rel="noopener noreferrer" onClick={(event) => (event.stopPropagation(), env.openUrl(url), event.preventDefault())}>
                     {COMMENT_WORDS.revision(divider)}
                   </a>
                 ) : (

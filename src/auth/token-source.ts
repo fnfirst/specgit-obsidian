@@ -1,4 +1,5 @@
 import { retryAfterFromResponse } from "../api/retry-after";
+import { safeRealtimeUrl } from "../links";
 import type { DocumentRef } from "../mapping";
 import type { AskedStep, RoomSteps, RoomToken, TokenSource } from "../token-source";
 import { type Bearer, withBearer } from "./bearer";
@@ -130,9 +131,13 @@ export class SpecgitTokenSource implements TokenSource {
     if (typeof url !== "string" || typeof room !== "string" || typeof token !== "string") {
       throw new RoomTokenError("unexpected", "This version of specgit is out of date. Update it in Community plugins.", 200, null);
     }
+    const safeUrl = safeRealtimeUrl(url, this.server);
+    if (safeUrl === null) {
+      throw new RoomTokenError("unexpected", "specgit couldn't connect that note live just now.", 200, null);
+    }
     if (typeof joinedAt === "number") this.joinedAt.set(key, joinedAt);
     const failed = body !== null && "steps" in body && steps === null;
-    return { url, room, token, ...(readOnly === true ? { readOnly: true } : {}), ...(asked.length === 0 ? {} : { steps: { asked, said: stepsOf(steps), ...(failed ? { failed: true as const } : {}) } }) };
+    return { url: safeUrl, room, token, ...(readOnly === true ? { readOnly: true } : {}), ...(asked.length === 0 ? {} : { steps: { asked, said: stepsOf(steps), ...(failed ? { failed: true as const } : {}) } }) };
   }
 
   private failure(answer: Answer): RoomTokenError {

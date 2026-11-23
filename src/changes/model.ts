@@ -719,7 +719,7 @@ export class ChangesModel {
   }
 
   checkpoint(): void {
-    this.deps.cache.save();
+    this.deps.cache.flush();
   }
 
   copiedFrom(path: string, sha: string): void {

@@ -3,6 +3,7 @@ import { drawLogo, TAGLINE } from "./brand/mark";
 import { supportPageUrl } from "./report/report";
 import { DEFAULT_SERVER, isDefaultServer, isServerAddress, normalizeServer, serverHost } from "./auth/config";
 import type { SignInKeeping } from "./auth/storage";
+import { safeExternalUrl } from "./links";
 import { isRepoName, type MappingSettings, normalizeFolder } from "./mapping";
 import { CHANGE, CHOOSE_A_REPOSITORY_FIRST, CHOOSE_REPOSITORY, NO_REPOSITORY_YET, outsideStays, WHOLE_VAULT } from "./pick/words";
 import type { Identity } from "./presence";
@@ -21,7 +22,7 @@ export interface Settings extends MappingSettings {
   stayDrafts: StayDrafts;
 }
 
-const DEVICE_KEYS: ReadonlySet<keyof Settings> = new Set<keyof Settings>(["stayConnected", "stayOffered"]);
+const DEVICE_KEYS: ReadonlySet<keyof Settings> = new Set<keyof Settings>(["stayConnected", "stayOffered", "login", "displayName", "avatarUrl"]);
 
 export function withoutDeviceSettings(settings: Settings): Partial<Settings> {
   return Object.fromEntries(Object.entries(settings).filter(([key]) => !DEVICE_KEYS.has(key as never)));
@@ -55,6 +56,9 @@ function parseTrustedServers(value: unknown): string[] {
   return [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim().toLowerCase()))];
 }
 
+export type DeviceValues = Pick<Settings, "stayConnected" | "stayOffered" | "login" | "displayName" | "avatarUrl">;
+export type DeviceWriteInput = Pick<Settings, "stayConnected" | "stayOffered"> & Partial<Pick<Settings, "login" | "displayName" | "avatarUrl">>;
+
 export class DeviceSettings {
   constructor(private readonly state: { load(key: string): unknown; save(key: string, value: unknown): void }) {}
 
@@ -76,21 +80,51 @@ export class DeviceSettings {
     }
   }
 
-  read(): Pick<Settings, "stayConnected" | "stayOffered"> {
-    const given = this.raw();
-    return { stayConnected: given.stayConnected === true, stayOffered: given.stayOffered === true };
-  }
-
-  write(settings: Pick<Settings, "stayConnected" | "stayOffered">, options?: { stayPlace?: StayPlace | null }): void {
-    const given = this.raw();
-    const stayPlace = options && "stayPlace" in options ? (options.stayPlace ? stayPlaceOf(options.stayPlace) : null) : parseStayPlace(given.stayPlace);
-    const trustedServers = parseTrustedServers(given.trustedServers);
-    this.saveRaw({
-      stayConnected: settings.stayConnected,
-      stayOffered: settings.stayOffered,
+  private compose(
+    given: Record<string, unknown>,
+    patch: Partial<DeviceValues & { stayPlace: StayPlace | null; trustedServers: string[] }>,
+  ): Record<string, unknown> {
+    const stayConnected = patch.stayConnected ?? (given.stayConnected === true);
+    const stayOffered = patch.stayOffered ?? (given.stayOffered === true);
+    const login = patch.login !== undefined ? patch.login : (typeof given.login === "string" ? given.login : "");
+    const displayName = patch.displayName !== undefined ? patch.displayName : (typeof given.displayName === "string" ? given.displayName : "");
+    const avatarUrl = patch.avatarUrl !== undefined ? patch.avatarUrl : (typeof given.avatarUrl === "string" ? given.avatarUrl : "");
+    const stayPlace = "stayPlace" in patch ? (patch.stayPlace ? stayPlaceOf(patch.stayPlace) : null) : parseStayPlace(given.stayPlace);
+    const trustedServers = patch.trustedServers ?? parseTrustedServers(given.trustedServers);
+    return {
+      stayConnected,
+      stayOffered,
+      ...(login !== "" ? { login } : {}),
+      ...(displayName !== "" ? { displayName } : {}),
+      ...(avatarUrl !== "" ? { avatarUrl } : {}),
       ...(stayPlace ? { stayPlace } : {}),
       ...(trustedServers.length > 0 ? { trustedServers } : {}),
-    });
+    };
+  }
+
+  read(): DeviceValues {
+    const given = this.raw();
+    return {
+      stayConnected: given.stayConnected === true,
+      stayOffered: given.stayOffered === true,
+      login: typeof given.login === "string" ? given.login : "",
+      displayName: typeof given.displayName === "string" ? given.displayName : "",
+      avatarUrl: typeof given.avatarUrl === "string" ? given.avatarUrl : "",
+    };
+  }
+
+  write(settings: DeviceWriteInput, options?: { stayPlace?: StayPlace | null }): void {
+    const given = this.raw();
+    this.saveRaw(
+      this.compose(given, {
+        stayConnected: settings.stayConnected,
+        stayOffered: settings.stayOffered,
+        ...(settings.login !== undefined ? { login: settings.login } : {}),
+        ...(settings.displayName !== undefined ? { displayName: settings.displayName } : {}),
+        ...(settings.avatarUrl !== undefined ? { avatarUrl: settings.avatarUrl } : {}),
+        ...(options && "stayPlace" in options ? { stayPlace: options.stayPlace ?? null } : {}),
+      }),
+    );
   }
 
   readStayPlace(): StayPlace | null {
@@ -98,14 +132,7 @@ export class DeviceSettings {
   }
 
   writeStayPlace(place: StayPlace | null): void {
-    const given = this.raw();
-    const trustedServers = parseTrustedServers(given.trustedServers);
-    this.saveRaw({
-      stayConnected: given.stayConnected === true,
-      stayOffered: given.stayOffered === true,
-      ...(place ? { stayPlace: stayPlaceOf(place) } : {}),
-      ...(trustedServers.length > 0 ? { trustedServers } : {}),
-    });
+    this.saveRaw(this.compose(this.raw(), { stayPlace: place }));
   }
 
   isTrustedServer(host: string): boolean {
@@ -116,14 +143,8 @@ export class DeviceSettings {
     const clean = host.trim().toLowerCase();
     if (clean === "") return;
     const given = this.raw();
-    const stayPlace = parseStayPlace(given.stayPlace);
     const trustedServers = [...new Set([...parseTrustedServers(given.trustedServers), clean])];
-    this.saveRaw({
-      stayConnected: given.stayConnected === true,
-      stayOffered: given.stayOffered === true,
-      ...(stayPlace ? { stayPlace } : {}),
-      trustedServers,
-    });
+    this.saveRaw(this.compose(given, { trustedServers }));
   }
 }
 
@@ -339,8 +360,10 @@ export class SpecgitSettingTab extends PluginSettingTab {
     wordmark.createSpan({ cls: "specgit-wordmark-git" }).append("git");
     words.createEl("p", { text: TAGLINE, cls: "specgit-settings-line" });
     const links = words.createEl("p", { cls: "specgit-settings-links" });
-    links.createEl("a", { text: "Help", href: supportPageUrl(this.host.config.server) });
-    links.createEl("a", { text: isDefaultServer(this.host.config.server) ? "specgit.com" : serverHost(this.host.config.server), href: this.host.config.server });
+    const helpHref = safeExternalUrl(supportPageUrl(this.host.config.server), this.host.config.server);
+    if (helpHref !== null) links.createEl("a", { text: "Help", attr: { href: helpHref, rel: "noopener noreferrer" } });
+    const serverHref = safeExternalUrl(this.host.config.server, this.host.config.server);
+    if (serverHref !== null) links.createEl("a", { text: isDefaultServer(this.host.config.server) ? "specgit.com" : serverHost(this.host.config.server), attr: { href: serverHref, rel: "noopener noreferrer" } });
   }
 
   private bindText(

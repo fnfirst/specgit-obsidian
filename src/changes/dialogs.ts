@@ -1,6 +1,7 @@
 import { type App, Setting, setIcon } from "obsidian";
 import { h, render } from "preact";
 import { buttonRow, SpecgitModal } from "../brand/modal";
+import { safeExternalUrl } from "../links";
 import { Face } from "../people/face";
 import type { Reviewer } from "../review/review-api";
 import { showNotice } from "../notices";
@@ -18,7 +19,7 @@ class AskModal extends SpecgitModal {
 
   constructor(
     app: App,
-    private readonly options: { title: string; confirmLabel: string; cancelLabel?: string; destructive?: boolean; href?: string | null; hrefLabel?: string; alertOnly?: boolean; reportThis?: () => void } & DialogWords,
+    private readonly options: { title: string; confirmLabel: string; cancelLabel?: string; destructive?: boolean; href?: string | null; hrefLabel?: string; server?: string; alertOnly?: boolean; reportThis?: () => void } & DialogWords,
     private readonly done: (answer: Answer) => void,
   ) {
     super(app);
@@ -38,7 +39,8 @@ class AskModal extends SpecgitModal {
       }
     }
     if (options.note) this.contentEl.createEl("p", { text: options.note, cls: "specgit-dialog-note" });
-    if (options.href) this.contentEl.createEl("a", { text: options.hrefLabel ?? "Open", href: options.href, cls: "specgit-dialog-link" });
+    const safeHref = options.href ? safeExternalUrl(options.href, options.server) : null;
+    if (safeHref !== null) this.contentEl.createEl("a", { text: options.hrefLabel ?? "Open", cls: "specgit-dialog-link", attr: { href: safeHref, rel: "noopener noreferrer" } });
     const row = buttonRow(this.contentEl);
     const { reportThis } = options;
     if (reportThis) {
@@ -194,13 +196,14 @@ class ReviewerModal extends SpecgitModal {
   }
 }
 
-export function obsidianDialogs(app: App, reportThis: (title: string, description?: string) => void): Dialogs {
+export function obsidianDialogs(app: App, reportThis: (title: string, description?: string) => void, server?: () => string): Dialogs {
+  const currentServer = (): string | undefined => server?.();
   return {
-    confirm: (options) => new Promise((resolve) => new AskModal(app, options, (answer) => resolve(answer === "confirm")).open()),
-    choose: (options) => new Promise((resolve) => new AskModal(app, options, (answer) => resolve(answer === "closed" ? null : answer === "confirm")).open()),
+    confirm: (options) => new Promise((resolve) => new AskModal(app, { ...options, server: currentServer() }, (answer) => resolve(answer === "confirm")).open()),
+    choose: (options) => new Promise((resolve) => new AskModal(app, { ...options, server: currentServer() }, (answer) => resolve(answer === "closed" ? null : answer === "confirm")).open()),
     alert: (options) =>
       new Promise((resolve) => {
-        new AskModal(app, { ...options, confirmLabel: "OK", alertOnly: true, reportThis: () => reportThis(options.title, dialogText(options) || undefined) }, () => resolve()).open();
+        new AskModal(app, { ...options, server: currentServer(), confirmLabel: "OK", alertOnly: true, reportThis: () => reportThis(options.title, dialogText(options) || undefined) }, () => resolve()).open();
       }),
     toast: (title, description) => showNotice(noticeText(title, description)),
     askNote: (options) => new Promise((resolve) => new NoteModal(app, options, resolve).open()),

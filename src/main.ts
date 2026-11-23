@@ -10,7 +10,7 @@ import { obsidianDialogs } from "./changes/dialogs";
 import { listRepository } from "./changes/mirror-listing";
 import { OwnLinks } from "./changes/own-links";
 import { setUpChanges } from "./changes/setup";
-import { setUpComments } from "./comments/setup";
+import { pageSignals, setUpComments } from "./comments/setup";
 import { setUpEvents } from "./events/setup";
 import { setUpStay, type StayHandle } from "./stay/setup";
 import { Connections } from "./connect/connections";
@@ -19,7 +19,7 @@ import { setUpNoteBar } from "./changes/note-bar-setup";
 import { cameInWords, changesIn, type Shown } from "./disk/regions";
 import { GitBases } from "./disk/git-bases";
 import { diskPath } from "./disk/vault";
-import { noteUrl } from "./links";
+import { noteUrl, openExternalUrl } from "./links";
 import { ReadingBars } from "./cursors/reading";
 import { liveEditor } from "./editor/extension";
 import { docKey, documentFor, type DocumentRef, fileFor, isRepoName, normalizeFolder, placeOf } from "./mapping";
@@ -85,6 +85,12 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       },
     });
     addAuthCommands(this, { auth, signIn });
+    if (!auth.isSignedIn() && (this.config.login !== "" || this.config.displayName !== "" || this.config.avatarUrl !== "")) {
+      this.config.login = "";
+      this.config.displayName = "";
+      this.config.avatarUrl = "";
+      this.device.write(this.config);
+    }
     const account = new SpecgitAccount(auth, signIn, this);
     this.account = account;
 
@@ -193,7 +199,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       },
     });
     const listing = (repo: string) => listRepository(api, repo, (ms) => new Promise((resume) => window.setTimeout(resume, ms)));
-    const dialogs = obsidianDialogs(this.app, (title, description) => report.openForAlert(title, description));
+    const dialogs = obsidianDialogs(this.app, (title, description) => report.openForAlert(title, description), () => this.config.server);
     askCustomServer = (host) => dialogs.confirm({ title: "Sign in", description: customServerQuestion(host), confirmLabel: "Sign in", cancelLabel: "Cancel" });
     const apply = async (mapping: { repo: string; folder: string }, options?: { fromLink?: boolean }): Promise<void> => {
       const before = this.config.repo;
@@ -202,6 +208,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     };
     const onboarding = setUpOnboard(this, {
       api,
+      server: () => this.config.server,
       binary,
       signedIn: () => auth.isSignedIn(),
       signIn,
@@ -228,6 +235,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     this.followSignIn(auth, account, rooms, connections, gitBases);
     this.watchConnection(lifecycle, account);
 
+    const signals = pageSignals(this, () => events.connected());
     let panel: PanelHandle | null = null;
     this.showStatus(board, () => void panel?.reveal());
     const comments = setUpComments(this, {
@@ -241,10 +249,11 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       showPanel: () => panel?.reveal("comments"),
       openInSpecgit: (path) => {
         const doc = documentFor(this.config, path);
-        if (doc) window.open(noteUrl(this.config.server, doc));
+        if (doc) openExternalUrl(noteUrl(this.config.server, doc), this.config.server);
       },
       dialogs,
       live: () => events.connected(),
+      signals,
     });
     this.register(() => comments.hub.setActive(null));
     this.register(
@@ -274,12 +283,13 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       server: () => this.config.server,
       openInSpecgit: (path) => {
         const doc = fileFor(this.config, path);
-        if (doc) window.open(noteUrl(this.config.server, doc));
+        if (doc) openExternalUrl(noteUrl(this.config.server, doc), this.config.server);
       },
       openComments: (path) => comments.hub.openCount(path),
       deletedOnMain: (path) => deletedOnMain(path),
       isLive: (path) => board.phaseOf(path) === "live",
       live: () => events.connected(),
+      signals,
       stayOn: () => this.config.stayConnected,
       stopped: (path) => this.stay?.stopped(path),
       deleted: (path, at) => this.stay?.deletedOnGithub(path, at),
@@ -412,6 +422,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       },
       dialogs,
       hasUnsentEdits: (path) => changes.model.row(path)?.change.kind !== undefined,
+      signals,
     });
     this.register(this.settingsSaved.subscribe(() => panel?.model.update()));
     this.register(() => {

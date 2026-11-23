@@ -304,6 +304,8 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     }
   };
 
+  const git = new GitWatch(() => locateGit(app), activity);
+
   const ports: StayPorts = {
     copyIn: copyNotesIn,
     now: () => Date.now(),
@@ -314,6 +316,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     disconnected: (doc) => deps.connections.isDisconnected(doc),
     gitFile: deps.gitFile,
     wasDeleted: deps.wasDeleted,
+    git: { checkSince: (saved) => git.checkSince(saved), poll: () => git.poll() },
     ...(deps.gitBlobs ? { blobTexts: blobTexts } : {}),
     ...(deps.gitBlobsByOid ? { draftTexts } : {}),
     ...(deps.gitExist ? { confirmGone } : {}),
@@ -399,13 +402,27 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   let engine: StayConnected | null = null;
   let engineIdentity = "";
   let lastLooked: Looked | null = null;
+  const oneShots = new Set<StayConnected>();
+  let draftOnce: { engine: StayConnected; pending: number } | null = null;
+  const flushAll = (): void => {
+    engine?.flush();
+    for (const one of oneShots) one.flush();
+  };
+  const stopOneShots = (): void => {
+    draftOnce = null;
+    for (const one of oneShots) one.stop();
+    oneShots.clear();
+  };
   const stop = deps.model.onLooked((looked) => {
     lastLooked = looked;
     if (engine && engineIdentity !== identity()) settingsChanged();
     engine?.lookedAt(looked);
   });
   plugin.register(stop);
-  plugin.register(() => engine?.stop());
+  plugin.register(() => {
+    engine?.stop();
+    stopOneShots();
+  });
   let notLocal = new Set<string>();
   plugin.register(
     deps.status.subscribe(() => {
@@ -419,9 +436,10 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
 
   const fresh = (always = false): StayConnected => {
     const allowed: StayPorts = always ? { ...ports, enabled: () => true } : ports;
-    engineIdentity = identity();
+    const at = identity();
+    if (!always) engineIdentity = at;
     const settings = { repo: deps.settings().repo, folder: deps.settings().folder };
-    const tied = tiedTo(allowed, engineIdentity, identity, (path) => fileFor(settings, path), activity);
+    const tied = tiedTo(allowed, at, identity, (path) => fileFor(settings, path), activity);
     const state = new StayState(place(), localState);
     const serverTakes = (): number => (deps.model.state().groups.some((row) => row.group?.overview.ending !== undefined && row.group.overview.ending.stopped === undefined) ? ENDING_WRITES_PER_HOUR : 0);
     return new StayConnected(tied, state, activity, WriteBudget.open(localState, deps.login(), Date.now, serverTakes));
@@ -450,18 +468,17 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     on(win.document, "visibilitychange", () => {
       if (appHidden()) {
         wasHidden = true;
-        engine?.flush();
+        flushAll();
       } else if (wasHidden) {
         wasHidden = false;
         engine?.returned();
       }
     });
-    on(win, "beforeunload", () => engine?.flush());
-    on(win, "pagehide", () => engine?.flush());
+    on(win, "beforeunload", () => flushAll());
+    on(win, "pagehide", () => flushAll());
   });
 
-  const git = new GitWatch(() => locateGit(app), activity);
-  plugin.registerInterval(window.setInterval(() => void (engine?.isOn() ? git.poll().catch(() => undefined) : undefined), 1_000));
+  plugin.registerInterval(window.setInterval(() => void engine?.pollGit(), 1_000));
 
   let moving = false;
   const sync = (): void => {
@@ -471,10 +488,13 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
       engine.stop();
       engine = null;
     }
-    if (wanted && !engine) engine = fresh();
+    if (wanted && !engine) {
+      stopOneShots();
+      engine = fresh();
+    }
     if (wanted) engine?.enable();
     else if (engine) {
-      engine.disable();
+      engine.stop();
       engine = null;
     }
     deps.connections.defaultsChanged();
@@ -508,7 +528,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
 
   return {
     settingsChanged,
-    flush: () => engine?.flush(),
+    flush: flushAll,
     groupHeld: async () => void (await engine?.groupHeld()),
     isKept: (path) => engine?.isKept(path) === true,
     stopped: (path) => void engine?.holdStopped(path),
@@ -522,21 +542,44 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     addOffered: () => engine?.addOffered(),
     addToMyNote: (path) => {
       if (engine) return engine.addToMyNote(path);
-      const once = fresh(true);
-      once.lookedAt(lastLooked);
-      once.addToMyNote(path, true);
+      if (!draftOnce || !oneShots.has(draftOnce.engine)) {
+        const once = fresh(true);
+        once.lookedAt(lastLooked);
+        oneShots.add(once);
+        draftOnce = { engine: once, pending: 0 };
+      }
+      const slot = draftOnce;
+      slot.pending++;
+      void slot.engine.addToMyNoteOnce(path).finally(() => {
+        slot.pending--;
+        if (slot.pending === 0) {
+          if (draftOnce === slot) draftOnce = null;
+          if (oneShots.delete(slot.engine)) slot.engine.stop();
+        }
+      });
     },
     heardReview: (branch) => engine?.heardReview(branch),
-    bringInNewer: () =>
-      bringInNewer({
-        files: () => deps.model.vault()?.files ?? null,
-        read: (path) => vault.read(path),
-        bringIn: async (path) => {
-          const once = engine ?? fresh(true);
-          if (once !== engine) once.lookedAt(lastLooked);
-          return once.bringIn(path);
-        },
-      }),
+    bringInNewer: async () => {
+      const box: { current: StayConnected | null } = { current: null };
+      try {
+        return await bringInNewer({
+          files: () => deps.model.vault()?.files ?? null,
+          read: (path) => vault.read(path),
+          bringIn: async (path) => {
+            if (engine) return engine.bringIn(path);
+            if (!box.current || !oneShots.has(box.current)) {
+              const once = fresh(true);
+              once.lookedAt(lastLooked);
+              oneShots.add(once);
+              box.current = once;
+            }
+            return box.current.bringIn(path);
+          },
+        });
+      } finally {
+        if (box.current && oneShots.delete(box.current)) box.current.stop();
+      }
+    },
     bringInDraft: (path) =>
       bringInDraft(
         {

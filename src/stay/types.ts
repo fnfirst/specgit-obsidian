@@ -9,6 +9,8 @@ import type { CopyInFile, CopyInResult } from "../changes/copy-in";
 import type { ReviewRequest } from "../editor/services";
 import type { DocumentRef } from "../mapping";
 import type { NotePhase } from "../status";
+import type { GitObservation } from "./git-watch";
+import type { StayGitMark } from "./state";
 
 export type StayVault = GuardedVault;
 
@@ -89,4 +91,8 @@ export interface StayPorts {
   lookAgain(): void;
   personBusy(): boolean;
   later(fn: () => void, ms: number): () => void;
+  git?: {
+    checkSince(saved: StayGitMark | undefined): Promise<GitObservation>;
+    poll(): Promise<GitObservation>;
+  };
 }

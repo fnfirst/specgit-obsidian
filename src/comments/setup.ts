@@ -3,6 +3,7 @@ import { MARK_ICON } from "../brand/mark";
 import { type Bearer } from "../auth/bearer";
 import { obsidianTransport } from "../auth/obsidian-transport";
 import type { Dialogs } from "../changes/flow-deps";
+import { openExternalUrl } from "../links";
 import type { DocumentRef } from "../mapping";
 import { type PollSignals, type ThreadsStoreDeps } from "../shared/review-flow";
 import type { StatusBoard } from "../status";
@@ -29,6 +30,7 @@ export interface CommentsSetup {
   openInSpecgit: (path: string) => void;
   dialogs: Pick<Dialogs, "alert" | "confirm">;
   live?: () => boolean;
+  signals?: PollSignals;
 }
 
 export interface CommentsParts {
@@ -137,7 +139,7 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     afterJump: () => {
       if (Platform.isMobile) workspace.rightSplit.collapse();
     },
-    signals: pageSignals(plugin, deps.live),
+    signals: deps.signals ?? pageSignals(plugin, deps.live),
     every: (run, ms) => {
       const id = window.setInterval(run, ms);
       plugin.registerInterval(id);
@@ -234,7 +236,8 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     },
     openInSpecgit: deps.openInSpecgit,
     offline: { is: () => false, subscribe: () => () => undefined },
-    openUrl: (url) => void (/^https:\/\//i.test(url) && window.open(url)),
+    server: deps.server,
+    openUrl: (url) => void openExternalUrl(url, deps.server),
     error,
     now: Date.now,
   };

@@ -12,11 +12,16 @@ export const NOTE_BRANCH = "main";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
+export function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK_HOSTS.has(hostname.toLowerCase());
+}
+
 export function isServerAddress(value: string): boolean {
   try {
     const url = new URL(value);
+    if (url.username !== "" || url.password !== "") return false;
     if (url.protocol === "https:") return url.hostname !== "";
-    if (url.protocol === "http:") return LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+    if (url.protocol === "http:") return isLoopbackHost(url.hostname);
     return false;
   } catch {
     return false;

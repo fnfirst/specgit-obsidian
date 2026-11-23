@@ -1,3 +1,4 @@
+import { safeExternalUrl } from "../links";
 import { PLUGIN_COMMENT_WORDS } from "./words";
 
 interface RenderContext {
@@ -28,12 +29,7 @@ function safeHttpsUrl(raw: string): string | null {
   const trimmed = raw.trim();
   const unwrapped = trimmed.startsWith("<") && trimmed.endsWith(">") ? trimmed.slice(1, -1).trim() : trimmed;
   if (!unwrapped || UNSAFE_URL_CHARS.test(unwrapped) || !/^https:\/\//i.test(unwrapped)) return null;
-  try {
-    const parsed = new URL(unwrapped);
-    return parsed.protocol === "https:" ? unwrapped : null;
-  } catch {
-    return null;
-  }
+  return safeExternalUrl(unwrapped) !== null ? unwrapped : null;
 }
 
 function isClosingFence(line: string, fenceChar: string, fenceLen: number): boolean {
@@ -79,7 +75,8 @@ function collectReferences(lines: readonly string[]): { refs: Map<string, string
   return { refs, refLines };
 }
 
-function createSafeLink(parent: HTMLElement, href: string, openUrl: (url: string) => void): HTMLAnchorElement {
+function createSafeLink(parent: HTMLElement, href: string, openUrl: (url: string) => void): HTMLAnchorElement | null {
+  if (safeExternalUrl(href) === null) return null;
   const anchor = parent.createEl("a", { attr: { href, rel: "noopener noreferrer" } });
   anchor.addEventListener("click", (event) => {
     event.preventDefault();
@@ -161,7 +158,8 @@ function appendPlainSegment(parent: HTMLElement, text: string, ctx: RenderContex
         if (safe !== null) {
           flush();
           const anchor = createSafeLink(parent, safe, ctx.openUrl);
-          anchor.append(candidate);
+          if (anchor !== null) anchor.append(candidate);
+          else parent.append(candidate);
           prev = candidate[candidate.length - 1]!;
           i += candidate.length;
           continue;
@@ -177,7 +175,8 @@ function appendPlainSegment(parent: HTMLElement, text: string, ctx: RenderContex
           const url = `https://github.com/${user}`;
           flush();
           const anchor = createSafeLink(parent, url, ctx.openUrl);
-          anchor.append(`@${user}`);
+          if (anchor !== null) anchor.append(`@${user}`);
+          else parent.append(`@${user}`);
           prev = user[user.length - 1]!;
           i += 1 + user.length;
           continue;
@@ -514,8 +513,8 @@ function renderInline(parent: HTMLElement, text: string, ctx: RenderContext, ini
       if (link) {
         flushPlain();
         const safe = safeHttpsUrl(unescapeText(link.dest));
-        if (safe !== null && !ctx.insideLink && ctx.depth < MAX_NESTING_DEPTH) {
-          const anchor = createSafeLink(parent, safe, ctx.openUrl);
+        const anchor = safe !== null && !ctx.insideLink && ctx.depth < MAX_NESTING_DEPTH ? createSafeLink(parent, safe, ctx.openUrl) : null;
+        if (anchor !== null) {
           prev = renderInline(anchor, link.inner, { ...ctx, insideLink: true, depth: ctx.depth + 1 }, "");
         } else if (ctx.depth < MAX_NESTING_DEPTH) {
           prev = renderInline(parent, link.inner, { ...ctx, depth: ctx.depth + 1 }, prev);
@@ -535,7 +534,8 @@ function renderInline(parent: HTMLElement, text: string, ctx: RenderContext, ini
         if (safe !== null && !ctx.insideLink) {
           flushPlain();
           const anchor = createSafeLink(parent, safe, ctx.openUrl);
-          anchor.append(safe);
+          if (anchor !== null) anchor.append(safe);
+          else parent.append(safe);
           prev = safe[safe.length - 1]!;
           i = end + 1;
           continue;

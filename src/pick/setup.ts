@@ -3,7 +3,7 @@ import { type SpecgitApi, splitRepo } from "../api";
 import { GIT_PROVIDER } from "../auth/config";
 import type { Dialogs } from "../changes/flow-deps";
 import { MARK_ICON } from "../brand/mark";
-import { giveAccessUrl } from "../links";
+import { giveAccessUrl, openExternalUrl } from "../links";
 import { isRepoName } from "../mapping";
 import { showNotice, showNoticeWithAction } from "../notices";
 import { bringForward, openDialogs } from "../brand/modal";
@@ -78,7 +78,7 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
           : {}),
         load: () => readRepoList(deps.api, deps.signedIn),
         choose: (name) => answer(name),
-        giveAccess: (repo) => window.open(giveAccessUrl(deps.server(), repo.fullName, repo.ownerInstallationId)),
+        giveAccess: (repo) => void openExternalUrl(giveAccessUrl(deps.server(), repo.fullName, repo.ownerInstallationId), deps.server()),
         retry: () => void pickRepository().then(answer),
         dismissed: () => answer(null),
       });

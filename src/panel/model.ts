@@ -1,6 +1,7 @@
 import type { Board } from "../board";
 import { changesIn, type Shown } from "../disk/regions";
 import { type DocumentRef, docKey, type FileKind, noteName, type PathKind, type Place } from "../mapping";
+import { IDLE_AFTER_MS, IDLE_FOCUSED_AFTER_MS, type PollSignals } from "../shared/review-flow";
 import type { NoteStatus, StatusBoard } from "../status";
 
 export type TabId = "status" | "comments";
@@ -33,6 +34,7 @@ export interface PanelDeps {
   stayConnected(): boolean;
   peopleIn(doc: DocumentRef): Promise<number | null>;
   now?: () => number;
+  signals?: PollSignals;
 }
 
 export class PanelModel {
@@ -41,6 +43,7 @@ export class PanelModel {
   private readonly asked = new Map<string, { people: number | null; at: number }>();
   private readonly asking = new Set<string>();
   private open = 0;
+  private stopShown: (() => void) | null = null;
   private tabId: TabId = "status";
   private readonly now: () => number;
 
@@ -67,10 +70,21 @@ export class PanelModel {
   };
 
   attach(): () => void {
+    const wasClosed = this.open === 0;
     this.open++;
+    if (wasClosed && this.deps.signals) {
+      this.stopShown = this.deps.signals.onShown(() => this.askPeople());
+    }
     this.update();
+    let detached = false;
     return () => {
-      this.open--;
+      if (detached) return;
+      detached = true;
+      this.open = Math.max(0, this.open - 1);
+      if (this.open === 0) {
+        this.stopShown?.();
+        this.stopShown = null;
+      }
     };
   }
 
@@ -83,6 +97,12 @@ export class PanelModel {
   askPeople(): void {
     const { note, status } = this.current;
     if (this.open === 0 || !note || !this.current.signedIn || (status && status.phase !== "local")) return;
+    const { signals } = this.deps;
+    if (signals) {
+      if (signals.hidden()) return;
+      const limit = signals.focused?.() ? IDLE_FOCUSED_AFTER_MS : IDLE_AFTER_MS;
+      if (signals.now() - signals.lastActivityAt() >= limit) return;
+    }
     const place = this.deps.placeOf(note.path);
     if (place.kind !== "note") return;
     const key = docKey(place.doc);

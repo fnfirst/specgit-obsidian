@@ -6,11 +6,11 @@ import { Budget } from "../disk/diff";
 import { eolOf, toLf, withEol } from "../disk/line-endings";
 import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { CasePathIndex, type DocumentRef, noteName } from "../mapping";
-import type { NoticeHandle } from "../notices";
 import type { Activity } from "./activity";
 import { type Case, draftCase, type Draft, draftKey, type Ended, type FileFacts, follows, isClean, type LeftAlone, type StayDrafts } from "./draft-state";
 import type { BranchFile, MainFile } from "../auth/git-copy";
 import { DraftDeletes } from "./draft-deletes";
+import { TeammateOffers } from "./draft-offers";
 import { DraftRenames, RENAME_HOLD_MS } from "./draft-renames";
 import type { End } from "./ends";
 import { caseCollisionWords, StayHolds, vaultCaseIndex } from "./holds";
@@ -40,6 +40,7 @@ export interface DraftContext {
 
 export interface DraftPass {
   changed: number;
+  rescan: boolean;
   more: boolean;
   wake: number | null;
 }
@@ -47,6 +48,7 @@ export interface DraftPass {
 export class DraftInbound {
   private reads = 0;
   private cut = false;
+  private rescan = false;
   private readonly wake = new WakeClock();
   private readonly unlevel = new Map<string, { strikes: number; until: number }>();
   private readonly unsaved = new Map<string, { strikes: number; until: number }>();
@@ -58,11 +60,7 @@ export class DraftInbound {
   private readonly holds: StayHolds;
   private readonly toldConflict = new Map<string, string>();
   private readonly noticed = new Set<string>();
-  private readonly toldOffer = new Map<string, string>();
-  private initial: Map<string, string> | null = null;
-  private readonly initialOffered = new Set<string>();
-  private offerNotice: NoticeHandle | null = null;
-  private offerSaid = 0;
+  private readonly offers: TeammateOffers;
   private readonly attachmentsFor = new Map<string, string>();
   private readonly endedMemo = {
     get: (path: string): { sent: string; ended: Ended } | undefined => this.ctx.state.data.endedOwn?.[path],
@@ -91,6 +89,7 @@ export class DraftInbound {
 
   constructor(private readonly ctx: DraftContext) {
     this.holds = ctx.holds ?? new StayHolds(ctx.state, ctx.activity, ctx.ports);
+    this.offers = new TeammateOffers({ ports: ctx.ports, state: ctx.state, settleNow: (path) => this.settleNow(path) });
     const delayFor = (strikes: number): number => Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** strikes);
     this.waiting = new BackoffWaits(() => this.ctx.ports.now(), delayFor);
     this.endWaiting = new BackoffWaits(() => this.ctx.ports.now(), delayFor);
@@ -126,8 +125,7 @@ export class DraftInbound {
 
   stop(): void {
     this.abort.abort();
-    this.offerNotice?.hide();
-    this.offerNotice = null;
+    this.offers.stop();
     this.unsaved.clear();
     this.deferredUnsaved.clear();
   }
@@ -138,10 +136,10 @@ export class DraftInbound {
     if (this.noticed.has(path)) return;
     this.noticed.add(path);
     if (!this.ctx.ports.aware()) {
-      this.ctx.ports.notify(DRAFT_SAID.conflict(noteName(path)), { label: DRAFT_SAID.chooseButton, run: () => this.settleNow(path) }, { lasting: true });
+      this.ctx.ports.notify(DRAFT_SAID.conflict(noteName(path)), { label: DRAFT_SAID.chooseButton, run: () => void this.settleNow(path) }, { lasting: true });
       return;
     }
-    this.ctx.ports.choice?.(path, { words: CHOICE_WORDS.draft, label: CHOICE_WORDS.choose, run: () => this.settleNow(path) });
+    this.ctx.ports.choice?.(path, { words: CHOICE_WORDS.draft, label: CHOICE_WORDS.choose, run: () => void this.settleNow(path) });
     this.ctx.ports.notify(DRAFT_SAID.conflict(noteName(path)), { label: CHOICE_WORDS.show, run: () => this.ctx.ports.openStatus?.() }, { lasting: true });
   }
 
@@ -182,38 +180,40 @@ export class DraftInbound {
     return blob !== null && this.toldConflict.get(path) === blob;
   }
 
-  async readOne(looked: Looked, path: string): Promise<{ changed: number; wake: number | null }> {
+  async readOne(looked: Looked, path: string): Promise<{ changed: number; rescan: boolean; wake: number | null }> {
     const draft = looked.drafts?.byPath.get(path);
     this.looked = looked;
     this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
     this.reads = 0;
     this.cut = false;
+    this.rescan = false;
     this.wake.reset();
-    if (!looked.drafts) return { changed: 0, wake: null };
+    if (!looked.drafts) return { changed: 0, rescan: false, wake: null };
     if (draft && !looked.files.has(path) && this.renames.mayBeRename(looked, looked.drafts.byPath, path, draft) && this.renames.holding(path)) {
       this.ctx.ports.lookAgain();
-      return { changed: 0, wake: null };
+      return { changed: 0, rescan: false, wake: null };
     }
     this.forgetReads();
     const moved = draft ? { ...draft, blob: "" } : null;
     const changed = ((await this.one(looked, path, moved, looked.drafts.level)) ? 1 : 0) + (await this.deletes.flush(looked));
     this.deletes.tellKept();
     this.ctx.state.save();
-    return { changed, wake: this.wake.value() };
+    return { changed, rescan: this.rescan, wake: this.wake.value() };
   }
 
-  async readEnded(looked: Looked, path: string): Promise<{ changed: number; wake: number | null }> {
+  async readEnded(looked: Looked, path: string): Promise<{ changed: number; rescan: boolean; wake: number | null }> {
     this.forgetReads();
     this.looked = looked;
     this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
     this.reads = 0;
     this.cut = false;
+    this.rescan = false;
     this.wake.reset();
     const changed = ((await this.one(looked, path, null, true)) ? 1 : 0) + (await this.deletes.flush(looked));
     this.tellClosed();
     this.deletes.tellKept();
     this.ctx.state.save();
-    return { changed, wake: this.wake.value() };
+    return { changed, rescan: this.rescan, wake: this.wake.value() };
   }
 
   keepDeleted(looked: Looked, path: string, deletedAt: number): void {
@@ -244,11 +244,12 @@ export class DraftInbound {
     this.known = known;
     this.reads = 0;
     this.cut = false;
+    this.rescan = false;
     this.wake.reset();
     let changed = this.keepAwaiting(looked);
-    if (!drafts) return { changed, more: false, wake: null };
+    if (!drafts) return { changed, rescan: false, more: false, wake: null };
     this.holds.pruneCaseCollisions(looked, this.caseIndex);
-    this.noteInitial(looked, drafts);
+    this.offers.noteInitial(looked, drafts);
     await this.backfill(looked);
     this.deletes.dropGone(looked);
     this.renames.dropSettled(looked, drafts.byPath);
@@ -266,11 +267,11 @@ export class DraftInbound {
       if (await this.one(looked, path, drafts.byPath.get(path) ?? null, drafts.level)) changed++;
     }
     changed += await this.deletes.flush(looked);
-    this.tellOffers(drafts);
+    this.offers.tell(drafts);
     this.tellClosed();
     this.deletes.tellKept();
     this.ctx.state.save();
-    return { changed, more: this.cut, wake: this.wake.value() };
+    return { changed, rescan: this.rescan, more: this.cut, wake: this.wake.value() };
   }
 
   private keepAwaiting(looked: Looked): number {
@@ -509,7 +510,8 @@ export class DraftInbound {
     this.clearUnsaved(path);
     if (answer.kind === "offer") {
       if (!facts.present && this.caseIndex.collision(path) !== null) return false;
-      return this.offer(path, looked.drafts?.byPath.get(path) ?? draft);
+      this.offers.offer(path, looked.drafts?.byPath.get(path) ?? draft);
+      return false;
     }
     if (answer.kind === "create" && this.caseIndex.collision(path) !== null) {
       this.holdCaseCollision(path, draft?.blob ?? draft?.branch ?? "");
@@ -534,7 +536,7 @@ export class DraftInbound {
           return made;
         }
         case "merge":
-          return await this.classify(path, doc, looked, draft!);
+          return await this.mergeOrClassify(path, doc, looked, draft!);
         default:
           return await this.end(path, doc, looked, answer.kind as "settle" | "restore" | "end-own", ended === "discarded");
       }
@@ -574,112 +576,50 @@ export class DraftInbound {
     }
   }
 
-  private offer(path: string, draft: Draft | null): boolean {
-    if (!draft || draft.blob === null || this.toldOffer.get(path) === draft.branch) return false;
-    this.toldOffer.set(path, draft.branch);
-    this.initialOffered.add(path);
-    return false;
-  }
-
   policyFor(path: string, draft: Pick<Draft, "blob">): StayDrafts {
-    const policy = this.ctx.ports.policy();
-    return policy === "everyone" && draft.blob !== null && this.initial?.get(path) === draft.blob ? "mine" : policy;
-  }
-
-  private noteInitial(looked: Looked, drafts: NonNullable<Looked["drafts"]>): void {
-    if (this.initial !== null) return;
-    const { ports } = this.ctx;
-    this.initial = new Map();
-    if (ports.policy() !== "everyone") return;
-    for (const [path, draft] of drafts.byPath) {
-      if (draft.blob === null || draft.inGroup === true) continue;
-      const sentTo = looked.files.get(path)?.sentTo;
-      if (!follows(draft, ports.login(), sentTo, "mine") && follows(draft, ports.login(), sentTo, "everyone")) this.initial.set(path, draft.blob);
-    }
-  }
-
-  private tellOffers(drafts: NonNullable<Looked["drafts"]>): void {
-    if (drafts.level) {
-      for (const path of [...this.initialOffered]) {
-        if (drafts.byPath.get(path)?.blob != null) continue;
-        this.initialOffered.delete(path);
-        this.initial?.delete(path);
-        this.toldOffer.delete(path);
-      }
-    }
-    this.showOffers();
-  }
-
-  private showOffers(): void {
-    const count = this.initialOffered.size;
-    this.lowerTold(count);
-    if (count === 0) {
-      this.offerNotice?.hide();
-      this.offerNotice = null;
-      return;
-    }
-    const aware = this.ctx.ports.aware();
-    const words = aware ? DRAFT_SAID.offerTogether(count) : DRAFT_SAID.offerTogetherPlain(count);
-    if (this.offerNotice?.shown()) {
-      this.offerNotice(words);
-      this.offerSaid = count;
-      return;
-    }
-    if (this.offerNotice && count <= this.offerSaid) {
-      this.offerSaid = count;
-      return;
-    }
-    this.offerSaid = count;
-    if (count <= (this.ctx.state.data.offerTold ?? 0)) return;
-    this.ctx.state.data.offerTold = count;
-    const action = aware ? { label: DRAFT_SAID.offerTogetherButton, run: () => this.ctx.ports.openStatus?.() } : { label: DRAFT_SAID.offerTogetherPlainButton, run: () => this.addAllOffered() };
-    this.offerNotice = this.ctx.ports.notify(words, action, { lasting: true }) ?? null;
-  }
-
-  private lowerTold(count: number): void {
-    const { data } = this.ctx.state;
-    if (data.offerTold !== undefined && count < data.offerTold) data.offerTold = count;
+    return this.offers.policyFor(path, draft);
   }
 
   offered(): readonly string[] {
-    return [...this.initialOffered];
-  }
-
-  dropOffer(path: string): void {
-    if (!this.initialOffered.delete(path)) return;
-    this.initial?.delete(path);
-    const left = this.initialOffered.size;
-    this.lowerTold(left);
-    if (left === 0) {
-      this.offerNotice?.hide();
-      this.offerNotice = null;
-    } else this.offerNotice?.(this.ctx.ports.aware() ? DRAFT_SAID.offerTogether(left) : DRAFT_SAID.offerTogetherPlain(left));
+    return this.offers.offered();
   }
 
   addAllOffered(): void {
-    if (this.ctx.ports.policy() !== "everyone") {
-      for (const path of [...this.initialOffered]) this.settleNow(path);
-      return;
-    }
-    for (const path of this.initialOffered) this.initial?.delete(path);
-    this.initialOffered.clear();
-    this.lowerTold(0);
-    this.offerNotice?.hide();
-    this.offerNotice = null;
-    this.ctx.ports.lookAgain();
+    this.offers.addAll();
   }
 
   livened(isLive: (path: string) => boolean): void {
-    for (const path of this.initialOffered) if (isLive(path)) this.dropOffer(path);
+    this.offers.livened(isLive);
   }
 
-  addNow(looked: Looked, path: string): void {
+  addNow(looked: Looked, path: string): Promise<void> {
     this.looked = looked;
-    this.settleNow(path);
+    return this.settleNow(path);
+  }
+
+  private async writeText(
+    path: string,
+    mine: string,
+    target: string,
+    options: { confirmed?: boolean; notifyOnFail?: boolean } = {},
+  ): Promise<{ ok: true; text: string; changed: boolean } | { ok: false }> {
+    const { ports, activity } = this.ctx;
+    const targetLf = toLf(target);
+    if (toLf(mine) === targetLf) return { ok: true, text: mine, changed: false };
+    const text = withEol(targetLf, eolOf(mine));
+    activity.ownWrite(path);
+    const written = await ports.vault.process(path, (current) => (current === mine ? text : null), options.confirmed ? { confirmed: true } : undefined);
+    if (written !== "written") {
+      activity.notWritten(path);
+      if (options.notifyOnFail) ports.notify(DRAFT_SAID.notApplied(noteName(path)));
+      else this.wait(path);
+      return { ok: false };
+    }
+    return { ok: true, text, changed: true };
   }
 
   private async take(path: string, doc: DocumentRef, looked: Looked, draft: Draft): Promise<boolean> {
-    const { ports, activity } = this.ctx;
+    const { ports } = this.ctx;
     const entry = looked.files.get(path)!;
     const together = this.draftOf(draft);
     if (together === null) this.reads++;
@@ -691,21 +631,12 @@ export class DraftInbound {
     }
     const mine = await ports.vault.read(path);
     if (mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
-    let text = mine;
-    if (toLf(mine) !== toLf(there.text)) {
-      text = withEol(toLf(there.text), eolOf(mine));
-      activity.ownWrite(path);
-      const written = await ports.vault.process(path, (current) => (current === mine ? text : null));
-      if (written !== "written") {
-        activity.notWritten(path);
-        this.wait(path);
-        return false;
-      }
-    }
-    ports.agreed(path, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(text) });
+    const wrote = await this.writeText(path, mine, there.text);
+    if (!wrote.ok) return false;
+    ports.agreed(path, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(wrote.text) });
     this.settled(path);
     this.clearConflict(path);
-    return text !== mine;
+    return wrote.changed;
   }
 
   private async create(path: string, doc: DocumentRef, draft: Draft): Promise<boolean> {
@@ -736,7 +667,7 @@ export class DraftInbound {
     return true;
   }
 
-  private async classify(path: string, doc: DocumentRef, looked: Looked, draft: Draft): Promise<boolean> {
+  private async mergeOrClassify(path: string, doc: DocumentRef, looked: Looked, draft: Draft): Promise<boolean> {
     const { ports } = this.ctx;
     const entry = looked.files.get(path)!;
     if (draft.blob !== null && this.toldConflict.get(path) === draft.blob) return false;
@@ -749,21 +680,40 @@ export class DraftInbound {
       return false;
     }
     const mine = await ports.vault.read(path);
-    if (mine === null) return false;
+    if (!this.ctx.current() || mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
     const base = await ports.blobText(doc, entry.sent!);
+    if (!this.ctx.current()) return false;
     if (base === null) {
       this.wait(path);
       return false;
     }
     const merged = mergeFile(path, toLf(base), toLf(mine), toLf(there.text), new Budget(400));
-    if (merged.kind === "conflict") this.tellConflict(path, there.sha);
-    else this.clearConflict(path);
+    if (merged.kind === "conflict") {
+      this.tellConflict(path, there.sha);
+      this.settled(path);
+      return false;
+    }
+    if (!this.holds.isEditHeld(path, entry.sha)) {
+      this.clearConflict(path);
+      this.settled(path);
+      return false;
+    }
+    const wrote = await this.writeText(path, mine, merged.text);
+    if (!wrote.ok) return false;
+    const nextSha = gitBlobShaOfText(wrote.text);
+    const holdsDraft = toLf(wrote.text) === toLf(there.text);
+    ports.agreed(path, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: nextSha } : {}) });
+    if (holdsDraft) this.holds.clearEditHold(path);
+    else this.holds.advanceEditHold(path, entry.sha, nextSha);
+    if (!wrote.changed) this.rescan = true;
     this.settled(path);
-    return false;
+    this.clearConflict(path);
+    await this.attachments(path, doc, draft);
+    return wrote.changed;
   }
 
   private async end(path: string, doc: DocumentRef, looked: Looked, kind: "settle" | "restore" | "end-own", discarded: boolean, choose = false): Promise<boolean> {
-    const { ports, activity, state } = this.ctx;
+    const { ports, state } = this.ctx;
     const entry = looked.files.get(path)!;
     const batched = this.mainOf(path);
     if (batched === null) this.reads++;
@@ -798,39 +748,29 @@ export class DraftInbound {
         target = chosen;
       } else target = merged.text;
     }
-    const text = withEol(toLf(target), eolOf(mine));
-    const same = toLf(text) === toLf(mine);
-    if (!same) {
-      activity.ownWrite(path);
-      const written = await ports.vault.process(path, (current) => (current === mine ? text : null), choose ? { confirmed: true } : undefined);
-      if (written !== "written") {
-        activity.notWritten(path);
-        if (choose) ports.notify(DRAFT_SAID.notApplied(noteName(path)));
-        else this.wait(path);
-        return false;
-      }
-    }
+    const wrote = await this.writeText(path, mine, target, { confirmed: choose, notifyOnFail: choose });
+    if (!wrote.ok) return false;
     ports.recordBase(path, doc, toLf(main.text), main.text);
     ports.rebase(path, main.sha);
     if (state.data.seen) state.data.seen[path] = main.sha;
     ports.agreed(path, null);
     this.endedMemo.delete(path);
-    if (kind === "end-own" && discarded) this.holds.holdEnded(path, gitBlobShaOfText(same ? mine : text));
+    if (kind === "end-own" && discarded) this.holds.holdEnded(path, gitBlobShaOfText(wrote.text));
     this.settled(path);
     this.clearConflict(path);
-    if (kind === "restore" && !same) ports.notify(DRAFT_SAID.discarded(noteName(path)));
-    return !same;
+    if (kind === "restore" && wrote.changed) ports.notify(DRAFT_SAID.discarded(noteName(path)));
+    return wrote.changed;
   }
 
-  private settleNow(path: string): void {
-    this.dropOffer(path);
+  private settleNow(path: string): Promise<void> {
+    this.offers.drop(path);
     const looked = this.looked;
-    if (!looked || !this.ctx.current() || this.deciding.has(path)) return;
+    if (!looked || !this.ctx.current() || this.deciding.has(path)) return Promise.resolve();
     const draft = looked.drafts?.byPath.get(path);
     const doc = this.ctx.ports.documentFor(path);
-    if (!doc) return;
+    if (!doc) return Promise.resolve();
     if (!draft) {
-      if (looked.files.get(path)?.sent === undefined && !this.endedMemo.has(path)) return;
+      if (looked.files.get(path)?.sent === undefined && !this.endedMemo.has(path)) return Promise.resolve();
       this.deciding.add(path);
       this.queue = this.queue.then(async () => {
         try {
@@ -842,11 +782,11 @@ export class DraftInbound {
           this.deciding.delete(path);
         }
       });
-      return;
+      return this.queue;
     }
     this.deciding.add(path);
     this.queue = this.queue.then(async () => {
-      const { ports, activity } = this.ctx;
+      const { ports } = this.ctx;
       try {
         if (!this.ctx.current() || this.abort.signal.aborted) return;
         const there = await ports.draftFile(doc, draft.branch);
@@ -864,17 +804,10 @@ export class DraftInbound {
           chosen = await ports.chooseWhatToKeep(buildReviewRequest(path, merged.review, { other, signal: this.abort.signal }));
         }
         if (chosen === null || !this.ctx.current()) return;
-        const text = withEol(toLf(chosen), eolOf(mine));
-        if (text !== mine) {
-          activity.ownWrite(path);
-          if ((await ports.vault.process(path, (current) => (current === mine ? text : null), { confirmed: true })) !== "written") {
-            activity.notWritten(path);
-            ports.notify(DRAFT_SAID.notApplied(noteName(path)));
-            return;
-          }
-        }
-        const holdsDraft = toLf(text) === toLf(there.text);
-        ports.agreed(path, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: gitBlobShaOfText(text) } : {}) });
+        const wrote = await this.writeText(path, mine, chosen, { confirmed: true, notifyOnFail: true });
+        if (!wrote.ok) return;
+        const holdsDraft = toLf(wrote.text) === toLf(there.text);
+        ports.agreed(path, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: gitBlobShaOfText(wrote.text) } : {}) });
         this.clearConflict(path);
         ports.lookAgain();
       } catch {
@@ -883,5 +816,6 @@ export class DraftInbound {
         this.deciding.delete(path);
       }
     });
+    return this.queue;
   }
 }

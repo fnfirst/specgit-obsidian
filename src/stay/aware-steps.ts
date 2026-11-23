@@ -34,11 +34,15 @@ export class DraftOffers {
 
   constructor(private readonly host: OfferHost) {}
 
-  add(path: string, always = false): void {
+  add(path: string, always = false): Promise<void> {
     const looked = this.host.looked();
-    if (!looked) return;
+    if (!looked) return Promise.resolve();
     if (always) this.asked = true;
-    this.host.draftIn(() => this.host.on() || this.asked).addNow(looked, path);
+    return this.host.draftIn(() => this.host.on() || this.asked).addNow(looked, path);
+  }
+
+  reset(): void {
+    this.asked = false;
   }
 
   offered(): readonly string[] {

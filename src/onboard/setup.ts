@@ -5,6 +5,7 @@ import type { AuthEvent } from "../auth/session";
 import { MARK_ICON } from "../brand/mark";
 import { gitBlobSha } from "../changes/blob-sha";
 import { hashVaultBinary, readVaultBinaryBlob } from "../disk/vault-binary";
+import { openExternalUrl } from "../links";
 import { showNotice, showNoticeWithAction, showProgress } from "../notices";
 import { VaultOnboarding } from "./flow";
 import { OnboardWindow } from "./modal";
@@ -17,6 +18,7 @@ export const ONBOARD_ACTION = "specgit-onboard";
 
 export interface OnboardSetupDeps {
   api: SpecgitApi;
+  server?: () => string;
   binary?: Pick<SpecgitBinaryFetch, "uploadVaultPack">;
   signedIn: () => boolean;
   signIn: (options?: { install?: boolean }) => Promise<void>;
@@ -107,7 +109,7 @@ export function setUpOnboard(plugin: Plugin, deps: OnboardSetupDeps): VaultOnboa
         ...(control.expectPrivate !== undefined ? { expectPrivate: control.expectPrivate } : {}),
       }).run(repo),
     record: new UploadRecords({ load: (key) => app.loadLocalStorage(key) as unknown, save: (key, value) => app.saveLocalStorage(key, value) }),
-    openUrl: (url) => void window.open(url),
+    openUrl: (url) => void openExternalUrl(url, deps.server?.()),
     onFront,
     wait,
     now: Date.now,

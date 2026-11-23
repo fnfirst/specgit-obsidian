@@ -1,10 +1,10 @@
 import type { SpecgitBinaryFetch } from "../auth/binary-fetch";
 import type { BlobsAnswer } from "../auth/git-copy";
-import { clientPollOffset, createPollGateFor, GROUP_PRO_ONLY, type LiveEvent } from "../shared/review-flow";
+import { clientPollOffset, createPollGateFor, GROUP_PRO_ONLY, type LiveEvent, type PollSignals } from "../shared/review-flow";
 import { Platform, type Plugin, TFile } from "obsidian";
 import type { SpecgitApi } from "../api";
 import { NOTE_BRANCH } from "../auth/config";
-import { giveAccessUrl } from "../links";
+import { giveAccessUrl, openExternalUrl } from "../links";
 import type { BaseStore } from "../disk/bases";
 import { guardedVault } from "../disk/guarded-vault";
 import { hashVaultBinary, readVaultBinaryBlob } from "../disk/vault-binary";
@@ -71,6 +71,7 @@ export interface ChangesSetup {
   copyIn?: (files: readonly CopyInFile[], skipped?: readonly string[]) => Promise<unknown>;
   dialogs: Dialogs;
   live?: () => boolean;
+  signals?: PollSignals;
   stayOn?: () => boolean;
   stopped?: (path: string) => void;
   deleted?: (path: string, at: number) => void;
@@ -123,6 +124,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     const key = placeKey();
     if (current?.key !== key) {
       const left = current;
+      left?.cache.flush();
       const cache = new FileCache(key, { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) });
       if (left) cache.inherit(new Map([...left.cache.foreignFiles(), ...left.cache.matchedFiles()]));
       current = { key, cache, mirror: new MirrorClient(deps.api, repo(), folder(), { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) }), attachments: new AttachmentMemory(key, { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) }) };
@@ -334,13 +336,13 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   });
   const actions = {
     openNote: (path: string, event?: MouseEvent | KeyboardEvent) => openNote(app, path, event),
-    openUrl: (url: string) => void window.open(url),
+    openUrl: (url: string) => void openExternalUrl(url, deps.server()),
     openInSpecgit: deps.openInSpecgit,
     owner: () => repo().split("/")[0] ?? "",
     repo,
     folder,
     isLive: (path: string) => deps.isLive(path),
-    giveAccess: () => void window.open(giveAccessUrl(deps.server(), repo())),
+    giveAccess: () => void openExternalUrl(giveAccessUrl(deps.server(), repo()), deps.server()),
     copyIn: async () => void (await deps.copyIn?.(model.missingFiles(), model.missingSkipped())),
     ...(deps.join ? { join: deps.join } : {}),
     ...(deps.addToMyNote ? { addToMyNote: deps.addToMyNote } : {}),
@@ -434,7 +436,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     }),
   );
   plugin.registerEvent(app.vault.on("rename", watch));
-  const signals = pageSignals(plugin, deps.live);
+  const signals = deps.signals ?? pageSignals(plugin, deps.live);
   const watcher = new Watch({ signals, moved: () => placed().mirror.moved(), live: () => deps.live?.() === true, look: lookSoon, stay: () => deps.stayOn?.() === true });
   const unquiet = (): void => watcher.unquiet();
   plugin.register(model.onLooked((looked) => watcher.looked(watchSignature(looked))));
@@ -446,12 +448,18 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     status.reviewsChanged();
   };
   watchWindows(plugin, (win, on) => {
-    on(win.document, "visibilitychange", resumed);
+    on(win.document, "visibilitychange", () => {
+      if (appHidden()) current?.cache.flush();
+      else resumed();
+    });
     on(win, "focus", resumed);
+    on(win, "beforeunload", () => current?.cache.flush());
+    on(win, "pagehide", () => current?.cache.flush());
   });
   const first = window.setTimeout(() => plugin.registerInterval(window.setInterval(() => void watcher.tick(), CHECK_EVERY_MS)), clientPollOffset(CHECK_EVERY_MS));
   plugin.register(() => window.clearTimeout(first));
   plugin.register(() => window.clearTimeout(timer));
+  plugin.register(() => current?.cache.flush());
   plugin.register(() => model.dispose());
   const reviewEvents = new ReviewEvents();
   const reaction = createPollGateFor(restingSignals(signals, () => deps.stayOn?.() === true)).reaction(({ expireReviews }) => {

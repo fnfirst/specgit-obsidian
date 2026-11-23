@@ -148,6 +148,12 @@ export class Activity {
     return this.untilOf(this.git, path) !== null;
   }
 
+  hasGit(): boolean {
+    if (this.now() < this.gitEnds) return true;
+    for (const path of [...this.git.keys()]) if (this.untilOf(this.git, path) !== null) return true;
+    return false;
+  }
+
   private untilOf(marks: Map<string, number>, path: string): number | null {
     const at = marks.get(path);
     if (at === undefined) return null;
@@ -158,7 +164,7 @@ export class Activity {
   }
 
   quietIn(): number {
-    return Math.max(0, this.last + this.options.quietMs - this.now());
+    return Math.max(0, Math.max(this.last + this.options.quietMs, this.gitEnds) - this.now());
   }
 
   isSuspect(path: string): boolean {

@@ -177,19 +177,42 @@ function Picture({ content }: { content: TipContent }) {
   }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+export function safeTipHref(raw: string): string | null {
+  if (typeof raw !== "string") return null;
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return null;
+  }
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  if (/^\/(?![/\\])/.test(trimmed)) return trimmed;
+  try {
+    const url = new URL(trimmed);
+    if (url.username !== "" || url.password !== "") return null;
+    if (url.protocol === "https:") return url.hostname !== "" ? url.href : null;
+    if (url.protocol === "http:") return LOOPBACK_HOSTS.has(url.hostname.toLowerCase()) ? url.href : null;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function TipCard({ tip, id, root }: { tip: OpenTip; id: string; root: { current: HTMLElement | null } }) {
   const card = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (card.current) positionCard(card.current, tip.anchor, root.current);
   }, [tip, root]);
+  const linkHref = tip.content.link ? safeTipHref(tip.content.link.href) : null;
   return (
     <div ref={card} id={id} role="tooltip" className="sp-tip" data-sp-tip={tip.key} style={{ left: 0, top: 0, width: CARD_WIDTH }}>
       {tip.content.picture ? <Picture content={tip.content} /> : null}
       <div className="sp-tip-name">{tip.content.name}</div>
       <p className="sp-tip-line">{tip.content.line}</p>
       {tip.content.reason ? <p className="sp-tip-reason">{tip.content.reason}</p> : null}
-      {tip.content.link ? (
-        <a className="sp-tip-link" href={tip.content.link.href} target="_blank" rel="noopener noreferrer">
+      {tip.content.link && linkHref !== null ? (
+        <a className="sp-tip-link" href={linkHref} target="_blank" rel="noopener noreferrer">
           {tip.content.link.label}
         </a>
       ) : null}

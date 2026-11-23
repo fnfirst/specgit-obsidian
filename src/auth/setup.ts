@@ -1,4 +1,5 @@
 import { type App, Notice, type Plugin } from "obsidian";
+import { openExternalUrl } from "../links";
 import { randomToken } from "./pkce";
 import type { DocumentRef } from "../mapping";
 import type { AskedStep } from "../token-source";
@@ -76,7 +77,7 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
       },
     }),
     transport: obsidianTransport,
-    openBrowser: (url) => void window.open(url),
+    openBrowser: (url) => void openExternalUrl(url, server),
   });
   const tokens = new SpecgitTokenSource({ server, version: manifest.version, auth, transport: obsidianTransport, ...(options.pendingSteps ? { pendingSteps: options.pendingSteps } : {}) });
   const binary = new SpecgitBinaryFetch({ server, version: manifest.version, auth });

@@ -41,6 +41,24 @@ export const SLICE_MS = 12;
 export const SCAN_CONCURRENCY = 4;
 export const RACY_MS = 2_000;
 export const COPIED_KEPT_MS = 10 * 60_000;
+export const CACHE_SAVE_DEBOUNCE_MS = 30_000;
+export const MAX_FOREIGN = 5_000;
+export const MAX_REMOVED = 5_000;
+
+export type SaveScheduler = (run: () => void, ms: number) => () => void;
+
+const defaultSchedule: SaveScheduler = (run, ms) => {
+  const timer = window.setTimeout(run, ms);
+  return () => window.clearTimeout(timer);
+};
+
+function capMap<K, V>(map: Map<K, V>, max: number): void {
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
 
 const sentOf = (entry: CacheEntry | undefined): Pick<CacheEntry, "sent" | "sentTo" | "agreed" | "sentCommit" | "sentAt"> =>
   entry?.sent
@@ -62,6 +80,7 @@ export class FileCache {
   private readonly copied = new Map<string, { sha: string; at: number }>();
   private readonly activeScans = new Set<Set<string>>();
   private dirty = false;
+  private pendingSave: (() => void) | null = null;
 
   private readonly key: string;
 
@@ -69,6 +88,8 @@ export class FileCache {
     place: string,
     private readonly state: LocalState,
     private readonly now: () => number = Date.now,
+    private readonly schedule: SaveScheduler = defaultSchedule,
+    private readonly debounceMs: number = CACHE_SAVE_DEBOUNCE_MS,
   ) {
     this.key = `${KEY_PREFIX}-${hashText(place)}`;
     this.load();
@@ -87,12 +108,26 @@ export class FileCache {
         const candidate = gone as Partial<Gone> | null;
         if (candidate && typeof candidate.path === "string" && typeof candidate.sha === "string") this.removed.set(candidate.path, { path: candidate.path, sha: candidate.sha, base: candidate.base ?? null });
       }
+      capMap(this.foreign, MAX_FOREIGN);
+      capMap(this.removed, MAX_REMOVED);
     } catch {
       void 0;
     }
   }
 
   save(): void {
+    if (!this.dirty || this.pendingSave !== null) return;
+    this.pendingSave = this.schedule(() => {
+      this.pendingSave = null;
+      this.flush();
+    }, this.debounceMs);
+  }
+
+  flush(): void {
+    if (this.pendingSave !== null) {
+      this.pendingSave();
+      this.pendingSave = null;
+    }
     if (!this.dirty) return;
     try {
       this.state.save(this.key, { files: Object.fromEntries(this.entries), removed: [...this.removed.values()], ...(this.foreign.size > 0 ? { foreign: Object.fromEntries(this.foreign) } : {}), ...(this.copied.size > 0 ? { copied: Object.fromEntries([...this.copied].map(([path, one]) => [path, [one.sha, one.at]])) } : {}) });
@@ -112,7 +147,11 @@ export class FileCache {
 
   inherit(files: ReadonlyMap<string, string>): void {
     if (files.size === 0) return;
-    this.foreign = new Map([...this.foreign, ...files]);
+    for (const [path, sha] of files) {
+      this.foreign.delete(path);
+      this.foreign.set(path, sha);
+    }
+    capMap(this.foreign, MAX_FOREIGN);
     this.dirty = true;
     this.save();
   }
@@ -193,10 +232,18 @@ export class FileCache {
       for (const [path, entry] of this.entries) {
         if (present.has(path) || scanDropped.has(path)) continue;
         const lost = { path, sha: entry.sha, base: entry.base };
+        this.removed.delete(path);
         this.removed.set(path, lost);
         gone.push(lost);
       }
+      capMap(this.removed, MAX_REMOVED);
       this.entries = files;
+      for (const [path, sha] of [...this.foreign]) {
+        if (files.get(path)?.sha !== sha) {
+          this.foreign.delete(path);
+          this.dirty = true;
+        }
+      }
       for (const [path, one] of this.copied) {
         if (!present.has(path) && this.now() - one.at > COPIED_KEPT_MS) {
           this.copied.delete(path);

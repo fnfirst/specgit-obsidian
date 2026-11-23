@@ -1,4 +1,5 @@
 import { apiVersion, Platform, type Plugin } from "obsidian";
+import { openExternalUrl } from "../links";
 import type { NoteWord } from "../status";
 import { ReportModal } from "./modal";
 import { alertReportText, buildDetails, platformWords, type ReportApi, ReportForm } from "./report";
@@ -36,7 +37,7 @@ export function setUpReport(plugin: Plugin, deps: ReportSetupDeps): ReportHandle
             noteState: deps.noteState(),
           }),
         copy: (text) => navigator.clipboard.writeText(text),
-        openUrl: (url) => void window.open(url),
+        openUrl: (url) => void openExternalUrl(url, deps.server()),
       },
       reuse ? draft!.form.message : message,
     );
