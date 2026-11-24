@@ -4,7 +4,7 @@ import { isGroupBranch } from "../shared/review-flow";
 import type { SendHooks } from "../stay/types";
 import { gitBlobShaOfText } from "./blob-sha";
 import type { FlowDeps } from "./flow-deps";
-import { type AutoCommit, autoOutcome, type Carried, MOVED_ATTEMPTS, type Sent } from "./flow-helpers";
+import { type AutoCommitOutcome, autoOutcome, type AutoStepOutcome, type Carried, MOVED_ATTEMPTS, type Sent } from "./flow-helpers";
 import { MemberSync } from "./member-sync";
 import type { ChangeRow, ChangesModel } from "./model";
 import type { ReadBacks } from "./read-back";
@@ -38,13 +38,14 @@ export interface AutoCommitHost {
 export class AutoCommitFlows {
   constructor(private readonly host: AutoCommitHost) {}
 
-  async autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<{ result: AutoCommit; writes: number; deletedAt?: number; retryAfterMs?: number }> {
+  async autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<AutoCommitOutcome> {
     const before = this.host.meter.writes;
     this.host.goneAt.delete(row.change.path);
     const outcome = hooks?.edit ? (this.host.model.groupOf(row.change.path) ? await this.autoMember(row, isCurrent, hooks) : await this.autoEdited(row, isCurrent, hooks)) : await this.autoCommitted(row, isCurrent);
     return {
       result: outcome.result,
       writes: this.host.meter.writes - before,
+      ...(outcome.inVault === false ? { inVault: false as const } : {}),
       ...(outcome.result === "deleted" && this.host.goneAt.has(row.change.path) ? { deletedAt: this.host.goneAt.get(row.change.path)! } : {}),
       ...(outcome.retryAfterMs === undefined ? {} : { retryAfterMs: outcome.retryAfterMs }),
     };
@@ -67,7 +68,7 @@ export class AutoCommitFlows {
     return "limited" in sent && sent.limited ? { result: "limited", ...(sent.retryAfterMs === undefined ? {} : { retryAfterMs: sent.retryAfterMs }) } : { result: "later" };
   }
 
-  private async autoCommitted(row: ChangeRow, isCurrent: () => boolean): Promise<{ result: AutoCommit; retryAfterMs?: number }> {
+  private async autoCommitted(row: ChangeRow, isCurrent: () => boolean): Promise<AutoStepOutcome> {
     for (let attempt = 1; attempt <= MOVED_ATTEMPTS; attempt++) {
       if (!isCurrent()) return { result: "retry" };
       const outcome = autoOutcome(await this.host.sendOnce(row, { quiet: true }), { retryMoved: true });
@@ -93,7 +94,7 @@ export class AutoCommitFlows {
     return { deps, memory, conflicted: () => conflicted };
   }
 
-  private async autoMember(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<{ result: AutoCommit; retryAfterMs?: number }> {
+  private async autoMember(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<AutoStepOutcome> {
     const { deps, memory, conflicted } = this.quiet(hooks);
     if (!isCurrent()) return { result: "retry" };
     if (!hooks.memberBranch) return { result: "held" };
@@ -108,7 +109,7 @@ export class AutoCommitFlows {
     return autoOutcome(sent, { conflicted: conflicted() }) ?? { result: "retry" };
   }
 
-  private async autoViaGroup(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks, groupBranch: string): Promise<{ result: AutoCommit; retryAfterMs?: number }> {
+  private async autoViaGroup(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks, groupBranch: string): Promise<AutoStepOutcome> {
     const { deps, memory, conflicted } = this.quiet(hooks);
     for (let attempt = 1; attempt <= MOVED_ATTEMPTS; attempt++) {
       if (!isCurrent()) return { result: "retry" };
@@ -125,7 +126,7 @@ export class AutoCommitFlows {
     return { result: "retry" };
   }
 
-  private async autoEdited(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<{ result: AutoCommit; retryAfterMs?: number }> {
+  private async autoEdited(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<AutoStepOutcome> {
     const { deps, memory, conflicted } = this.quiet(hooks);
     for (let attempt = 1; attempt <= MOVED_ATTEMPTS; attempt++) {
       if (!isCurrent()) return { result: "retry" };

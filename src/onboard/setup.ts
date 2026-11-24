@@ -71,8 +71,10 @@ export function setUpOnboard(plugin: Plugin, deps: OnboardSetupDeps): VaultOnboa
   const reads = vaultReads(app);
   const wait = (ms: number): Promise<void> => new Promise((resume) => window.setTimeout(resume, ms));
   const call = (action: string, body: Record<string, unknown>) => deps.api.call("POST", "/api/vault-upload", { body: { action, ...body } });
+  const ui = new OnboardWindow(app);
   const onboarding = new VaultOnboarding({
-    ui: new OnboardWindow(app),
+    ui,
+    confirmPublic: (repo) => ui.confirmPublic(repo),
     signedIn: deps.signedIn,
     signIn: (options) =>
       new Promise((resolve) => {

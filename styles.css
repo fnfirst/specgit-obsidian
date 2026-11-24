@@ -954,6 +954,19 @@ body:not(.is-mobile) .specgit-panel-body.specgit-panel-body-status > .specgit-we
   background-color: color-mix(in srgb, var(--specgit-accent) 12%, transparent);
 }
 
+.specgit-signin-confirm {
+  margin: var(--size-4-2) 0 var(--size-4-3);
+  padding: var(--size-4-2) var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--specgit-radius);
+  background-color: var(--background-secondary);
+}
+
+.specgit-signin-confirm-phrase {
+  font-family: var(--font-monospace);
+  font-weight: var(--font-semibold);
+}
+
 .modal.specgit-modal.is-wide {
   display: flex;
   flex-direction: column;
@@ -1022,6 +1035,42 @@ body:not(.is-mobile) .specgit-panel-body.specgit-panel-body-status > .specgit-we
 .specgit-dialog-note {
   margin: var(--size-4-3) 0 0;
   line-height: var(--line-height-normal);
+}
+
+.specgit-public-repo-warning {
+  margin: 0 0 var(--size-4-3);
+  padding: var(--size-4-2) var(--size-4-3);
+  border: 1px solid color-mix(in srgb, var(--color-red) 45%, transparent);
+  border-radius: var(--specgit-radius);
+  background-color: color-mix(in srgb, var(--color-red) 10%, transparent);
+  color: var(--text-error);
+  font-weight: var(--font-semibold);
+  line-height: var(--line-height-normal);
+}
+
+.modal.specgit-modal .setting-item.specgit-public-repo-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--size-4-2);
+  border-top: none;
+  padding-top: 0;
+}
+
+.modal.specgit-modal .setting-item.specgit-public-repo-field .setting-item-info {
+  margin-inline-end: 0;
+}
+
+.modal.specgit-modal .setting-item.specgit-public-repo-field .setting-item-control {
+  width: 100%;
+}
+
+.modal.specgit-modal .setting-item.specgit-public-repo-field input[type="text"] {
+  width: 100%;
+}
+
+.modal.specgit-modal button.mod-warning:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .modal.specgit-modal .setting-item-name.specgit-reviewer-name {
@@ -2809,10 +2858,10 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: var(--sp-card-pad, 10px);
+  padding: var(--sp-card-pad, 10px 12px);
   border: var(--sp-card-border, 1px solid var(--sp-border));
   border-radius: var(--sp-card-radius, var(--sp-radius));
-  background: var(--sp-card-bg, transparent);
+  background: var(--sp-card-bg, color-mix(in srgb, var(--sp-fg) 3%, var(--sp-bg)));
 }
 .sp-theme-obsidian .sp-pinned-head {
   display: flex;
@@ -2956,6 +3005,26 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   margin: 0 0 8px;
   color: var(--sp-muted);
   font-size: 0.9em;
+}
+.sp-theme-obsidian .sp-card-warning {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--sp-radius);
+  background: color-mix(in srgb, var(--sp-warning) 14%, transparent);
+  color: color-mix(in srgb, var(--sp-warning) 78%, var(--sp-fg));
+  font-size: 0.9em;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+}
+.sp-theme-obsidian .sp-card .sp-card-reason {
+  flex: none;
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.35;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: break-word;
 }
 .sp-theme-obsidian .sp-list > .sp-view-only {
   padding: 6px 0;
@@ -3304,10 +3373,10 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   --sp-row-fg: var(--nav-item-color);
   --sp-row-fg-hover: var(--nav-item-color-hover);
   --sp-guide: var(--nav-indentation-guide-color);
-  --sp-card-bg: transparent;
-  --sp-card-border: 0;
-  --sp-card-radius: 0;
-  --sp-card-pad: 4px 0 12px;
+  --sp-card-bg: var(--background-primary);
+  --sp-card-border: 1px solid var(--background-modifier-border);
+  --sp-card-radius: var(--radius-m, 8px);
+  --sp-card-pad: 10px 12px;
   --sp-chip-border: var(--pill-border-color, var(--background-modifier-border));
   --sp-chip-on-bg: var(--background-modifier-hover);
   --sp-btn-bg: var(--interactive-normal);
@@ -3319,9 +3388,6 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .is-mobile .sp-theme-obsidian {
   --sp-row-gap: 8px;
   --sp-safe-bottom: calc(var(--mobile-navbar-height, 3.5rem) + var(--size-2-2));
-}
-.sp-theme-obsidian .sp-card {
-  border-bottom: 1px solid var(--background-modifier-border);
 }
 .sp-theme-obsidian .sp-btn:not(.sp-primary):hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--interactive-hover);

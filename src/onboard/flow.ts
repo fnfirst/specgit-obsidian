@@ -86,6 +86,7 @@ export interface UploadControl {
 
 export interface OnboardDeps {
   ui: OnboardUi;
+  confirmPublic?(repo: string): Promise<boolean>;
   signedIn(): boolean;
   signIn(options: { install: boolean }): Promise<"signed_in" | "unfinished">;
   call(action: string, body: Record<string, unknown>): Promise<ApiAnswer>;
@@ -112,6 +113,7 @@ const LOOK_FOR_MS = 10 * 60_000;
 interface Session {
   typed: string;
   private: boolean;
+  confirmedPublic: string | null;
   name: string;
   plan: VaultPlan | null;
   account: OnboardAccount | null;
@@ -184,6 +186,14 @@ export class VaultOnboarding {
       return this.deps.notify(SIGN_IN_UNFINISHED);
     }
     if (s.ended) return;
+    if (record.private === false) {
+      if (!(await this.confirmPublicRepo(s, record.repo))) {
+        this.end(s);
+        return;
+      }
+      if (s.ended) return;
+      s.confirmedPublic = record.repo;
+    }
     if (record.uploaded === true) {
       s.upload = { repo: record.repo, counts: null, waiting: null };
       return void this.link(s, record.repo);
@@ -206,6 +216,7 @@ export class VaultOnboarding {
     return {
       typed,
       private: true,
+      confirmedPublic: null,
       name: "",
       plan: null,
       account: null,
@@ -271,10 +282,12 @@ export class VaultOnboarding {
       edit: (typed, isPrivate) => {
         s.typed = typed;
         s.private = isPrivate;
+        if (isPrivate) s.confirmedPublic = null;
       },
       press: (typed, isPrivate) => {
         s.typed = typed;
         s.private = isPrivate;
+        if (isPrivate) s.confirmedPublic = null;
         if (!s.ended) void this.press(s);
       },
       closed: live(() => {
@@ -401,8 +414,38 @@ export class VaultOnboarding {
     await this.proceed(s, s.account);
   }
 
+  private async confirmPublicRepo(s: Session, repo: string): Promise<boolean> {
+    if (!this.deps.confirmPublic) return false;
+    s.notice?.hide();
+    s.notice = null;
+    return this.deps.confirmPublic(repo);
+  }
+
+  private async handlePublicMismatch(s: Session, repo: string): Promise<void> {
+    const ok = await this.confirmPublicRepo(s, repo);
+    if (s.ended) return;
+    if (ok) {
+      s.private = false;
+      s.confirmedPublic = repo;
+      this.deps.record.write(repo, false);
+      this.beginUpload(s, repo);
+      return;
+    }
+    this.deps.record.clear();
+    this.problem(s, "public", isPublic(nameOf(repo)), null);
+  }
+
   private async proceed(s: Session, account: OnboardAccount): Promise<void> {
     s.account = account;
+    if (!s.private && (account.next === "create" || account.next === "form")) {
+      const target = `${account.login}/${s.name}`;
+      if (s.confirmedPublic !== target) {
+        const ok = await this.confirmPublicRepo(s, target);
+        if (s.ended) return;
+        if (!ok) return this.back(s, null);
+        s.confirmedPublic = target;
+      }
+    }
     switch (account.next) {
       case "create":
         return this.create(s);
@@ -474,15 +517,12 @@ export class VaultOnboarding {
       async (live) => {
         const answer = await this.ask("start", { repo, gitignore: s.plan?.gitignore ?? "", ...(s.private ? { expectPrivate: true } : {}) });
         if (answer === null || !live()) return false;
-        if (answer.code === "repo_public") {
-          this.problem(s, "public", isPublic(name), null);
+        if (answer.code === "repo_public" || (answer.status === 200 && s.private && answer.body?.private === false)) {
+          s.watching = null;
+          void this.handlePublicMismatch(s, repo);
           return true;
         }
         if (answer.status === 200) {
-          if (s.private && answer.body?.private === false) {
-            this.problem(s, "public", isPublic(name), null);
-            return true;
-          }
           this.deps.record.write(repo, s.private);
           this.beginUpload(s, repo);
           return true;
@@ -599,11 +639,14 @@ export class VaultOnboarding {
 
   private failed(s: Session, why: "changed" | "gone" | "not_empty" | "public" | "failed", repo: string): void {
     const name = nameOf(repo);
-    if (why === "not_empty" || why === "public") this.deps.record.clear();
+    if (why === "public") {
+      void this.handlePublicMismatch(s, repo);
+      return;
+    }
+    if (why === "not_empty") this.deps.record.clear();
     if (why === "changed") this.problem(s, why, changed(name), "start_again");
     else if (why === "gone") this.problem(s, why, gone(name), "start_again");
     else if (why === "not_empty") this.problem(s, why, notEmpty(name), null);
-    else if (why === "public") this.problem(s, why, isPublic(name), null);
     else this.problem(s, why, FAILED, "try_again");
   }
 
@@ -614,6 +657,7 @@ export class VaultOnboarding {
     this.deps.record.clear();
     s.upload = null;
     s.problem = null;
+    s.confirmedPublic = null;
     this.showName(s);
     this.emit();
     this.load(s);

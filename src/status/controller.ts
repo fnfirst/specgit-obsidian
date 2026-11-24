@@ -406,10 +406,11 @@ export class StatusController {
     const path = view ? (view.state.note?.path ?? null) : this.env.activePath();
     const status = view?.state.status ?? null;
     const behind = path !== null && this.behind?.path === path && this.behind.behind;
+    const saver = path !== null ? model.saverOf(path) : null;
     const stay = view ? view.state.stay : this.env.stayOn?.() === true;
     const paused = path !== null && this.env.isPaused?.(path) === true;
     const hold = path !== null ? model.holdOf(path) : null;
-    const key: unknown[] = [state, this.facts, this.version, view?.state ?? null, path, behind, status, model.vault(), stay, paused, hold];
+    const key: unknown[] = [state, this.facts, this.version, view?.state ?? null, path, behind, status, saver, model.vault(), stay, paused, hold];
     if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) return this.built.value;
     const both = new Set<string>();
     const views = new Map<string, readonly ("github" | "difference")[]>();
@@ -451,7 +452,7 @@ export class StatusController {
       ...(this.env.isPaused ? { isPaused: this.env.isPaused } : {}),
       openComments: (one) => this.env.openComments(one),
       linked: this.env.folder(),
-      active: path ? { path, status, behind, people: view?.state.people ?? null } : null,
+      active: path ? { path, status, behind, people: view?.state.people ?? null, ...(saver ? { saver } : {}) } : null,
       showChanges: path !== null && this.env.since.isOpenFor(path),
       checked: this.checked,
       notice: this.notice,

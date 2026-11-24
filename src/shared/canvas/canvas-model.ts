@@ -414,11 +414,26 @@ export function canvasItemJson(item: CanvasItem): Raw {
   return itemRecord(item);
 }
 
+function mergedKeyOrder(like: CanvasItem | undefined, json: Raw, built: CanvasItem): string[] | undefined {
+  if (!like?.keyOrder) return undefined;
+  const likeFields = fieldsOf(like);
+  const added = Object.keys(json).filter((key) => {
+    if (json[key] === undefined || like.keyOrder!.includes(key)) return false;
+    const spec = specOf(likeFields, key);
+    return !(spec?.required && resolveField(like, spec).state === "missing");
+  });
+  if (added.length === 0) return uniqueKeys(like.keyOrder);
+  const defaults = fieldsOf(built).map((spec) => spec.key);
+  return orderKeys([...like.keyOrder, ...added], like.keyOrder, defaults);
+}
+
 export function canvasItemFromJson(kind: "node", json: Raw, like?: CanvasNode): CanvasNode;
 export function canvasItemFromJson(kind: "edge", json: Raw, like?: CanvasEdge): CanvasEdge;
 export function canvasItemFromJson(kind: ItemKind, json: Raw, like?: CanvasItem): CanvasItem;
 export function canvasItemFromJson(kind: ItemKind, json: Raw, like?: CanvasItem): CanvasItem {
   const built = kind === "edge" ? edgeFromRaw(json, like?.keyOrder) : nodeFromRaw(json, like?.keyOrder);
+  const keyOrder = mergedKeyOrder(like, json, built);
+  if (keyOrder) built.keyOrder = keyOrder;
   if (like?.origin) built.origin = like.origin;
   return built;
 }

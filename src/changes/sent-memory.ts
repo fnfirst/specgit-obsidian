@@ -13,6 +13,7 @@ export interface SentRecord {
   doc: string;
   at: number;
   commit?: string;
+  unwritten?: true;
 }
 
 export interface SentCacheEntry {
@@ -27,7 +28,7 @@ export interface SentBaseDeps {
   readonly heldCommits: Set<string>;
   cacheEntry(path: string, repo: string): SentCacheEntry | null;
   readonly review: Pick<ReviewApi, "status" | "mergePreview">;
-  gitBlob(doc: DocumentRef, sha: string): Promise<string | null>;
+  gitBlob(doc: DocumentRef, sha: string, signal?: AbortSignal): Promise<string | null>;
   readonly publishedBranch: string;
   forget(path: string): void;
 }
@@ -44,19 +45,21 @@ async function branchHoldsCommit(
   doc: DocumentRef,
   branch: string | undefined,
   commit: string | undefined,
+  signal?: AbortSignal,
 ): Promise<boolean | "unchecked" | null> {
+  if (signal?.aborted) return null;
   if (commit === undefined || branch === undefined) return "unchecked";
   const key = `${doc.repo}\n${branch}\n${commit}`;
   if (heldCommits.has(key)) return true;
-  const seen = await review.mergePreview(doc, branch, publishedBranch, commit);
-  if (!seen.ok) return null;
+  const seen = await review.mergePreview(doc, branch, publishedBranch, commit, signal);
+  if (signal?.aborted || !seen.ok) return null;
   const answer = (seen.body as { holds?: unknown } | null)?.holds;
   if (answer === undefined) return "unchecked";
   if (answer === true) heldCommits.add(key);
   return typeof answer === "boolean" ? answer : null;
 }
 
-export function sentBaseFor(deps: SentBaseDeps, path: string, doc: DocumentRef, since?: number): Promise<string | null> | null {
+export function sentBaseFor(deps: SentBaseDeps, path: string, doc: DocumentRef, since?: number, signal?: AbortSignal): Promise<string | null> | null {
   const raw = deps.sentText.get(path);
   const kept = raw !== undefined && raw.doc === docKey(doc) ? raw : undefined;
   const entry = kept === undefined ? deps.cacheEntry(path, doc.repo) : null;
@@ -65,9 +68,11 @@ export function sentBaseFor(deps: SentBaseDeps, path: string, doc: DocumentRef, 
     const at = kept !== undefined ? kept.at : entry!.at;
     if (at === undefined || at <= since) return null;
   }
+  if (signal?.aborted) return null;
   return (async (): Promise<string | null> => {
-    const status = await deps.review.status(doc);
-    if (status === null || !reviewIsOpen(status)) return null;
+    if (signal?.aborted) return null;
+    const status = await deps.review.status(doc, signal);
+    if (signal?.aborted || status === null || !reviewIsOpen(status)) return null;
     const sentTo = kept !== undefined ? kept.to : entry!.to;
     const current = reviewKey(status.pr);
     if (sentTo === null || current === null) return null;
@@ -75,7 +80,8 @@ export function sentBaseFor(deps: SentBaseDeps, path: string, doc: DocumentRef, 
     const branch = status.reviewBranch ?? undefined;
     if (sentTo === current) {
       if (commit !== undefined) {
-        const held = await branchHoldsCommit(deps.review, deps.publishedBranch, deps.heldCommits, doc, branch, commit);
+        const held = await branchHoldsCommit(deps.review, deps.publishedBranch, deps.heldCommits, doc, branch, commit, signal);
+        if (signal?.aborted) return null;
         if (held === false) {
           deps.forget(path);
           return null;
@@ -84,11 +90,13 @@ export function sentBaseFor(deps: SentBaseDeps, path: string, doc: DocumentRef, 
       }
     } else {
       if (!sentTo.startsWith("pr:") || !current.startsWith("group:")) return null;
-      const held = await branchHoldsCommit(deps.review, deps.publishedBranch, deps.heldCommits, doc, branch, commit);
-      if (held !== true) return null;
+      const held = await branchHoldsCommit(deps.review, deps.publishedBranch, deps.heldCommits, doc, branch, commit, signal);
+      if (signal?.aborted || held !== true) return null;
     }
+    if (signal?.aborted) return null;
     if (kept !== undefined) return toLf(kept.text);
-    const blob = await deps.gitBlob(doc, entry!.sha);
+    const blob = await deps.gitBlob(doc, entry!.sha, signal);
+    if (signal?.aborted) return null;
     return blob === null ? null : toLf(blob);
   })();
 }
@@ -163,13 +171,13 @@ export class SentMemory {
     const sha = kept === undefined ? this.host.model.sentSha(path) : null;
     if (kept === undefined && sha === null) return "never";
     const holds = kept !== undefined ? kept.text === there.text : sha === there.sha;
-    if (!holds && !this.acrossReviews) {
+    if (!holds && (!this.acrossReviews || kept?.unwritten === true)) {
       if (!sentToThis(kept !== undefined ? kept.to : this.host.model.sentTo(path), await this.reviewNow(row))) return "never";
       const held = await this.branchHolds(row, branch, kept !== undefined ? kept.commit : this.host.deps.sentCommit?.(path));
       if (held === null) return "unreadable";
       if (!held) {
         this.forget(path);
-        this.host.model.learnSent(path, null);
+        if (!kept?.unwritten) this.host.model.learnSent(path, null);
         return "never";
       }
     }
@@ -196,6 +204,35 @@ export class SentMemory {
     return read ?? this.host.model.reviewOf(path) ?? reviewKey((await this.host.deps.review.status(row.doc))?.pr);
   }
 
+  private rememberLocally(path: string, text: string, to: ReviewKey | null, commit?: string): void {
+    const mapped = this.host.deps.documentFor(path);
+    const doc = mapped ? docKey(mapped) : "";
+    const at = (this.host.deps.now ?? Date.now)();
+    this.sentText.set(path, { text: toLf(text), to, doc, at, ...(commit === undefined ? {} : { commit }), unwritten: true });
+  }
+
+  async localSentBase(path: string, doc: DocumentRef, draft: { branch: string; prNumber: number | null; inGroup?: true }): Promise<string | null> {
+    const raw = this.sentText.get(path);
+    if (!raw?.unwritten || raw.doc !== docKey(doc)) return null;
+    const current: ReviewKey | null = draft.prNumber === null ? null : `${draft.inGroup ? "group" : "pr"}:${draft.prNumber}`;
+    if (raw.to === null || current === null) return null;
+    if (raw.to === current) {
+      if (raw.commit !== undefined) {
+        const held = await branchHoldsCommit(this.host.deps.review, this.host.deps.publishedBranch, this.heldCommits, doc, draft.branch, raw.commit);
+        if (held === false) {
+          this.forget(path);
+          return null;
+        }
+        if (held === null) return null;
+      }
+    } else {
+      if (!raw.to.startsWith("pr:") || !current.startsWith("group:")) return null;
+      const held = await branchHoldsCommit(this.host.deps.review, this.host.deps.publishedBranch, this.heldCommits, doc, draft.branch, raw.commit);
+      if (held !== true) return null;
+    }
+    return toLf(raw.text);
+  }
+
   async accepted(path: string, text: string, body: string, base: string | null = null, answer?: Record<string, unknown> | null): Promise<boolean> {
     const held = heldBy(answer);
     const returned = returnedBy(answer);
@@ -210,7 +247,7 @@ export class SentMemory {
       }
       return true;
     }
-    await this.remember(path, text, to);
+    this.rememberLocally(path, text, to, commit);
     return false;
   }
 

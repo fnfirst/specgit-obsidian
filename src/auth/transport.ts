@@ -5,6 +5,7 @@ export interface HttpRequest {
   contentType?: string;
   body?: string;
   binary?: true;
+  signal?: AbortSignal;
 }
 
 export interface HttpResponse {
@@ -23,10 +24,97 @@ export type Transport = (request: HttpRequest) => Promise<HttpResponse>;
 
 export const REQUEST_DEADLINE_MS = 180_000;
 
-export function withinDeadline<T>(answer: Promise<T>, ms: number = REQUEST_DEADLINE_MS): Promise<T> {
+export function abortError(): Error {
+  return Object.assign(new Error("The request was cancelled."), { name: "AbortError" });
+}
+
+const isAbortedError = (err: unknown): boolean => {
+  const name = (err as { name?: unknown } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+};
+
+export function withinDeadline<T>(answer: Promise<T>, ms: number = REQUEST_DEADLINE_MS, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) {
+    void answer.catch(() => undefined);
+    return Promise.reject(abortError());
+  }
   return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(Object.assign(new Error("specgit didn't answer in time."), { name: "TimeoutError" })), ms);
-    answer.then(resolve, reject).finally(() => window.clearTimeout(timer));
+    let done = false;
+    const cleanup = (): void => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(abortError());
+    };
+    const timer = window.setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(Object.assign(new Error("specgit didn't answer in time."), { name: "TimeoutError" }));
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    void answer.then(
+      (value) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
+function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      window.clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function pauseWithSignal(ms: number, pause: ((ms: number) => Promise<void>) | undefined, signal?: AbortSignal): Promise<void> {
+  if (pause === undefined) return waitOrAbort(ms, signal);
+  if (!signal) return pause(ms);
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    const onAbort = (): void => {
+      if (done) return;
+      done = true;
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void pause(ms).then(
+      () => {
+        if (done) return;
+        done = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      },
+      (err) => {
+        if (done) return;
+        done = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
   });
 }
 
@@ -48,11 +136,17 @@ export async function retryGet<T>(
   return run();
 }
 
-export function readingAgain(transport: Transport, pause: (ms: number) => Promise<void> = (ms) => new Promise((done) => window.setTimeout(done, ms))): Transport {
-  return (request) =>
-    request.method === "GET"
-      ? retryGet(() => transport(request), (err) => (err as Error)?.name === "TimeoutError", pause)
+export function readingAgain(transport: Transport, pause?: (ms: number) => Promise<void>): Transport {
+  return (request) => {
+    if (request.signal?.aborted) return Promise.reject(abortError());
+    return request.method === "GET"
+      ? retryGet(
+          () => (request.signal?.aborted ? Promise.reject(abortError()) : transport(request)),
+          (err) => request.signal?.aborted === true || isAbortedError(err),
+          (ms) => pauseWithSignal(ms, pause, request.signal),
+        )
       : transport(request);
+  };
 }
 
 export function decodeHeaderPath(value: string | null | undefined): string | undefined {

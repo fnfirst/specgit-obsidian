@@ -3,7 +3,7 @@ import { toLf } from "../disk/line-endings";
 import { reconcile, roomIsUnwritten } from "../disk/reconcile";
 import type { Region } from "../disk/regions";
 import { type DocumentRef, docKey } from "../mapping";
-import { GIT_COPY_PATIENCE_MS, within } from "../patience";
+import { GIT_COPY_PATIENCE_MS, SENT_BASE_PATIENCE_MS, withDeadline } from "../patience";
 import { holdsLineage } from "../room/lineage";
 import type { Room } from "../room/room";
 import type { EditorServices } from "./services";
@@ -62,8 +62,10 @@ export class Join {
   private apart: Apart | null = null;
   private either: { kept: (room: Room) => string | null; theirs: Apart | null } | null = null;
   private git: string | null | undefined = undefined;
+  private gitAbort: AbortController | null = null;
   private sent: string | null | undefined = undefined;
   private sentEpoch = 0;
+  private sentAbort: AbortController | null = null;
   private settling = false;
   private letOutWith: string | null = null;
 
@@ -72,24 +74,34 @@ export class Join {
     private readonly host: JoinHost,
   ) {}
 
-  cutOff(base: string, startedOver: boolean): void {
-    this.apart = { base, startedOver, fromGit: false };
+  private cancelSent(): void {
     this.sent = undefined;
     this.sentEpoch++;
+    this.sentAbort?.abort();
+    this.sentAbort = null;
+  }
+
+  private cancelGit(): void {
+    this.git = undefined;
+    this.gitAbort?.abort();
+    this.gitAbort = null;
+  }
+
+  cutOff(base: string, startedOver: boolean): void {
+    this.apart = { base, startedOver, fromGit: false };
+    this.cancelSent();
   }
 
   cutOffEither(kept: (room: Room) => string | null, agreed: string | null): void {
     this.either = { kept, theirs: agreed === null ? null : { base: agreed, startedOver: true, fromGit: false } };
-    this.sent = undefined;
-    this.sentEpoch++;
+    this.cancelSent();
   }
 
   forget(): void {
     this.apart = null;
     this.either = null;
-    this.git = undefined;
-    this.sent = undefined;
-    this.sentEpoch++;
+    this.cancelGit();
+    this.cancelSent();
   }
 
   letOut(text: string): void {
@@ -97,18 +109,16 @@ export class Join {
   }
 
   leave(): void {
-    this.git = undefined;
-    this.sent = undefined;
-    this.sentEpoch++;
+    this.cancelGit();
+    this.cancelSent();
   }
 
   bound(): void {
     this.apart = null;
     this.either = null;
     this.letOutWith = null;
-    this.git = undefined;
-    this.sent = undefined;
-    this.sentEpoch++;
+    this.cancelGit();
+    this.cancelSent();
   }
 
   meet(editor: string, room: Room): Outcome {
@@ -129,12 +139,31 @@ export class Join {
       (apart.base === null || apart.fromGit || apart.at !== undefined)
     ) {
       const ref = this.host.ref();
-      const since = apart.fromGit || apart.base === null ? undefined : apart.at;
-      const pending = ref ? this.services.sentBase(this.host.path(), ref, since) : null;
-      if (pending === null) this.sent = null;
+      if (!ref) this.sent = null;
       else {
-        void this.askSentBase(ref!, pending);
-        return WAIT;
+        const since = apart.fromGit || apart.base === null ? undefined : apart.at;
+        const abort = new AbortController();
+        const sync = { asked: false };
+        const pending = withDeadline<string | null>(
+          (signal) => {
+            const read = this.services.sentBase!(this.host.path(), ref, since, signal);
+            if (read === null) return Promise.resolve(null);
+            sync.asked = true;
+            return read;
+          },
+          SENT_BASE_PATIENCE_MS,
+          null,
+          abort.signal,
+        );
+        if (!sync.asked) {
+          abort.abort();
+          this.sent = null;
+        } else {
+          this.sentAbort?.abort();
+          this.sentAbort = abort;
+          void this.askSentBase(ref, pending, abort);
+          return WAIT;
+        }
       }
     }
     const effective: Apart = this.sent !== null && this.sent !== undefined ? { base: this.sent, startedOver: false, fromGit: false } : apart;
@@ -170,11 +199,17 @@ export class Join {
     }
   }
 
-  private askSentBase(ref: DocumentRef, pending: Promise<string | null>): Promise<void> {
+  private askSentBase(ref: DocumentRef, pending: Promise<string | null>, abort: AbortController): Promise<void> {
     const epoch = this.sentEpoch;
     return this.settle(async () => {
-      const held = await within(pending.catch(() => null), GIT_COPY_PATIENCE_MS, null);
-      if (!this.host.destroyed() && this.host.ref() === ref && epoch === this.sentEpoch) this.sent = held === null ? null : toLf(held);
+      try {
+        const held = await pending;
+        if (!abort.signal.aborted && !this.host.destroyed() && this.host.ref() === ref && epoch === this.sentEpoch) {
+          this.sent = held === null ? null : toLf(held);
+        }
+      } finally {
+        if (this.sentAbort === abort) this.sentAbort = null;
+      }
     });
   }
 
@@ -182,8 +217,15 @@ export class Join {
     const ref = this.host.ref();
     return this.settle(async () => {
       if (!ref) return;
-      const held = await within(this.services.gitCopy(ref), GIT_COPY_PATIENCE_MS, null);
-      if (!this.host.destroyed() && this.host.ref() === ref) this.git = held === null ? null : toLf(held);
+      const abort = new AbortController();
+      this.gitAbort?.abort();
+      this.gitAbort = abort;
+      try {
+        const held = await withDeadline((signal) => this.services.gitCopy(ref, signal), GIT_COPY_PATIENCE_MS, null, abort.signal);
+        if (!abort.signal.aborted && !this.host.destroyed() && this.host.ref() === ref) this.git = held === null ? null : toLf(held);
+      } finally {
+        if (this.gitAbort === abort) this.gitAbort = null;
+      }
     });
   }
 

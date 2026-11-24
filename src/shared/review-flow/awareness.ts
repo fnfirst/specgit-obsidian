@@ -1,3 +1,4 @@
+import { anonymousDisplayName } from "./dog-names";
 import { joinList, sameLogin } from "./people";
 import type { ReviewTone } from "./review-state";
 
@@ -41,7 +42,7 @@ export function writersLine(writers: readonly string[], viewer: string | null): 
 }
 
 export function liveWho(people: readonly string[], agents: number, viewer: string | null): { names: string; many: boolean } | null {
-  const others = distinct(people).filter((login) => !same(login, viewer));
+  const others = distinct(people).filter((login) => !same(login, viewer)).map(anonymousDisplayName);
   const agentWords = agents <= 0 ? [] : [agents === 1 ? "an agent" : `${agents} agents`];
   const names = [...others, ...agentWords];
   if (names.length === 0) return null;

@@ -3,6 +3,7 @@ import { Setting, type App } from "obsidian";
 import { PENDING_TTL_MS } from "./storage";
 
 export const SIGN_IN_WAITING = "Choose Allow in your browser. This window closes by itself once you're signed in.";
+export const CONFIRM_PHRASE_PREFIX = "Check that your browser shows: ";
 export const REOPEN_BROWSER = "Open the browser again";
 export const DIDNT_COME_BACK = "Paste a code instead";
 export const PASTE_CODE_HELP = "Paste the code that specgit.com shows.";
@@ -14,6 +15,7 @@ export const CLOSE = "Close";
 export interface PasteCodeModalOptions {
   signInAgain?: () => void;
   lastsMs?: number;
+  confirmPhrase?: string;
 }
 
 export class PasteCodeModal extends SpecgitModal {
@@ -50,6 +52,10 @@ export class PasteCodeModal extends SpecgitModal {
     this.stopWaiting();
     this.timer = window.setTimeout(() => this.didntFinish(), this.options.lastsMs ?? PENDING_TTL_MS);
     this.contentEl.createEl("p", { text: SIGN_IN_WAITING });
+    if (this.options.confirmPhrase) {
+      const confirm = this.contentEl.createEl("p", { cls: "specgit-signin-confirm", text: CONFIRM_PHRASE_PREFIX });
+      confirm.createEl("strong", { cls: "specgit-signin-confirm-phrase", text: this.options.confirmPhrase });
+    }
     buttonRow(this.contentEl).addButton((button) => button.setButtonText(REOPEN_BROWSER).onClick(() => this.reopen()));
 
     const fallback = this.contentEl.createEl("details", { cls: "specgit-signin-fallback" });

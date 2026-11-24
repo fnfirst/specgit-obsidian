@@ -20,10 +20,10 @@
   --sp-row-fg: var(--nav-item-color);
   --sp-row-fg-hover: var(--nav-item-color-hover);
   --sp-guide: var(--nav-indentation-guide-color);
-  --sp-card-bg: transparent;
-  --sp-card-border: 0;
-  --sp-card-radius: 0;
-  --sp-card-pad: 4px 0 12px;
+  --sp-card-bg: var(--background-primary);
+  --sp-card-border: 1px solid var(--background-modifier-border);
+  --sp-card-radius: var(--radius-m, 8px);
+  --sp-card-pad: 10px 12px;
   --sp-chip-border: var(--pill-border-color, var(--background-modifier-border));
   --sp-chip-on-bg: var(--background-modifier-hover);
   --sp-btn-bg: var(--interactive-normal);
@@ -35,9 +35,6 @@
 .is-mobile .sp-theme-obsidian {
   --sp-row-gap: 8px;
   --sp-safe-bottom: calc(var(--mobile-navbar-height, 3.5rem) + var(--size-2-2));
-}
-.sp-theme-obsidian .sp-card {
-  border-bottom: 1px solid var(--background-modifier-border);
 }
 .sp-theme-obsidian .sp-btn:not(.sp-primary):hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--interactive-hover);

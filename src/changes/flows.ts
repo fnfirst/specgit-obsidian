@@ -53,7 +53,7 @@ import { attachmentAnswer, attachmentEntry, attachmentsToCarry, INLINE_ATTACHMEN
 import { linksKeptWords, MoveFlows } from "./move-flows";
 import { PublishFlows } from "./publish-flows";
 import { ADD_REVIEWER_HERE, CHANGES_VIEW, DELETE_CONFIRM, DELETE_HELD_BACK, GONE_FROM_VAULT, partialReview, PUBLISHED_HERE, readOnlyRepo, REVIEW_REQUESTED_HERE, NOT_LIVE } from "../review/words";
-import { type AutoCommit, type Carried, DELETED_ON_GITHUB, failure, isDenied, isLimited, mapLimit, MOVED_AGAIN, MOVED_ATTEMPTS, names, NO_CHANGE_TITLE, noChangeWords, REVIEW_UNCHECKED, REVIEW_UNCHECKED_TITLE, type Sent, transientFailure, UNREADABLE } from "./flow-helpers";
+import { type AutoCommit, type AutoCommitOutcome, type Carried, DELETED_ON_GITHUB, failure, isDenied, isLimited, mapLimit, MOVED_AGAIN, MOVED_ATTEMPTS, names, NO_CHANGE_TITLE, noChangeWords, REVIEW_UNCHECKED, REVIEW_UNCHECKED_TITLE, type Sent, transientFailure, UNREADABLE } from "./flow-helpers";
 import { type GroupChange, GroupFlows, groupableRows } from "./group-flows";
 import { Discard } from "./discard";
 import { StopReview } from "./stop-review";
@@ -77,7 +77,7 @@ const READS: ReadonlySet<string> = new Set(["status", "groups", "mergePreview", 
 
 export type Since = { kind: "same" } | { kind: "unreadable" } | { kind: "gone" } | { kind: "changes"; shown: Shown[] };
 
-export type { AutoCommit };
+export type { AutoCommit, AutoCommitOutcome };
 
 const refusedAttachment = (result: StepResult): boolean => !result.ok && [400, 409, 413, 415, 422].includes(result.status);
 
@@ -527,7 +527,7 @@ export class ChangesFlows {
     return { ok: false, message: DELETED_WORDS.title, deleted: at };
   }
 
-  autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<{ result: AutoCommit; writes: number; deletedAt?: number; retryAfterMs?: number }> {
+  autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<AutoCommitOutcome> {
     return this.auto.autoCommit(row, isCurrent, hooks);
   }
 
@@ -537,6 +537,10 @@ export class ChangesFlows {
 
   forgetSent(path: string): void {
     this.memory.forget(path);
+  }
+
+  localSentBase(path: string, doc: DocumentRef, draft: { branch: string; prNumber: number | null; inGroup?: true }): Promise<string | null> {
+    return this.memory.localSentBase(path, doc, draft);
   }
 
   private expand(rows: readonly ChangeRow[]): ChangeRow[] {
@@ -793,7 +797,7 @@ export class ChangesFlows {
       4,
       async (row) => ({ row, main: await this.deps.gitFile(row.doc) }),
     );
-    const held = checked.filter(({ row, main }) => main.kind === "unreadable" || (main.kind === "file" && main.sha !== row.change.sha)).map(({ row }) => row);
+    const held = checked.filter(({ row, main }) => main.kind === "unreadable" || (main.kind === "file" && main.sha !== (row.change.base ?? row.change.sha))).map(({ row }) => row);
     const gone = checked.filter(({ main }) => main.kind === "absent").map(({ row }) => row);
     if (gone.length) {
       for (const row of gone) this.deps.model.settledDelete(row.change.path);
@@ -870,7 +874,7 @@ export class ChangesFlows {
         else if (!went) return;
         else {
           done.push(...this.filesOf(row));
-          if (row.group) this.model.change({ kind: "gone", prNumbers: [row.group.overview.prNumber], paths: [] });
+          if (row.group) this.model.change({ kind: "gone", prNumbers: [row.group.overview.prNumber], paths: [], groupIds: [row.group.id] });
         }
       } finally {
         if (done.length) this.model.remember(done);
@@ -906,7 +910,7 @@ export class ChangesFlows {
           outcomes.push(went);
           if (went.status !== "done") return;
           done.push(...this.filesOf(row));
-          if (row.group) this.model.change({ kind: "gone", prNumbers: [row.group.overview.prNumber], paths: [] });
+          if (row.group) this.model.change({ kind: "gone", prNumbers: [row.group.overview.prNumber], paths: [], groupIds: [row.group.id] });
         };
         for (const row of others) await runOne(row);
         let through = !unsettled && !outcomes.some((one) => one.status !== "done");

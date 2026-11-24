@@ -1,3 +1,4 @@
+import { signInConfirmPhrase } from "../shared/review-flow";
 import { clientId, normalizeServer, redirectUri, VERSION_HEADER } from "./config";
 import { AuthError, NETWORK_MESSAGE, NO_SIGN_IN_MESSAGE, REJECTED_MESSAGE, SIGNED_OUT_MESSAGE } from "./errors";
 import { authorizeUrl, parseAuthLink, type AuthLink } from "./link";
@@ -63,6 +64,11 @@ export class SpecgitAuth {
 
   isWaiting(): boolean {
     return this.options.storage.pending(this.now()) !== null;
+  }
+
+  confirmPhrase(): string | null {
+    const state = this.options.storage.pending(this.now())?.state;
+    return state ? signInConfirmPhrase(state) : null;
   }
 
   keeping(): SignInKeeping | null {

@@ -88,7 +88,7 @@ export const SWITCH_LABEL = "Switch";
 export const stayWith = (from: string): string => `Stay with ${from}`;
 
 export const SETUP_TITLE = "Use this repository?";
-export const setupQuestion = (repo: string): string => `A link asks to link this vault to ${repo}. Your notes stay as they are.`;
+export const setupQuestion = (repo: string): string => `A link asked to connect this vault to ${repo}. Only continue if you expected this.`;
 export const SETUP_CONFIRM = "Continue";
 export const SETUP_CANCEL = "Cancel";
 export const SIGN_IN = "Sign in";

@@ -7,8 +7,9 @@ import { giveAccessUrl, openExternalUrl } from "../links";
 import { isRepoName } from "../mapping";
 import { showNotice, showNoticeWithAction } from "../notices";
 import { bringForward, openDialogs } from "../brand/modal";
+import { PublicRepoConfirmModal } from "../brand/public-repo-modal";
 import { FolderConfirmModal, FolderSuggestModal } from "./folder-modals";
-import { type PickerUi, RepoPicker } from "./flow";
+import { type PickedRepo, type PickerUi, type RepoInfo, RepoPicker } from "./flow";
 import { readRepoList } from "./repo-list";
 import { RepoSuggestModal } from "./repo-modal";
 import type { CopyInFile } from "../changes/copy-in";
@@ -31,16 +32,21 @@ export interface PickDeps {
   onboard?: () => void;
 }
 
-async function repoFiles(api: SpecgitApi, repo: string): Promise<string[] | null> {
+export async function readRepoInfo(api: Pick<SpecgitApi, "call">, repo: string): Promise<RepoInfo> {
   const named = splitRepo(repo);
-  if (!named) return null;
+  if (!named) return { files: null, isPrivate: null };
   try {
     const answer = await api.call("GET", `/api/repos/${GIT_PROVIDER}/${named.owner}/${named.repo}/docs`);
-    const docs = answer.status === 200 ? answer.body?.docs : undefined;
-    if (!Array.isArray(docs)) return null;
-    return docs.flatMap((doc: unknown) => (typeof doc === "object" && doc !== null && typeof (doc as { path?: unknown }).path === "string" ? [(doc as { path: string }).path] : []));
+    if (answer.status !== 200 || answer.body === null) return { files: null, isPrivate: null };
+    const docs = answer.body.docs;
+    const files = Array.isArray(docs)
+      ? docs.flatMap((doc: unknown) => (typeof doc === "object" && doc !== null && typeof (doc as { path?: unknown }).path === "string" ? [(doc as { path: string }).path] : []))
+      : null;
+    const meta = answer.body.repo;
+    const isPrivate = typeof meta === "object" && meta !== null && typeof (meta as { private?: unknown }).private === "boolean" ? (meta as { private: boolean }).private : null;
+    return { files, isPrivate };
   } catch {
-    return null;
+    return { files: null, isPrivate: null };
   }
 }
 
@@ -64,8 +70,8 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
       if (shown === mine) shown = null;
     });
   };
-  const pickRepository = (): Promise<string | null> =>
-    show<string | null>((answer) => {
+  const pickRepository = (): Promise<PickedRepo | null> =>
+    show<PickedRepo | null>((answer) => {
       const { onboard } = deps;
       return new RepoSuggestModal(app, {
         ...(onboard && !isRepoName(deps.settings().repo)
@@ -77,7 +83,7 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
             }
           : {}),
         load: () => readRepoList(deps.api, deps.signedIn),
-        choose: (name) => answer(name),
+        choose: (choice) => answer(choice),
         giveAccess: (repo) => void openExternalUrl(giveAccessUrl(deps.server(), repo.fullName, repo.ownerInstallationId), deps.server()),
         retry: () => void pickRepository().then(answer),
         dismissed: () => answer(null),
@@ -85,6 +91,7 @@ function obsidianUi(app: App, deps: PickDeps): PickerUi {
     });
   return {
     pickRepository,
+    confirmPublic: (repo) => show<boolean>((answer) => new PublicRepoConfirmModal(app, repo, answer)),
     confirmFolder: (question) => show((answer) => new FolderConfirmModal(app, question, answer)),
     pickFolder: () => show<string | null>((answer) => new FolderSuggestModal(app, app.vault.getAllFolders(false).map((folder) => folder.path), answer)),
     bringForward: () => (shown === null ? false : bringForward(shown)),
@@ -108,7 +115,7 @@ export function setUpPick(plugin: Plugin, deps: PickDeps): RepoPicker {
     ui: obsidianUi(app, deps),
     settings: deps.settings,
     apply: deps.apply,
-    repoFiles: (repo) => repoFiles(deps.api, repo),
+    repoInfo: (repo) => readRepoInfo(deps.api, repo),
     vaultPaths: () => app.vault.getFiles().map((file) => file.path),
     unsent: deps.unsent,
     copyIn: deps.copyIn,

@@ -59,7 +59,7 @@ export interface ChangesSetup {
   gitFile: (doc: DocumentRef) => Promise<MainFile>;
   gitBlobs?: (repo: string, commit: string | null, files: ReadonlyArray<{ sha: string; path: string }>, byBlob?: boolean) => Promise<BlobsAnswer>;
   branchFile: (doc: DocumentRef, branch: string) => Promise<BranchFile>;
-  gitBlob: (doc: DocumentRef, sha: string) => Promise<string | null>;
+  gitBlob: (doc: DocumentRef, sha: string, signal?: AbortSignal) => Promise<string | null>;
   signedIn: () => boolean;
   viewerLogin: () => string;
   phaseOf: (path: string) => NotePhase;
@@ -114,7 +114,7 @@ function ignoreAdapterOf(vault: { adapter?: unknown }): IgnoreAdapter | null {
   };
 }
 
-export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { model: ChangesModel; flows: ChangesFlows; review: ReviewApi; settingsChanged: () => void; attachments: () => AttachmentMemory; liveFiles: LiveFiles; sentBase: (path: string, doc: DocumentRef, since?: number) => Promise<string | null> | null; live: { heard: (event: LiveEvent) => void; catchUp: (first?: boolean) => void } } {
+export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { model: ChangesModel; flows: ChangesFlows; review: ReviewApi; settingsChanged: () => void; attachments: () => AttachmentMemory; liveFiles: LiveFiles; sentBase: (path: string, doc: DocumentRef, since?: number, signal?: AbortSignal) => Promise<string | null> | null; live: { heard: (event: LiveEvent) => void; catchUp: (first?: boolean) => void } } {
   const { app } = plugin;
   const repo = (): string => deps.settings().repo;
   const folder = (): string => normalizeFolder(deps.settings().folder);
@@ -495,7 +495,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     },
   });
 
-  const sentBase = (path: string, doc: DocumentRef, since?: number): Promise<string | null> | null =>
+  const sentBase = (path: string, doc: DocumentRef, since?: number, signal?: AbortSignal): Promise<string | null> | null =>
     sentBaseFor(
       {
         sentText,
@@ -517,6 +517,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
       path,
       doc,
       since,
+      signal,
     );
 
   return {

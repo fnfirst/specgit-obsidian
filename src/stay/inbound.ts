@@ -1,4 +1,5 @@
 import { gitBlobShaOfText } from "../changes/blob-sha";
+import { agreedOf, clearSent, type CacheEntry } from "../changes/cache";
 import { matchedBase } from "../changes/merge-base";
 import { unchangedHere } from "../changes/unchanged-here";
 import type { Looked } from "../changes/model";
@@ -41,10 +42,12 @@ export interface InboundContext {
   activity: Activity;
   holds?: StayHolds;
   current(): boolean;
+  onResolved?: (path: string) => void;
 }
 
 export interface InboundPass {
   changed: number;
+  rescan: boolean;
   more: boolean;
   wake: number | null;
 }
@@ -77,11 +80,11 @@ export class Inbound {
   private gone: Map<string, boolean> | null = null;
   private reads = 0;
   private cut = false;
+  private rescan = false;
   private readonly wake = new WakeClock();
   private readonly releasedDeletes = new Set<string>();
   private announcedDeletes = 0;
   private readonly pendingRenames = new Map<string, { to: string; sha: string }>();
-  private readonly renameTold = new Set<string>();
   private readonly deferredUnsaved = new Set<string>();
 
   constructor(private readonly ctx: InboundContext) {
@@ -132,9 +135,10 @@ export class Inbound {
   async run(looked: Looked, silent = false): Promise<InboundPass> {
     const { state } = this.ctx;
     const seen = state.data.seen;
-    if (!seen) return { changed: 0, more: false, wake: null };
+    if (!seen) return { changed: 0, rescan: false, more: false, wake: null };
     this.reads = 0;
     this.cut = false;
+    this.rescan = false;
     this.wake.reset();
     this.looked = looked;
     this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
@@ -200,7 +204,7 @@ export class Inbound {
     this.tellStuck();
     state.save();
     if (!silent) this.tell(said);
-    return { changed: said.updated.length + said.merged.length + said.created.length + said.moved.length + said.trashed.length, more: this.cut, wake: this.wake.value() };
+    return { changed: said.updated.length + said.merged.length + said.created.length + said.moved.length + said.trashed.length, rescan: this.rescan, more: this.cut, wake: this.wake.value() };
   }
 
   async bringIn(looked: Looked, path: string): Promise<boolean> {
@@ -455,24 +459,59 @@ export class Inbound {
     return false;
   }
 
+  private rebaseOwn(path: string, doc: DocumentRef, entry: CacheEntry, sha: string): void {
+    const endedOwn = this.ctx.state.data.endedOwn;
+    const ours = entry.sent === sha || endedOwn?.[path]?.sent === sha || agreedOf(entry) === sha;
+    if (!ours) return;
+    if (entry.base !== sha) {
+      const known = this.texts.get(sha);
+      if (known !== undefined) this.ctx.ports.recordBase(path, doc, toLf(known), known);
+      this.ctx.ports.rebase(path, sha);
+      entry.base = sha;
+      this.rescan = true;
+    }
+    if (endedOwn?.[path]?.sent === sha) delete endedOwn[path];
+  }
+
   private async add(looked: Looked, path: string, sha: string, said: Said, explicit = false): Promise<void> {
     const { ports } = this.ctx;
     const doc = ports.documentFor(path);
     if (!doc) return this.settled(path, sha);
     if (!explicit && ports.disconnected(doc)) return;
     const entry = looked.files.get(path);
-    if (entry?.sha === sha || (!entry && looked.deleted.some((gone) => gone.path === path))) return this.settled(path, sha);
+    if (entry?.sha === sha) {
+      if (entry.base !== sha) {
+        const known = this.texts.get(sha);
+        if (known !== undefined) ports.recordBase(path, doc, toLf(known), known);
+        ports.rebase(path, sha);
+        entry.base = sha;
+      }
+      if (this.ctx.state.data.endedOwn?.[path]?.sent === sha) delete this.ctx.state.data.endedOwn[path];
+      return this.settled(path, sha);
+    }
+    if (!entry && looked.deleted.some((gone) => gone.path === path)) return this.settled(path, sha);
     if (!entry && this.caseIndex.collision(path) !== null) return this.holdCaseCollision(path, sha);
-    if (entry && this.followsDraft(looked, path, doc, entry.sentTo)) return this.settled(path, sha);
+    if (entry && this.followsDraft(looked, path, doc, entry.sentTo)) {
+      this.rebaseOwn(path, doc, entry, sha);
+      return this.settled(path, sha);
+    }
     if (!(await this.free(path, doc, sha))) return;
     const batched = this.texts.get(sha);
     const main: MainFile = batched !== undefined ? { kind: "file", text: batched, sha } : await this.readMain(doc);
     if (main.kind !== "file" || !this.ctx.current()) return this.wait(path, sha);
-    if (entry?.sha === main.sha) return this.settled(path, main.sha);
+    if (entry?.sha === main.sha) {
+      if (entry.base !== main.sha) {
+        this.keepAsBase(path, doc, main);
+        entry.base = main.sha;
+        this.rescan = true;
+      }
+      if (this.ctx.state.data.endedOwn?.[path]?.sent === main.sha) delete this.ctx.state.data.endedOwn[path];
+      return this.settled(path, main.sha);
+    }
     if (!entry) return this.create(path, doc, main, said);
     const before = this.ctx.state.data.seen?.[path] ?? null;
     const unchanged = entry.sha === before || unchangedHere(entry);
-    return unchanged ? this.update(path, doc, entry.sha, main, said) : this.merge(path, doc, entry.base, before, main, said);
+    return unchanged ? this.update(path, doc, entry.sha, main, said) : this.merge(path, doc, entry, before, main, said);
   }
 
   private followsDraft(looked: Looked, path: string, doc: DocumentRef, sentTo: string | undefined): boolean {
@@ -533,19 +572,23 @@ export class Inbound {
     said.updated.push(noteName(path));
   }
 
-  private async merge(path: string, doc: DocumentRef, entryBase: string | null, before: string | null, main: MainText, said: Said): Promise<void> {
+  private async merge(path: string, doc: DocumentRef, entry: CacheEntry, before: string | null, main: MainText, said: Said): Promise<void> {
     const { ports, activity } = this.ctx;
     const mine = await ports.vault.read(path);
     if (mine === null) return this.wait(path, main.sha);
-    const matched = entryBase ?? (this.ctx.state.data.guessed.includes(path) ? null : before);
-    const base = await matchedBase(
-      matched,
-      (sha) => {
-        this.reads++;
-        return ports.blobText(doc, sha);
-      },
-      () => ports.baseText(path, matched),
-    );
+    const endedOwn = this.ctx.state.data.endedOwn;
+    const sentMatchesMain = (entry.sent ?? endedOwn?.[path]?.sent) === main.sha;
+    const matched = entry.base ?? (this.ctx.state.data.guessed.includes(path) ? null : before);
+    const base = sentMatchesMain
+      ? toLf(main.text)
+      : await matchedBase(
+          matched,
+          (sha) => {
+            this.reads++;
+            return ports.blobText(doc, sha);
+          },
+          () => ports.baseText(path, matched),
+        );
     const result = mergeFile(path, base, toLf(mine), toLf(main.text), new Budget(400));
     if (result.kind === "conflict") return this.askPerson(path, doc, main, mine, result.review);
     const merged = withEol(result.text, eolOf(mine));
@@ -556,8 +599,13 @@ export class Inbound {
       await this.bring(path, merged);
       said.merged.push(noteName(path));
       this.came(said, path, mine, merged);
-    }
+    } else this.rescan = true;
     this.keepAsBase(path, doc, main);
+    if (sentMatchesMain) {
+      ports.agreed(path, null);
+      clearSent(entry);
+      delete endedOwn?.[path];
+    }
     this.settled(path, main.sha);
   }
 
@@ -589,6 +637,7 @@ export class Inbound {
         await this.bring(path, text);
         this.keepAsBase(path, doc, main);
         this.settled(path, main.sha);
+        this.ctx.onResolved?.(path);
         this.ctx.state.save();
         ports.lookAgain();
       } catch {
@@ -638,12 +687,8 @@ export class Inbound {
     if (entry.sha !== sha && !unchangedHere(entry)) {
       if (!state.data.kept.includes(path)) state.data.kept.push(path);
       const moved = this.pendingRenames.get(path);
-      if (moved !== undefined && moved.sha === sha) {
-        const key = `${path}|${moved.to}|${sha}`;
-        if (!this.renameTold.has(key)) {
-          this.renameTold.add(key);
-          ports.notify(DRAFT_SAID.renameKept(noteName(path), noteName(moved.to)));
-        }
+      if (moved !== undefined && moved.sha === sha && state.noteRenameTold(path, moved.to, sha, ports.now())) {
+        ports.notify(DRAFT_SAID.renameKept(noteName(path), noteName(moved.to)));
       }
       return this.settled(path, null);
     }

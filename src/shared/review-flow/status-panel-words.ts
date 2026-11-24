@@ -1,3 +1,4 @@
+import { anonymousDisplayName } from "./dog-names";
 import { BUSY_WORDS, openCommentsWarning, PUBLISH_ONLY_THIS, SUBMIT_ONLY_THIS } from "./lifecycle-copy";
 
 export const STATUS_PILL_STATES = ["edited", "draft", "in-review", "changes-requested", "ready", "out-of-date", "held", "published", "changed-in-both", "deleted"] as const;
@@ -82,11 +83,15 @@ export const statusShowMore = (count: number): string => `Show ${count} more`;
 export const statusGroupCount = (count: number, noun: StatusNoun): string => counted(count, noun);
 
 export const statusWho = (people: readonly string[], asksYou = false): string => {
-  const list = people.length <= 1 ? (people[0] ?? "") : `${people.slice(0, -1).join(", ")} and ${people[people.length - 1]}`;
+  const shown = people.map(anonymousDisplayName);
+  const list = shown.length <= 1 ? (shown[0] ?? "") : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
   return asksYou ? `${list} asked you` : list;
 };
 
-export const statusLiveWho = (logins: readonly string[]): string => (logins.length <= 1 ? (logins[0] ?? "") : `${logins[0]} +${logins.length - 1}`);
+export const statusLiveWho = (logins: readonly string[]): string => {
+  const shown = logins.map(anonymousDisplayName);
+  return shown.length <= 1 ? (shown[0] ?? "") : `${shown[0]} +${shown.length - 1}`;
+};
 
 export const STATUS_ROW_BUTTONS = {
   join: "Join",
@@ -140,7 +145,7 @@ export const STATUS_BAR = {
   groupCount: (count: number): string => `Group ${count} together`,
 } as const;
 
-export const statusSubmitLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? "Submit for review…" : `Submit ${counted(count, noun)}…`);
+export const statusSubmitLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? `Submit this ${noun}…` : `Submit ${counted(count, noun)}…`);
 export const statusPublishLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? "Publish…" : `Publish ${counted(count, noun)}…`);
 export const statusApproveLabel = (count: number, openOne: boolean, noun: StatusNoun): string => (count === 1 && openOne ? "Approve" : `Approve ${counted(count, noun)}…`);
 export const statusProposeLabel = (upstream: string): string => `Propose to ${upstream}`;
@@ -221,3 +226,5 @@ export const STATUS_CONTROL_TIPS = {
   workOffline: { name: "Work offline", line: "Pause live editing and auto-sync for this note only. Your other notes stay connected." },
   resumeSync: { name: "Resume sync", line: "Reconnect this note and merge any changes with GitHub." },
 } as const;
+
+export { SAVER_PAUSED_LABEL, saverWaitingLine, type SaverReason, type SaverStatus, type SaverWaiting } from "./saver-words";

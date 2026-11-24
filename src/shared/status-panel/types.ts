@@ -95,6 +95,7 @@ export interface StatusPinned extends StatusPeople {
   step?: "choose";
   tipPeople?: readonly string[];
   note?: string;
+  warning?: string;
   groupId?: string;
   hasReview?: boolean;
   draft?: boolean;

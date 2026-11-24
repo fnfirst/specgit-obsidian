@@ -1,4 +1,4 @@
-import type { BurstFile, CatchUpPreview, GroupAction, GroupOverview, InFlightMap, PrInfo, PublishQuota, SavesTo } from "../shared/review-flow";
+import type { BurstFile, CatchUpPreview, GroupAction, GroupOverview, InFlightMap, PrInfo, PublishQuota, SaverReason, SaverStatus, SavesTo } from "../shared/review-flow";
 import { factsFromDetail, type ReviewFacts } from "../shared/status-panel";
 import { type ApiAnswer, docParams, splitRepo, type SpecgitApi } from "../api";
 import type { SpecgitBinaryFetch } from "../auth/binary-fetch";
@@ -17,6 +17,7 @@ export type DetailsResult = Map<number, PrDetail> | null | "failed" | { limited:
 export interface ReviewStatus {
   reviewBranch: string | null;
   pr: PrInfo | null;
+  saver?: SaverStatus;
 }
 
 export interface DetailReviewer {
@@ -43,6 +44,16 @@ function parseDetail(one: PrInfo & { reviewers?: unknown; behind?: unknown }): P
   const policy = reviewPolicy as Partial<NonNullable<PrInfo["reviewPolicy"]>> | null | undefined;
   const kept = typeof policy === "object" && policy !== null && typeof policy.approvals === "number" ? { reviewPolicy: { reviewDecision: typeof policy.reviewDecision === "string" && DECISIONS.includes(policy.reviewDecision) ? policy.reviewDecision : null, approvals: policy.approvals, requiredApprovals: typeof policy.requiredApprovals === "number" ? policy.requiredApprovals : null, requiresCodeOwnerReview: policy.requiresCodeOwnerReview === true } } : {};
   return { ...rest, ...kept, reviewers: people, behind: behind === true };
+}
+
+function parseSaverStatus(raw: unknown): SaverStatus | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const one = raw as { state?: unknown; reason?: unknown; at?: unknown; retryAt?: unknown };
+  if (one.state !== "saved" && one.state !== "waiting") return undefined;
+  if (one.reason !== null && typeof one.reason !== "string") return undefined;
+  if (typeof one.at !== "number" || !Number.isFinite(one.at)) return undefined;
+  if (one.retryAt !== null && (typeof one.retryAt !== "number" || !Number.isFinite(one.retryAt))) return undefined;
+  return { state: one.state, reason: one.reason as SaverReason | null, at: one.at, retryAt: one.retryAt };
 }
 
 export const factsOf = (detail: PrDetail): ReviewFacts => factsFromDetail(detail);
@@ -126,14 +137,16 @@ export class ReviewApi {
     }
   }
 
-  async status(doc: DocumentRef): Promise<ReviewStatus | null> {
+  async status(doc: DocumentRef, signal?: AbortSignal): Promise<ReviewStatus | null> {
+    if (signal?.aborted) return null;
     const params = docParams(doc);
     if (!params) return null;
     try {
-      const answer = await this.api.call("GET", "/api/docs/pr", { query: params });
+      const answer = await this.api.call("GET", "/api/docs/pr", { query: params, ...(signal === undefined ? {} : { signal }) });
       if (answer.status !== 200 || !answer.body) return null;
       const reviewBranch = typeof answer.body.reviewBranch === "string" ? answer.body.reviewBranch : null;
-      return { reviewBranch, pr: (answer.body.pr as PrInfo | null | undefined) ?? null };
+      const saver = parseSaverStatus(answer.body.saver);
+      return { reviewBranch, pr: (answer.body.pr as PrInfo | null | undefined) ?? null, ...(saver ? { saver } : {}) };
     } catch {
       return null;
     }
@@ -283,9 +296,9 @@ export class ReviewApi {
     return this.send("/api/docs/catch-up", doc, { expectMain });
   }
 
-  mergePreview(doc: DocumentRef, ours: string, theirs: string, holds?: string): Promise<StepResult> {
+  mergePreview(doc: DocumentRef, ours: string, theirs: string, holds?: string, signal?: AbortSignal): Promise<StepResult> {
     const params = docParams(doc);
-    return this.sendRaw("/api/docs/merge-preview", params && { provider: params.provider, owner: params.owner, repo: params.repo, path: params.path, ours, theirs, ...(holds === undefined ? {} : { holds }) });
+    return this.sendRaw("/api/docs/merge-preview", params && { provider: params.provider, owner: params.owner, repo: params.repo, path: params.path, ours, theirs, ...(holds === undefined ? {} : { holds }) }, TRY_AGAIN, signal);
   }
 
   resolveMerge(doc: DocumentRef, input: { ours: string; theirs: string; oursTipSha: string; theirsTipSha: string; resolvedSource: string }): Promise<StepResult> {
@@ -293,10 +306,11 @@ export class ReviewApi {
     return this.sendRaw("/api/docs/resolve-merge", params && { provider: params.provider, owner: params.owner, repo: params.repo, path: params.path, ...input, commitMode: "merge" });
   }
 
-  private async sendRaw(path: string, body: Record<string, unknown> | null, fallback = TRY_AGAIN): Promise<StepResult> {
+  private async sendRaw(path: string, body: Record<string, unknown> | null, fallback = TRY_AGAIN, signal?: AbortSignal): Promise<StepResult> {
     if (!body) return { ok: false, status: 0, code: null, message: fallback, body: null };
+    if (signal?.aborted) return { ok: false, status: 0, code: "network", message: NETWORK_MESSAGE, body: null };
     try {
-      const answer = await this.api.call("POST", path, { body });
+      const answer = await this.api.call("POST", path, { body, ...(signal === undefined ? {} : { signal }) });
       const answered = answer.status >= 200 && answer.status < 300;
       if (answered && !answer.body) return { ok: false, status: 0, code: "network", message: NETWORK_MESSAGE, body: null };
       return answered && answer.body ? { ok: true, body: answer.body } : failed(answer, fallback);

@@ -514,10 +514,10 @@ button.sp-pill {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: var(--sp-card-pad, 10px);
+  padding: var(--sp-card-pad, 10px 12px);
   border: var(--sp-card-border, 1px solid var(--sp-border));
   border-radius: var(--sp-card-radius, var(--sp-radius));
-  background: var(--sp-card-bg, transparent);
+  background: var(--sp-card-bg, color-mix(in srgb, var(--sp-fg) 3%, var(--sp-bg)));
 }
 .sp-pinned-head {
   display: flex;
@@ -661,6 +661,26 @@ button.sp-pill {
   margin: 0 0 8px;
   color: var(--sp-muted);
   font-size: 0.9em;
+}
+.sp-card-warning {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--sp-radius);
+  background: color-mix(in srgb, var(--sp-warning) 14%, transparent);
+  color: color-mix(in srgb, var(--sp-warning) 78%, var(--sp-fg));
+  font-size: 0.9em;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+}
+.sp-card .sp-card-reason {
+  flex: none;
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.35;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: break-word;
 }
 .sp-list > .sp-view-only {
   padding: 6px 0;

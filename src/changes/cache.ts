@@ -16,6 +16,7 @@ export interface CacheEntry {
   same?: string;
   sameBy?: "server";
   differs?: string;
+  localOnly?: true;
 }
 
 export interface Listed {
@@ -65,12 +66,33 @@ const sentOf = (entry: CacheEntry | undefined): Pick<CacheEntry, "sent" | "sentT
     ? { sent: entry.sent, ...(entry.sentTo === undefined ? {} : { sentTo: entry.sentTo }), ...(entry.agreed === undefined ? {} : { agreed: entry.agreed }), ...(entry.sentCommit === undefined ? {} : { sentCommit: entry.sentCommit }), ...(entry.sentAt === undefined ? {} : { sentAt: entry.sentAt }) }
     : {};
 
+export const clearSent = (entry: CacheEntry): void => {
+  delete entry.sent;
+  delete entry.sentTo;
+  delete entry.agreed;
+  delete entry.sentCommit;
+  delete entry.sentAt;
+};
+
+const withMeta = (
+  core: Pick<CacheEntry, "mtime" | "size" | "sha" | "at">,
+  base: string | null,
+  from: CacheEntry | undefined,
+): CacheEntry => ({
+  ...core,
+  base,
+  ...sentOf(from),
+  ...(from?.localOnly && base === null && from.sent === undefined ? { localOnly: true as const } : {}),
+  ...(from?.same && from.sha === core.sha ? { same: from.same, ...(from.sameBy ? { sameBy: from.sameBy } : {}) } : {}),
+  ...(from?.differs && from.sha === core.sha ? { differs: from.differs } : {}),
+});
+
 export const agreedOf = (entry: Pick<CacheEntry, "sha" | "sent" | "agreed">): string | undefined => entry.agreed ?? (entry.sent !== undefined && entry.sha === entry.sent ? entry.sha : undefined);
 
 const isEntry = (value: unknown): value is CacheEntry => {
   if (typeof value !== "object" || value === null) return false;
   const entry = value as Record<string, unknown>;
-  return typeof entry.mtime === "number" && typeof entry.size === "number" && typeof entry.sha === "string" && typeof entry.at === "number" && (entry.base === null || typeof entry.base === "string") && (entry.sent === undefined || typeof entry.sent === "string") && (entry.sentTo === undefined || typeof entry.sentTo === "string") && (entry.agreed === undefined || typeof entry.agreed === "string") && (entry.sentCommit === undefined || typeof entry.sentCommit === "string") && (entry.sentAt === undefined || typeof entry.sentAt === "number") && (entry.same === undefined || typeof entry.same === "string") && (entry.sameBy === undefined || entry.sameBy === "server") && (entry.differs === undefined || typeof entry.differs === "string");
+  return typeof entry.mtime === "number" && typeof entry.size === "number" && typeof entry.sha === "string" && typeof entry.at === "number" && (entry.base === null || typeof entry.base === "string") && (entry.sent === undefined || typeof entry.sent === "string") && (entry.sentTo === undefined || typeof entry.sentTo === "string") && (entry.agreed === undefined || typeof entry.agreed === "string") && (entry.sentCommit === undefined || typeof entry.sentCommit === "string") && (entry.sentAt === undefined || typeof entry.sentAt === "number") && (entry.same === undefined || typeof entry.same === "string") && (entry.sameBy === undefined || entry.sameBy === "server") && (entry.differs === undefined || typeof entry.differs === "string") && (entry.localOnly === undefined || entry.localOnly === true);
 };
 
 export class FileCache {
@@ -206,7 +228,8 @@ export class FileCache {
           hashed++;
           const written = this.copied.get(file.path)?.sha;
           this.copied.delete(file.path);
-          next.set(file.path, { mtime: file.mtime, size: file.size, sha, at: this.now(), base: before?.base ?? this.removed.get(file.path)?.base ?? (written === sha ? sha : null), ...sentOf(before), ...(before?.same && before.sha === sha ? { same: before.same, ...(before.sameBy ? { sameBy: before.sameBy } : {}) } : {}), ...(before?.differs && before.sha === sha ? { differs: before.differs } : {}) });
+          const base = before?.base ?? this.removed.get(file.path)?.base ?? (written === sha ? sha : null);
+          next.set(file.path, withMeta({ mtime: file.mtime, size: file.size, sha, at: this.now() }, base, before));
           this.removed.delete(file.path);
           if (clock() - sliceStart >= SLICE_MS && at < stale.length) {
             await pause();
@@ -223,14 +246,18 @@ export class FileCache {
         const entry = next.get(file.path);
         if (!entry) continue;
         const live = this.entries.get(file.path);
-        if (live && (live.base !== entry.base || live.sent !== entry.sent || live.sentTo !== entry.sentTo || live.agreed !== entry.agreed || live.sentCommit !== entry.sentCommit || live.sentAt !== entry.sentAt || (live.sha === entry.sha && (live.same !== entry.same || live.sameBy !== entry.sameBy || live.differs !== entry.differs)))) {
-          const { sent: _was, sentTo: _to, agreed: _agreed, sentCommit: _commit, sentAt: _at, same: _same, sameBy: _by, differs: _differs, ...rest } = entry;
-          files.set(file.path, { ...rest, base: live.base, ...sentOf(live), ...(live.same && live.sha === entry.sha ? { same: live.same, ...(live.sameBy ? { sameBy: live.sameBy } : {}) } : {}), ...(live.differs && live.sha === entry.sha ? { differs: live.differs } : {}) });
+        if (live && (live.base !== entry.base || live.sent !== entry.sent || live.sentTo !== entry.sentTo || live.agreed !== entry.agreed || live.sentCommit !== entry.sentCommit || live.sentAt !== entry.sentAt || live.localOnly !== entry.localOnly || (live.sha === entry.sha && (live.same !== entry.same || live.sameBy !== entry.sameBy || live.differs !== entry.differs)))) {
+          files.set(file.path, withMeta({ mtime: entry.mtime, size: entry.size, sha: entry.sha, at: entry.at }, live.base, live));
         } else files.set(file.path, entry);
       }
       const gone: Gone[] = [];
+      let droppedLocal = false;
       for (const [path, entry] of this.entries) {
         if (present.has(path) || scanDropped.has(path)) continue;
+        if (entry.localOnly && entry.base === null && entry.sent === undefined) {
+          droppedLocal = true;
+          continue;
+        }
         const lost = { path, sha: entry.sha, base: entry.base };
         this.removed.delete(path);
         this.removed.set(path, lost);
@@ -250,7 +277,7 @@ export class FileCache {
           this.dirty = true;
         }
       }
-      this.dirty ||= hashed > 0 || gone.length > 0;
+      this.dirty ||= hashed > 0 || gone.length > 0 || droppedLocal;
       this.save();
       return { files, gone, hashed };
     } finally {
@@ -265,25 +292,57 @@ export class FileCache {
 
   matched(path: string, sha: string): void {
     const entry = this.entries.get(path);
-    if (entry?.sha !== sha || entry.base === sha) return;
-    this.entries.set(path, { ...entry, base: sha });
+    if (entry?.sha !== sha || (entry.base === sha && !entry.localOnly)) return;
+    const { localOnly: _local, ...rest } = entry;
+    this.entries.set(path, { ...rest, base: sha });
     this.dirty = true;
   }
 
   rebased(path: string, sha: string): void {
     const entry = this.entries.get(path);
-    if (!entry || entry.base === sha) return;
-    this.entries.set(path, { ...entry, base: sha });
+    if (!entry || (entry.base === sha && !entry.localOnly)) return;
+    const { localOnly: _local, ...rest } = entry;
+    this.entries.set(path, { ...rest, base: sha });
     this.dirty = true;
+  }
+
+  setLocalOnly(path: string, localOnly: boolean): void {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    if (localOnly) {
+      if (entry.base !== null || entry.sent !== undefined || entry.localOnly) return;
+      this.entries.set(path, { ...entry, localOnly: true });
+      this.dirty = true;
+      return;
+    }
+    if (!entry.localOnly) return;
+    const { localOnly: _local, ...rest } = entry;
+    this.entries.set(path, rest);
+    this.dirty = true;
+  }
+
+  reconcile(repo: ReadonlyMap<string, string>, inFlight: ReadonlySet<string>, draftsKnown: boolean): void {
+    for (const [path, entry] of this.entries) {
+      const repoSha = repo.get(path);
+      if (repoSha === entry.sha) this.matched(path, entry.sha);
+      else if (repoSha !== undefined && entry.same === repoSha) this.rebased(path, repoSha);
+      else if (repoSha !== undefined || inFlight.has(path)) this.setLocalOnly(path, false);
+      else if (draftsKnown && entry.base === null && entry.sent === undefined) this.setLocalOnly(path, true);
+    }
+    if (draftsKnown) {
+      for (const gone of [...this.removed.values()]) {
+        if (gone.base === null && !repo.has(gone.path) && !inFlight.has(gone.path)) this.settled(gone.path);
+      }
+    }
   }
 
   sentAs(path: string, sha: string | null, to: string | null = null, agreement: { agreed?: string; commit?: string; at?: number } = {}): void {
     const entry = this.entries.get(path);
     const next: Pick<CacheEntry, "sent" | "sentTo" | "agreed" | "sentCommit" | "sentAt"> =
       sha === null ? {} : { sent: sha, ...(to === null ? {} : { sentTo: to }), ...(agreement.agreed === undefined ? {} : { agreed: agreement.agreed }), ...(agreement.commit === undefined ? {} : { sentCommit: agreement.commit }), ...(agreement.at === undefined ? {} : { sentAt: agreement.at }) };
-    if (!entry || (entry.sent === next.sent && entry.sentTo === next.sentTo && entry.agreed === next.agreed && entry.sentCommit === next.sentCommit && entry.sentAt === next.sentAt)) return;
-    const { sent: _was, sentTo: _to, agreed: _agreed, sentCommit: _commit, sentAt: _at, ...rest } = entry;
-    this.entries.set(path, { ...rest, ...next });
+    if (!entry || (entry.sent === next.sent && entry.sentTo === next.sentTo && entry.agreed === next.agreed && entry.sentCommit === next.sentCommit && entry.sentAt === next.sentAt && (sha === null || !entry.localOnly))) return;
+    const { sent: _was, sentTo: _to, agreed: _agreed, sentCommit: _commit, sentAt: _at, localOnly: _local, ...rest } = entry;
+    this.entries.set(path, { ...rest, ...(sha === null && entry.localOnly ? { localOnly: true as const } : {}), ...next });
     this.dirty = true;
   }
 

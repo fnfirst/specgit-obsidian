@@ -19,6 +19,11 @@ export type MainFile =
 
 export type BranchFile = MainFile;
 
+export interface RenamedTarget {
+  path: string;
+  branch: string;
+}
+
 export type BlobRead = { kind: "text"; text: string } | { kind: "too_large" | "not_text" | "changed" };
 
 const BLOBS_KEPT = 50;
@@ -41,21 +46,26 @@ export class SpecgitGitCopy {
     this.server = normalizeServer(options.server);
   }
 
-  private async content(doc: DocumentRef, which: Record<string, string>): Promise<Record<string, unknown> | null> {
-    return (await this.contentOrOutage(doc, which)).body;
+  private async content(doc: DocumentRef, which: Record<string, string>, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+    return (await this.contentOrOutage(doc, which, signal)).body;
   }
 
-  private async contentOrOutage(doc: DocumentRef, which: Record<string, string>): Promise<{ body: Record<string, unknown> | null; outage: boolean }> {
+  private async contentOrOutage(doc: DocumentRef, which: Record<string, string>, signal?: AbortSignal): Promise<{ body: Record<string, unknown> | null; outage: boolean }> {
+    if (signal?.aborted) return { body: null, outage: true };
     const [owner, repo, ...rest] = doc.repo.split("/");
     if (!owner || !repo || rest.length > 0) return { body: null, outage: false };
     const query = new URLSearchParams({ provider: GIT_PROVIDER, owner, repo, branch: NOTE_BRANCH, path: doc.path, ...which });
     try {
-      const response = await withBearer(this.options.auth, (token) =>
-        this.options.transport({
-          url: `${this.server}/api/docs/content?${query.toString()}`,
-          method: "GET",
-          headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version },
-        }),
+      const response = await withBearer(
+        this.options.auth,
+        (token) =>
+          this.options.transport({
+            url: `${this.server}/api/docs/content?${query.toString()}`,
+            method: "GET",
+            headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version },
+            ...(signal === undefined ? {} : { signal }),
+          }),
+        signal,
       );
       if (response.status === 200) return { body: jsonObject(response.text), outage: false };
       return { body: null, outage: response.status === 429 || response.status >= 500 };
@@ -64,8 +74,8 @@ export class SpecgitGitCopy {
     }
   }
 
-  async readFile(doc: DocumentRef, at?: string): Promise<MainFile> {
-    const { body, outage } = await this.contentOrOutage(doc, at === undefined ? { base: "1" } : { at });
+  async readFile(doc: DocumentRef, at?: string, signal?: AbortSignal): Promise<MainFile> {
+    const { body, outage } = await this.contentOrOutage(doc, at === undefined ? { base: "1" } : { at }, signal);
     if (!body) return outage ? { kind: "unreadable", outage: true } : { kind: "unreadable" };
     if (body.exists === false) return { kind: "absent" };
     return body.exists === true && typeof body.source === "string" && typeof body.sha === "string" ? { kind: "file", text: body.source, sha: body.sha } : { kind: "unreadable" };
@@ -78,6 +88,16 @@ export class SpecgitGitCopy {
     return typeof body.deletedAt === "number" && Number.isFinite(body.deletedAt) ? { deletedAt: body.deletedAt } : "unknown";
   }
 
+  async renamedTo(doc: DocumentRef): Promise<RenamedTarget | null | "unknown"> {
+    const { body } = await this.contentOrOutage(doc, { followRename: "1" });
+    if (!body) return "unknown";
+    const moved = body.renamedTo;
+    if (moved === undefined || moved === null) return body.exists === true || body.exists === false ? null : "unknown";
+    if (typeof moved !== "object" || Array.isArray(moved)) return "unknown";
+    const { path, branch } = moved as { path?: unknown; branch?: unknown };
+    return typeof path === "string" && path !== "" && typeof branch === "string" && branch !== "" ? { path, branch } : "unknown";
+  }
+
   async readBranchFile(doc: DocumentRef, branch: string): Promise<BranchFile> {
     const body = await this.content(doc, { branch });
     if (!body) return { kind: "unreadable" };
@@ -85,11 +105,12 @@ export class SpecgitGitCopy {
     return body.exists === true && typeof body.source === "string" && typeof body.sha === "string" ? { kind: "file", text: body.source, sha: body.sha } : { kind: "unreadable" };
   }
 
-  async readBlob(doc: DocumentRef, sha: string): Promise<string | null> {
+  async readBlob(doc: DocumentRef, sha: string, signal?: AbortSignal): Promise<string | null> {
+    if (signal?.aborted) return null;
     const key = `${doc.repo}\n${sha}`;
     const kept = this.blobs.get(key);
     if (kept !== undefined) return kept;
-    const body = await this.content(doc, { blob: sha });
+    const body = await this.content(doc, { blob: sha }, signal);
     if (typeof body?.source !== "string") return null;
     this.blobs.set(key, body.source);
     if (this.blobs.size > BLOBS_KEPT) this.blobs.delete(this.blobs.keys().next().value!);
@@ -189,8 +210,8 @@ export class SpecgitGitCopy {
     }
   }
 
-  async read(doc: DocumentRef): Promise<string | null> {
-    const file = await this.readFile(doc);
+  async read(doc: DocumentRef, signal?: AbortSignal): Promise<string | null> {
+    const file = await this.readFile(doc, undefined, signal);
     return file.kind === "file" ? file.text : null;
   }
 }

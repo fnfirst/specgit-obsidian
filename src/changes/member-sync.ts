@@ -24,6 +24,7 @@ export interface SyncedAll {
   ok: true;
   expectMain: null;
   same: readonly string[];
+  inVault?: false;
 }
 
 export class MemberSync {
@@ -31,13 +32,15 @@ export class MemberSync {
 
   async syncAll(rows: readonly ChangeRow[], group: string): Promise<Sent | SyncedAll> {
     const same: string[] = [];
+    let inVault = true;
     for (const row of rows) {
       if (row.change.kind === "deleted") return { ok: false, message: `${noteName(row.change.path)} was deleted here after it joined ${group}. Take it out of the group first, or restore it.` };
       const sent = await this.syncMember(row);
       if (!sent.ok) return sent;
+      if (sent.inVault === false) inVault = false;
       if (sent.unchanged) same.push(row.change.path);
     }
-    return { ok: true, expectMain: null, same };
+    return inVault ? { ok: true, expectMain: null, same } : { ok: true, expectMain: null, same, inVault: false };
   }
 
   private async syncMember(row: ChangeRow): Promise<Sent> {
@@ -66,8 +69,8 @@ export class MemberSync {
       const outgoing = inRepoEndings(body, head!.text);
       const saved = await this.host.backs.save(row.doc, outgoing, await deps.review.save(doc, outgoing, undefined, { toExistingReview: true, expectBranch: head!.sha }));
       if (saved.ok) {
-        await memory.accepted(change.path, text, outgoing, levelledWith, saved.body);
-        return { ok: true, expectMain: null };
+        const inVault = await memory.accepted(change.path, text, outgoing, levelledWith, saved.body);
+        return inVault ? { ok: true, expectMain: null } : { ok: true, expectMain: null, inVault: false };
       }
       const gone = deletedAtOf(saved);
       if (gone !== null) {

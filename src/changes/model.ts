@@ -2,6 +2,7 @@ import { ALL_SELECTED, applyPending, AskAgain, type ChangeSetEntry, type GroupOv
 import { isHiddenPath, LISTED_FILE } from "../mapping";
 import type { GroupsRead, PresenceRead, ReviewStatus } from "../review/review-api";
 import { Awareness, awareLayout, type AwareLine, type HeldDeletes, type NoteChoice, withChoice } from "./awareness";
+import { agreedOf } from "./cache";
 
 export type { AwareLine, NoteChoice };
 export type { ChangeRow, ChangesDeps, ChangesPhase, ChangesSectionId, ChangesState, Doing, GroupInfo, Looked } from "./model-types";
@@ -16,7 +17,7 @@ import { isLeftOutKind, leftOutKinds, NOTHING_LEFT_OUT } from "./left-out";
 import { settleSameness } from "./same-text";
 import { writesOffWords } from "../review/words";
 import { rebasedOnto, type TheirReview, type VaultStates, vaultStates } from "./vault-state";
-import type { PrInfo } from "../shared/review-flow";
+import type { PrInfo, SaverStatus } from "../shared/review-flow";
 import { type ReviewKey, reviewKey } from "./review-key";
 import { isAnotherAuthor } from "./review-owner";
 
@@ -122,7 +123,7 @@ export class ChangesModel {
   private readonly notBase = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private readonly overlay = new Map<string, { sha: string | null; before: string | null;  sent: string | null }>();
-  private readonly statuses = new Map<string, { key: string; at: number; review: ReviewStatus | null; light?: boolean }>();
+  private readonly statuses = new Map<string, { key: string; at: number; review: ReviewStatus | null; light?: boolean; withoutSaver?: boolean }>();
   private pending: PendingChange[] = [];
   private denied = false;
   catchUpOff(repo: string, hasReview: boolean): string | null {
@@ -131,6 +132,7 @@ export class ChangesModel {
 
   private quota: PublishQuota | null = null;
   private flight: { paths: NonNullable<GroupsRead["paths"]>; stale: boolean; overviews: ReadonlyMap<string, GroupOverview>; saves?: SavesTo; asOf?: number } | null = null;
+  private draftsChecked = false;
   private levelAt: number | null = null;
   private attachmentShas: ReadonlyMap<string, string> | null = null;
   private readonly learnedAt = new Map<string, number>();
@@ -295,7 +297,10 @@ export class ChangesModel {
     if (this.disposed || (this.deps.place?.() ?? "") !== place) return;
     this.awareness.heard(presence);
     const flight = flightOf(groups);
-    if (flight) this.flight = flight;
+    if (flight) {
+      this.flight = flight;
+      this.draftsChecked = true;
+    }
     if (!flight || !this.awareness.hasFiles()) return;
     const viewer = this.deps.viewerLogin?.() ?? null;
     const aware = this.awareness.state({ viewer, flight, vaultPath: (path) => this.deps.vaultPath?.(path) ?? path, documentFor: (path) => this.deps.documentFor(path) }, this.current.aware);
@@ -510,6 +515,7 @@ export class ChangesModel {
       this.statuses.clear();
       this.learnedAt.clear();
       this.flight = null;
+      this.draftsChecked = false;
       this.levelAt = null;
       this.denied = false;
       this.quota = null;
@@ -531,6 +537,7 @@ export class ChangesModel {
     }
     this.place = place;
     if (!this.deps.signedIn()) {
+      this.draftsChecked = false;
       this.lookListeners.forEach((listener) => listener(null));
       this.states = null;
       this.repoFiles = null;
@@ -555,6 +562,7 @@ export class ChangesModel {
       this.quota = groups.publishQuota ?? null;
     }
     this.flight = flightOf(groups);
+    this.draftsChecked = groups.kind !== "unknown";
     if (this.flight && (!this.flight.stale || this.levelAt === null)) this.levelAt = this.now();
     if (groups.kind !== "unknown") {
       this.groupsRead = groups.kind === "groups" ? { on: true, locked: groups.locked, overviews: groups.overviews } : { on: false, locked: false, overviews: {} };
@@ -600,12 +608,10 @@ export class ChangesModel {
       unread = await settleSameness({ files: scanned.files, repo: repoFiles, cache: this.deps.cache, ask: this.deps.sameAsRepo, prefetch: this.deps.prefetchBlobs, documentFor: (path) => this.deps.documentFor(path), unsure: this.unsure, notBase: this.notBase, now: () => this.now(), alive: () => !this.disposed && (this.deps.place?.() ?? "") === place });
       if (this.movedFrom(place)) return;
     }
-    for (const [path, entry] of scanned.files) {
-      const repoSha = repoFiles.get(path);
-      if (repoSha === entry.sha) this.deps.cache.matched(path, entry.sha);
-      else if (repoSha !== undefined && entry.same === repoSha) this.deps.cache.rebased(path, repoSha);
-    }
     const cache = this.deps.cache;
+    const drafts = this.draftsLooked().drafts;
+    const draftsKnown = drafts !== undefined ? drafts.level : this.deps.groups === undefined;
+    cache.reconcile(repoFiles, new Set(drafts?.byPath.keys()), draftsKnown);
     cache.clearForeign([...cache.foreignFiles()].filter(([path, sha]) => scanned.files.get(path)?.sha !== sha).map(([path]) => path));
     cache.save();
     const theirs = this.theirReviews();
@@ -627,7 +633,7 @@ export class ChangesModel {
       const again = this.unreadAsking.after({ unread: true });
       if (again !== null) this.lookLater(again);
     } else this.unreadAsking.reset();
-    const looked: Looked = { files: scanned.files, repo: repoFiles, deleted: this.deps.cache.deleted(), rows, ...this.draftsLooked() };
+    const looked: Looked = { files: scanned.files, repo: repoFiles, deleted: this.deps.cache.deleted(), rows, ...(drafts ? { drafts } : {}) };
     this.lookListeners.forEach((listener) => listener(looked));
     void this.readWatched();
   }
@@ -661,6 +667,21 @@ export class ChangesModel {
 
   draftFor(path: string): Draft | undefined {
     return this.draftsLooked().drafts?.byPath.get(path);
+  }
+
+  draftsKnown(): boolean {
+    return this.place !== null && this.place === (this.deps.place?.() ?? "") && this.current.phase === "ready" && this.draftsChecked;
+  }
+
+  draftInfo(path: string): { draft: Draft | null; sentTo: string | undefined; holdsDraft: boolean } {
+    if (this.place === null || this.place !== (this.deps.place?.() ?? "")) return { draft: null, sentTo: undefined, holdsDraft: false };
+    const flight = this.flight;
+    const doc = this.deps.documentFor(path);
+    const entries = flight && doc ? flight.paths[doc.path] : undefined;
+    const draft = flight && entries ? draftOf(entries, this.deps.viewerLogin?.() ?? null, flight.overviews, flight.saves) : null;
+    const entry = this.deps.cache.get(path);
+    const holdsDraft = draft !== null && draft.blob !== null && entry !== undefined && (entry.sha === draft.blob || (entry.sent === draft.blob && agreedOf(entry) === entry.sha));
+    return { draft, sentTo: entry?.sentTo, holdsDraft };
   }
 
   theirReview(path: string): TheirReview | undefined {
@@ -758,12 +779,15 @@ export class ChangesModel {
   private async ask(changes: readonly LocalChange[], mode: "look" | "step" = "look"): Promise<Set<string>> {
     const failedReads = new Set<string>();
     const place = this.deps.place?.() ?? "";
+    const active = this.deps.activePath?.() ?? null;
     const numbered = this.deps.review.details
       ? changes.flatMap((change) => {
           const known = this.statuses.get(change.path);
           const light = known?.review?.pr;
           const doc = this.deps.documentFor(change.path);
-          return known && light && doc && !light.group ? [{ change, known, light, repo: doc.repo }] : [];
+          if (!known || !light || !doc || light.group) return [];
+          if (change.path === active || known.review?.saver?.state === "waiting") return [];
+          return [{ change, known, light, repo: doc.repo }];
         })
       : [];
     const given = new Set<string>();
@@ -780,7 +804,7 @@ export class ChangesModel {
         const detail = details.get(light.number);
         if (!detail) continue;
         const pr: PrInfo = { ...detail, url: light.url || detail.url, authorLogin: light.authorLogin ?? detail.authorLogin ?? null, ...(light.group ? { group: light.group } : {}) };
-        this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr } });
+        this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr }, withoutSaver: true });
         given.add(change.path);
       }
     }
@@ -825,6 +849,7 @@ export class ChangesModel {
     const detailed: LocalChange[] = [];
     if (!flight) return detailed;
     const login = this.deps.viewerLogin?.() ?? null;
+    const active = this.deps.activePath?.() ?? null;
     const now = this.now();
     for (const change of changes) {
       const known = this.statuses.get(change.path);
@@ -837,18 +862,28 @@ export class ChangesModel {
       }
       const light = batch.review?.pr ?? null;
       const was = known?.review?.pr ?? null;
+      const waiting = known?.review?.saver?.state === "waiting";
+      const needsActiveSaver = change.path === active && known?.withoutSaver === true;
       const learned = this.learnedAt.get(change.path);
       if (known && learned !== undefined && now - learned < LEARN_GRACE_MS && (light?.number !== was?.number || light?.isDraft !== was?.isDraft)) continue;
-      if (known && known.light !== true && !was && !light && !known.review?.reviewBranch && !batch.review && now - known.at < DETAIL_TTL_MS) {
+      if (known && known.light !== true && !waiting && !needsActiveSaver && !was && !light && !known.review?.reviewBranch && !batch.review && now - known.at < DETAIL_TTL_MS) {
         this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
         continue;
       }
-      if (known && known.light !== true && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
-        this.statuses.set(change.path, { ...known, key: this.keyOf(change), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) } } });
+      if (known && known.light !== true && !waiting && !needsActiveSaver && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
+        this.statuses.set(change.path, { ...known, key: this.keyOf(change), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) }, ...(known.review?.saver ? { saver: known.review.saver } : {}) } });
         continue;
       }
-      this.statuses.set(change.path, { key: this.keyOf(change), at: now, review: batch.review, light: true });
-      if (batch.needsDetail) detailed.push(change);
+      const keepSaver = waiting ? known?.review?.saver : undefined;
+      const nextReview: ReviewStatus | null = batch.review
+        ? keepSaver
+          ? { ...batch.review, saver: keepSaver }
+          : batch.review
+        : keepSaver
+          ? { reviewBranch: null, pr: null, saver: keepSaver }
+          : null;
+      this.statuses.set(change.path, { key: this.keyOf(change), at: now, review: nextReview, light: true });
+      if (batch.needsDetail || waiting || needsActiveSaver) detailed.push(change);
     }
     return detailed;
   }
@@ -871,7 +906,7 @@ export class ChangesModel {
     else if (this.flight) {
       const wait = this.asking.after({ stale: this.flight.stale });
       if (wait !== null) this.lookLater(wait);
-    } else if (changes.some((change) => !this.statuses.has(change.path))) this.lookLater(RETRY_MS);
+    } else if (!this.draftsChecked || changes.some((change) => !this.statuses.has(change.path))) this.lookLater(RETRY_MS);
     return rows;
   }
 
@@ -891,7 +926,7 @@ export class ChangesModel {
     const doc = this.deps.documentFor(watched.path);
     if (!doc) return;
     const listed = (this.flight?.paths[doc.path]?.length ?? 0) > 0;
-    if (!first && !listed && !this.ownOpen(watched.review) && this.sentTo(watched.path) === null) return;
+    if (!first && !listed && !this.ownOpen(watched.review) && watched.review?.saver?.state !== "waiting" && this.sentTo(watched.path) === null) return;
     const place = this.deps.place?.() ?? "";
     const version = watched.version;
     const review = await this.deps.review.status(doc);
@@ -962,6 +997,7 @@ export class ChangesModel {
       const asked = flightOf(groups);
       if (asked) {
         this.flight = asked;
+        this.draftsChecked = true;
         if (!asked.stale) this.levelAt = this.now();
       }
     }
@@ -1065,6 +1101,11 @@ export class ChangesModel {
 
   row(path: string): ChangeRow | undefined {
     return this.lookups().rows.get(path);
+  }
+
+  saverOf(path: string): SaverStatus | null {
+    const review = this.statuses.get(path)?.review ?? (this.watched?.path === path ? this.watched.review : null);
+    return review?.saver ?? null;
   }
 
   roomsNow(): ReadonlyMap<string, readonly string[]> {

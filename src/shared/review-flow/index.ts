@@ -51,5 +51,8 @@ export * from "./same-document";
 export * from "./people";
 export * from "./awareness";
 export * from "./status-panel-words";
+export * from "./saver-words";
 export * from "./attachments";
+export * from "./confirm-phrase";
 export * from "./vault-upload";
+export * from "./dog-names";

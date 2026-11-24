@@ -48,30 +48,30 @@ export class TeammateOffers {
     }
   }
 
-  tell(drafts: NonNullable<Looked["drafts"]>): void {
-    if (drafts.level) {
-      for (const path of [...this.initialOffered]) {
-        if (drafts.byPath.get(path)?.blob != null) continue;
-        this.initialOffered.delete(path);
-        this.initial?.delete(path);
-        this.toldOffer.delete(path);
-      }
-    }
-    this.show();
+  private remove(path: string, keepTold = false): boolean {
+    if (!this.initialOffered.delete(path)) return false;
+    this.initial?.delete(path);
+    if (!keepTold) this.toldOffer.delete(path);
+    return true;
   }
 
-  private show(): void {
+  private syncNotice(allowOpen: boolean): void {
     const count = this.initialOffered.size;
     this.lowerTold(count);
     if (count === 0) {
       this.offerNotice?.hide();
       this.offerNotice = null;
+      this.offerSaid = 0;
       return;
     }
     const aware = this.ctx.ports.aware();
     const words = aware ? DRAFT_SAID.offerTogether(count) : DRAFT_SAID.offerTogetherPlain(count);
     if (this.offerNotice?.shown()) {
       this.offerNotice(words);
+      this.offerSaid = count;
+      return;
+    }
+    if (!allowOpen) {
       this.offerSaid = count;
       return;
     }
@@ -86,6 +86,17 @@ export class TeammateOffers {
     this.offerNotice = this.ctx.ports.notify(words, action, { lasting: true }) ?? null;
   }
 
+  tell(drafts: NonNullable<Looked["drafts"]>): void {
+    const everyone = this.ctx.ports.policy() === "everyone";
+    for (const path of [...this.initialOffered]) {
+      const draft = drafts.byPath.get(path);
+      const gone = drafts.level && draft?.blob == null;
+      const advanced = everyone && this.initial?.has(path) === true && draft?.blob != null && draft.blob !== this.initial.get(path);
+      if (gone || advanced) this.remove(path);
+    }
+    this.syncNotice(true);
+  }
+
   private lowerTold(count: number): void {
     const { data } = this.ctx.state;
     if (data.offerTold !== undefined && count < data.offerTold) data.offerTold = count;
@@ -95,15 +106,9 @@ export class TeammateOffers {
     return [...this.initialOffered];
   }
 
-  drop(path: string): void {
-    if (!this.initialOffered.delete(path)) return;
-    this.initial?.delete(path);
-    const left = this.initialOffered.size;
-    this.lowerTold(left);
-    if (left === 0) {
-      this.offerNotice?.hide();
-      this.offerNotice = null;
-    } else this.offerNotice?.(this.ctx.ports.aware() ? DRAFT_SAID.offerTogether(left) : DRAFT_SAID.offerTogetherPlain(left));
+  drop(path: string, options?: { keepTold?: boolean }): void {
+    if (!this.remove(path, options?.keepTold === true)) return;
+    this.syncNotice(false);
   }
 
   addAll(): void {
@@ -111,15 +116,12 @@ export class TeammateOffers {
       for (const path of [...this.initialOffered]) void this.ctx.settleNow(path);
       return;
     }
-    for (const path of this.initialOffered) this.initial?.delete(path);
-    this.initialOffered.clear();
-    this.lowerTold(0);
-    this.offerNotice?.hide();
-    this.offerNotice = null;
+    for (const path of [...this.initialOffered]) this.remove(path, true);
+    this.syncNotice(false);
     this.ctx.ports.lookAgain();
   }
 
   livened(isLive: (path: string) => boolean): void {
-    for (const path of this.initialOffered) if (isLive(path)) this.drop(path);
+    for (const path of [...this.initialOffered]) if (isLive(path)) this.drop(path, { keepTold: true });
   }
 }

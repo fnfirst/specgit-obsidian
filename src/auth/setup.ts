@@ -122,7 +122,11 @@ export function setUpAuth(plugin: Plugin, options: AuthSetupOptions = {}): AuthS
     if (!isDefaultServer(server) && options.confirmServer && !(await options.confirmServer(serverHost(server)))) return;
     closeModal();
     await auth.signIn(signInOptions);
-    modal = new PasteCodeModal(app, (code) => auth.completeWithCode(code), () => void auth.reopenBrowser(), { signInAgain: () => void signIn() });
+    const confirmPhrase = auth.confirmPhrase();
+    modal = new PasteCodeModal(app, (code) => auth.completeWithCode(code), () => void auth.reopenBrowser(), {
+      signInAgain: () => void signIn(),
+      ...(confirmPhrase ? { confirmPhrase } : {}),
+    });
     modal.open();
   };
 

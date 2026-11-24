@@ -1,4 +1,4 @@
-import { draftWorkItems, GROUP_BRANCH_PREFIX, GROUP_PRO_ONLY, inFlightEntries, isGroupBranch, isSomeoneElses, sameLogin, type ChangeSetEntry, type InFlightBranch, type InFlightResponse, type PrInfo } from "../shared/review-flow";
+import { draftWorkItems, GROUP_BRANCH_PREFIX, GROUP_PRO_ONLY, inFlightEntries, isGroupBranch, isSomeoneElses, sameLogin, saverWaitingLine, type ChangeSetEntry, type InFlightBranch, type InFlightResponse, type PrInfo, type SaverStatus } from "../shared/review-flow";
 import {
   asksYouOf,
   docItemOf,
@@ -51,7 +51,7 @@ export interface PanelInput {
   openComments: (path: string) => number;
   linked: string;
   plansUrl: string;
-  active?: { path: string; status: NoteStatus | null; behind: boolean; people?: number | null } | null;
+  active?: { path: string; status: NoteStatus | null; behind: boolean; people?: number | null; saver?: SaverStatus | null } | null;
   showChanges: boolean;
   checked: readonly string[];
   notice: StatusNotice | null;
@@ -298,6 +298,8 @@ function pinnedOf(
   const publishable = entry !== null && entry.prNumber > 0 && isMine && (own?.state === "in-review" || own?.state === "changes-requested");
   const canApprove = submitted && entry !== null && facts?.state === "open" && !isMine && !asksYouOf(entry, facts, input.viewer);
   const comments = input.openComments(path);
+  const saver = active.saver ?? row?.review?.saver ?? memberRow?.review?.saver ?? null;
+  const warning = saver?.state === "waiting" ? saverWaitingLine(saver.reason) : null;
   const hold = input.holdOf(path);
   const paused = input.stay === true && input.isPaused?.(path) === true;
   const publishedHeld = own === undefined && !state.choices.has(path) && !groupedBehind && hold !== null;
@@ -339,6 +341,7 @@ function pinnedOf(
     ...(comments > 0 ? { openComments: comments } : {}),
     ...(own?.autoPublish ? { autoPublish: true } : {}),
     ...(reason ? { reason } : {}),
+    ...(warning ? { warning } : {}),
     ...(own?.views ? { views: own.views } : {}),
     menu: ["open-in-specgit", "copy-link"],
     plugin: {

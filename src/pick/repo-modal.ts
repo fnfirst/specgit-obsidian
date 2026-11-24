@@ -1,5 +1,6 @@
 import { type App, SuggestModal } from "obsidian";
 import { reportIfNotChosen } from "./closing";
+import type { PickedRepo } from "./flow";
 import { emptyWords, type RepoChoice, type RepoList, type Row, rowsFor } from "./repo-list";
 import { CAN_WRITE, NOT_INSTALLED, NOT_LISTED, PRIVATE_WORD, PUBLIC_WORD, READ_ONLY, SEARCH_PLACEHOLDER, TRY_AGAIN, useRepository } from "./words";
 import { GIVE_ACCESS_LABEL } from "../changes/words";
@@ -7,7 +8,7 @@ import { ONBOARD, PICKER_META } from "../onboard/words";
 
 export interface RepoModalDeps {
   load(): Promise<RepoList>;
-  choose(name: string): void;
+  choose(choice: PickedRepo): void;
   giveAccess(repo: RepoChoice): void;
   retry(): void;
   dismissed(): void;
@@ -98,6 +99,7 @@ export class RepoSuggestModal extends SuggestModal<Row> {
     this.chosen = true;
     if (row.kind === "retry") this.deps.retry();
     else if (row.kind === "onboard") this.deps.onboard?.();
-    else this.deps.choose(row.kind === "use" ? row.name : row.repo.fullName);
+    else if (row.kind === "use") this.deps.choose({ name: row.name, isPrivate: null });
+    else this.deps.choose({ name: row.repo.fullName, isPrivate: row.repo.private });
   }
 }

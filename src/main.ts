@@ -13,6 +13,7 @@ import { setUpChanges } from "./changes/setup";
 import { pageSignals, setUpComments } from "./comments/setup";
 import { setUpEvents } from "./events/setup";
 import { setUpStay, type StayHandle } from "./stay/setup";
+import { follows } from "./stay/draft-state";
 import { Connections } from "./connect/connections";
 import { ensureOpen, setUpConnect } from "./connect/setup";
 import { setUpNoteBar } from "./changes/note-bar-setup";
@@ -106,8 +107,9 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     const cameIn = new Board<Shown[]>();
     const deferredNew = new Map<string, string>();
     let isDeferredLocalNew = (_doc: DocumentRef): boolean => false;
+    let isDeferredTeammateDraft = (_doc: DocumentRef): boolean => false;
     const connections = new Connections(
-      (doc) => this.config.stayConnected && !isDeferredLocalNew(doc),
+      (doc) => this.config.stayConnected && !isDeferredLocalNew(doc) && !isDeferredTeammateDraft(doc),
       {
         load: () => {
           const stored = this.app.loadLocalStorage(DISCONNECTED_KEY) as unknown;
@@ -137,7 +139,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     let mainMoved = (_path: string): boolean => false;
     let draftBy = (_path: string): Promise<string | null> => Promise.resolve(null);
     let liveJoined = (_path: string): void => undefined;
-    let sentBase = (_path: string, _doc: DocumentRef, _since?: number): Promise<string | null> | null => null;
+    let sentBase = (_path: string, _doc: DocumentRef, _since?: number, _signal?: AbortSignal): Promise<string | null> | null => null;
     let deletedOnMain = (_path: string): boolean => false;
     let checkConnected = (): Promise<void> => Promise.resolve();
     let unsent = (): Promise<number | null> => Promise.resolve(null);
@@ -177,9 +179,9 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         review: (request) => chooseWhatToKeep(this.app, request),
         draftBy: (path) => draftBy(path),
         joined: (path) => liveJoined(path),
-        sentBase: (path, doc, since) => sentBase(path, doc, since),
+        sentBase: (path, doc, since, signal) => sentBase(path, doc, since, signal),
         cameIn: (path, shown, words) => this.tellWhatCameIn(cameIn, path, shown, words),
-        gitCopy: (doc) => gitCopy.read(doc),
+        gitCopy: (doc, signal) => gitCopy.read(doc, signal),
         gitBases,
         ownRestarts,
         ownLinks,
@@ -278,7 +280,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       gitFile: (doc) => gitCopy.readFile(doc),
       gitBlobs: (repo, commit, files) => gitCopy.readBlobs(repo, commit, files),
       branchFile: (doc, branch) => gitCopy.readBranchFile(doc, branch),
-      gitBlob: (doc, sha) => gitCopy.readBlob(doc, sha),
+      gitBlob: (doc, sha, signal) => gitCopy.readBlob(doc, sha, signal),
       signedIn: () => auth.isSignedIn(),
       viewerLogin: () => this.config.login,
       phaseOf: (path) => board.phaseOf(path),
@@ -341,6 +343,17 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       deferredNew.delete(key);
       return false;
     };
+    isDeferredTeammateDraft = (doc) => {
+      if (rooms.hasActive(doc)) return false;
+      const path = changes.model.vaultPathFor(doc.path);
+      const askFirst = this.config.stayDrafts === "mine";
+      if (!changes.model.draftsKnown()) return askFirst || this.stay?.offered().includes(path) === true;
+      if (askFirst && this.config.login === "") return true;
+      const { draft, sentTo, holdsDraft } = changes.model.draftInfo(path);
+      if (!draft || holdsDraft) return false;
+      const policy = this.stay?.policyFor(path, draft) ?? this.config.stayDrafts;
+      return !follows(draft, this.config.login, sentTo, policy);
+    };
     this.register(this.settingsSaved.subscribe(changes.settingsChanged));
     this.stay = setUpStay(this, {
       settings: () => this.config,
@@ -353,6 +366,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       bases: disk.bases,
       gitFile: (doc, at) => gitCopy.readFile(doc, at),
       wasDeleted: (doc) => gitCopy.wasDeleted(doc),
+      renamedTo: (doc) => gitCopy.renamedTo(doc),
       gitBlobs: (repo, commit, files) => gitCopy.readBlobs(repo, commit, files),
       gitAttachment: (repo, at, path, options) => gitCopy.readAttachment(repo, at, path, options),
       gitFindAttachment: (repo, branch, notePath, embed) => gitCopy.findAttachment(repo, branch, notePath, embed),
@@ -383,7 +397,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     mainMoved = (path) => changes.model.row(path)?.change.mainMoved === true;
     draftBy = (path) => changes.model.draftAuthor(path);
     liveJoined = (path) => changes.liveFiles.joined(path);
-    sentBase = (path, doc, since) => changes.sentBase(path, doc, since);
+    sentBase = (path, doc, since, signal) => changes.sentBase(path, doc, since, signal);
     this.register(connections.onChoice(() => changes.model.redraw()));
     setUpNoteBar(this, { model: changes.model, isLive: (path) => board.phaseOf(path) === "live", onStatus: (listener) => board.subscribe(listener), join: (path) => void joinNote(path), addToMyNote: (path) => this.stay?.addToMyNote(path) });
     this.register(changes.model.subscribe(() => setAwareNotices(changes.model.state().aware !== null)));

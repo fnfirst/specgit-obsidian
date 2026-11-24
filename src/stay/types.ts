@@ -1,8 +1,9 @@
 import type { NoticeHandle } from "../notices";
 import type { Shown } from "../disk/regions";
 import type { GuardedVault } from "../disk/guarded-vault";
-import type { BranchFile, MainFile } from "../auth/git-copy";
-import type { StayDrafts } from "./draft-state";
+import type { BranchFile, MainFile, RenamedTarget } from "../auth/git-copy";
+import type { AutoCommit, AutoCommitOutcome } from "../changes/flow-helpers";
+import type { Draft, StayDrafts } from "./draft-state";
 import type { End, ReviewEndsResult } from "./ends";
 import type { ChangeRow } from "../changes/model";
 import type { CopyInFile, CopyInResult } from "../changes/copy-in";
@@ -14,15 +15,8 @@ import type { StayGitMark } from "./state";
 
 export type StayVault = GuardedVault;
 
-export type Committed =
-  | "committed"
-  | "held"
-  | "limited"
-  | "unsure"
-  | "later"
-  | "retry"
-  | "deleted"
-  | "conflict";
+export type Committed = AutoCommit;
+export type { AutoCommitOutcome };
 
 export interface SendHooks {
   memberBranch?: string;
@@ -37,6 +31,11 @@ export interface Agreement {
   to: string | null;
   agreed?: string;
   commit?: string;
+}
+
+export interface DraftBase {
+  base: string;
+  main: string;
 }
 
 export interface StayPorts {
@@ -56,7 +55,8 @@ export interface StayPorts {
   recordBase(path: string, doc: DocumentRef, text: string, raw: string): void;
   rebase(path: string, sha: string): void;
   chooseWhatToKeep(request: ReviewRequest): Promise<string | null>;
-  commit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<{ result: Committed; writes: number; deletedAt?: number; retryAfterMs?: number }>;
+  commit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<AutoCommitOutcome>;
+  localSentBase?(path: string, doc: DocumentRef, draft: Pick<Draft, "branch" | "prNumber" | "inGroup">): Promise<string | null>;
   retryAttachments?(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<{ result: "done" | "later" | "limited"; writes: number; retryAfterMs?: number }>;
   hidden(): boolean;
   offline(): boolean;
@@ -65,7 +65,9 @@ export interface StayPorts {
   confirmGone?(docs: ReadonlyArray<DocumentRef>): Promise<Map<string, boolean> | null>;
   draftTexts?(files: ReadonlyArray<{ doc: DocumentRef; sha: string }>): Promise<Map<string, string>>;
   draftFile(doc: DocumentRef, branch: string): Promise<BranchFile>;
+  draftBase?(doc: DocumentRef, branch: string): Promise<DraftBase | null>;
   wasDeleted(doc: DocumentRef): Promise<{ deletedAt: number } | null | "unknown">;
+  renamedTo?(doc: DocumentRef): Promise<RenamedTarget | null | "unknown">;
   reviewEnd(doc: DocumentRef, group?: boolean): Promise<End | "unknown">;
   reviewEnds?(files: ReadonlyArray<{ doc: DocumentRef; number: number; group?: boolean }>): Promise<ReviewEndsResult>;
   agreed(path: string, agreement: Agreement | null): void;

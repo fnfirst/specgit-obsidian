@@ -9,6 +9,7 @@ export function authorizeUrl(server: string, params: { challenge: string; state:
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", params.state);
   url.searchParams.set("vault", params.vaultName);
+  url.searchParams.set("confirm", "1");
   if (params.installId) url.searchParams.set("install", params.installId);
   if (params.github) url.searchParams.set("github", params.github);
   return url.toString();

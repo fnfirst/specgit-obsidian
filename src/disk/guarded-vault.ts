@@ -3,6 +3,7 @@ import { gitBlobShaOfText } from "../changes/blob-sha";
 import { sameBaseText } from "../changes/same-base";
 import { hasPathCaseCollision, isVaultTarget, type VaultPathEntry } from "../mapping";
 import { sameCanvasText } from "../shared/review-flow";
+import type { OnWindow } from "../windows";
 import { toLf } from "./line-endings";
 
 const configDirOf = (app: App): string => (app.vault as { configDir?: string }).configDir ?? "";
@@ -44,13 +45,180 @@ export interface GuardedVault {
 
 const DISPLAY_ONLY_VIEWS: ReadonlySet<string> = new Set(["backlink", "outgoing-link", "outline", "file-properties", "localgraph"]);
 
+interface CanvasNodeLike {
+  text?: unknown;
+  child?: {
+    dirty?: unknown;
+    editMode?: {
+      cm?: {
+        state?: {
+          doc?: {
+            toString?: () => string;
+          };
+        };
+      };
+    };
+  } | null;
+}
+
+interface EditingElementLike {
+  ownerDocument?: Document | null;
+  contains?: (other: Node | null) => boolean;
+}
+
 interface PaneView {
   file?: { path: string } | null;
   editor?: { getValue(): string };
   getViewType(): string;
   getViewData?: () => string;
-  canvas?: { isDragging?: boolean } | null;
-  containerEl?: { querySelector?: (selector: string) => unknown } | null;
+  canvas?: { isDragging?: boolean; nodes?: unknown } | null;
+  containerEl?: {
+    querySelector?: (selector: string) => unknown;
+    querySelectorAll?: (selector: string) => Iterable<EditingElementLike>;
+  } | null;
+}
+
+const idleCanvasEdits = new WeakSet<object>();
+const clearTokens = new WeakMap<object, number>();
+
+function elementOf(target: EventTarget | null): Element | null {
+  if (!target || typeof target !== "object") return null;
+  if ("closest" in target && typeof target.closest === "function") return target as Element;
+  if ("parentElement" in target) {
+    const parent = (target as Node).parentElement;
+    return parent && typeof parent.closest === "function" ? parent : null;
+  }
+  return null;
+}
+
+function canvasNodeOf(target: EventTarget | null, selector: string): Element | null {
+  let el = elementOf(target);
+  while (el !== null) {
+    const hit = el.closest(selector);
+    if (hit !== null) return hit;
+    const frame = el.ownerDocument?.defaultView?.frameElement ?? null;
+    el = frame !== null && typeof frame.closest === "function" ? frame : null;
+  }
+  return null;
+}
+
+function isEditingKey(event: KeyboardEvent): boolean {
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  return event.key.length === 1 || event.key === "Backspace" || event.key === "Delete" || event.key === "Enter";
+}
+
+export function watchCanvasEditing(win: Window, on: OnWindow, onChange?: () => void): void {
+  const clearNode = (target: EventTarget | null): void => {
+    const node = canvasNodeOf(target, ".canvas-node");
+    if (!node) return;
+    idleCanvasEdits.delete(node);
+    clearTokens.set(node, (clearTokens.get(node) ?? 0) + 1);
+  };
+  const activeInChildFrame = (editing: Element): boolean => {
+    const doc = win.document;
+    if (typeof doc.hasFocus === "function" && !doc.hasFocus()) return false;
+    const active = doc.activeElement;
+    return active !== null && active.tagName === "IFRAME" && editing.contains(active);
+  };
+  const staysFocusedInNode = (editing: Element): boolean => {
+    const doc = win.document;
+    if (typeof doc.hasFocus === "function" && !doc.hasFocus()) return false;
+    const active = doc.activeElement;
+    return active !== null && editing.contains(active);
+  };
+  on(win, "blur", () => {
+    for (const editing of win.document.querySelectorAll(".canvas-node.is-editing")) {
+      if (activeInChildFrame(editing)) continue;
+      idleCanvasEdits.add(editing);
+    }
+    onChange?.();
+  });
+  on(win.document, "focusout", (event) => {
+    const editing = canvasNodeOf(event.target, ".canvas-node.is-editing");
+    if (editing !== null) {
+      const related = (event as FocusEvent).relatedTarget;
+      const staysInside = related !== null && typeof related === "object" && "nodeType" in related && editing.contains(related as Node);
+      if (!staysInside) {
+        if (related === null) {
+          const token = clearTokens.get(editing) ?? 0;
+          win.setTimeout(() => {
+            if ((clearTokens.get(editing) ?? 0) !== token) return;
+            if (!editing.isConnected || !editing.classList.contains("is-editing")) return;
+            if (staysFocusedInNode(editing)) return;
+            idleCanvasEdits.add(editing);
+            onChange?.();
+          }, 0);
+          return;
+        }
+        idleCanvasEdits.add(editing);
+      }
+    }
+    onChange?.();
+  });
+  on(win, "pointerup", () => onChange?.());
+  on(win, "keyup", (event) => {
+    if ((event as KeyboardEvent).key === "Escape") onChange?.();
+  });
+  on(win, "mousedown", (event) => clearNode(event.target), { capture: true });
+  on(win, "pointerdown", (event) => clearNode(event.target), { capture: true });
+  on(win, "beforeinput", (event) => clearNode(event.target), { capture: true });
+  on(win, "input", (event) => clearNode(event.target), { capture: true });
+  on(win, "compositionstart", (event) => clearNode(event.target), { capture: true });
+  on(win, "paste", (event) => clearNode(event.target), { capture: true });
+  on(win, "cut", (event) => clearNode(event.target), { capture: true });
+  on(
+    win,
+    "keydown",
+    (event) => {
+      if (isEditingKey(event as KeyboardEvent)) clearNode(event.target);
+    },
+    { capture: true },
+  );
+}
+
+function canvasNodes(nodes: unknown): CanvasNodeLike[] {
+  if (nodes instanceof Map) return [...nodes.values()] as CanvasNodeLike[];
+  if (Array.isArray(nodes)) return nodes as CanvasNodeLike[];
+  if (nodes !== null && typeof nodes === "object" && Symbol.iterator in nodes) {
+    return [...(nodes as Iterable<unknown>)].map((entry): CanvasNodeLike => (Array.isArray(entry) && entry.length === 2 ? (entry as readonly unknown[])[1] : entry) as CanvasNodeLike);
+  }
+  return [];
+}
+
+function hasDirtyCanvasCard(view: PaneView): boolean {
+  for (const node of canvasNodes(view.canvas?.nodes)) {
+    const child = node?.child;
+    if (!child) continue;
+    if (child.dirty === true) return true;
+    if (typeof node.text === "string") {
+      const doc = child.editMode?.cm?.state?.doc;
+      if (typeof doc?.toString === "function") {
+        try {
+          const live = doc.toString();
+          if (typeof live === "string" && toLf(live) !== toLf(node.text)) return true;
+        } catch {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function editingElements(containerEl: PaneView["containerEl"]): EditingElementLike[] {
+  if (!containerEl) return [];
+  if (typeof containerEl.querySelectorAll === "function") return [...containerEl.querySelectorAll(".canvas-node.is-editing")];
+  const single = containerEl.querySelector?.(".canvas-node.is-editing");
+  return single != null ? [single] : [];
+}
+
+function isEditingNodeActive(el: EditingElementLike): boolean {
+  if (typeof el.contains !== "function" || el.ownerDocument === undefined) return true;
+  if (idleCanvasEdits.has(el)) return false;
+  const doc = el.ownerDocument;
+  if (!doc) return false;
+  if (typeof doc.hasFocus === "function" && !doc.hasFocus()) return false;
+  return doc.activeElement !== null && el.contains(doc.activeElement);
 }
 
 function readViewData(view: PaneView): string | null {
@@ -68,10 +236,11 @@ function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
   const type = view.getViewType();
   if (type === "markdown" || DISPLAY_ONLY_VIEWS.has(type)) return false;
   if (type === "canvas") {
+    if (hasDirtyCanvasCard(view)) return true;
     const data = readViewData(view);
     if (data !== null && toLf(data) !== toLf(disk) && !sameCanvasText(data, disk)) return true;
     if (confirmed) return false;
-    return data === null || view.canvas?.isDragging === true || view.containerEl?.querySelector?.(".canvas-node.is-editing") != null;
+    return data === null || view.canvas?.isDragging === true || editingElements(view.containerEl).some(isEditingNodeActive);
   }
   if (type === "bases") {
     const data = readViewData(view);

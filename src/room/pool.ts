@@ -26,6 +26,10 @@ export class RoomPool {
     private readonly now: () => number = Date.now,
   ) {}
 
+  hasActive(ref: DocumentRef): boolean {
+    return (this.entries.get(keyOf(ref))?.holders ?? 0) > 0;
+  }
+
   acquire(ref: DocumentRef): Room {
     const key = keyOf(ref);
     let entry = this.entries.get(key);

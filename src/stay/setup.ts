@@ -5,9 +5,9 @@ import type { ChangesModel } from "../changes/model";
 import type { Connections } from "../connect/connections";
 import type { BaseStore, LocalState } from "../disk/bases";
 import { withEol } from "../disk/line-endings";
-import { guardedBinaryCreate, guardedVault } from "../disk/guarded-vault";
+import { guardedBinaryCreate, guardedVault, watchCanvasEditing } from "../disk/guarded-vault";
 import { guardedBinaryCreateStream, hashVaultBinary, replaceAttachmentStream } from "../disk/vault-binary";
-import type { BlobsAnswer, BranchFile, AttachmentFile, MainFile } from "../auth/git-copy";
+import type { BlobsAnswer, BranchFile, AttachmentFile, MainFile, RenamedTarget } from "../auth/git-copy";
 import type { ReviewKey } from "../changes/review-key";
 import { showChanges } from "../review/modals";
 import { type DocumentRef, fileFor, isHiddenPath, normalizeFolder, underFolder } from "../mapping";
@@ -38,9 +38,10 @@ import { tiedTo } from "./tie";
 import { NOTE_BRANCH } from "../auth/config";
 import { GitWatch } from "./git-watch";
 import { StayConnected } from "./engine";
+import type { Draft, StayDrafts } from "./draft-state";
 import { WriteBudget } from "./limits";
 import { StayState } from "./state";
-import type { Committed, StayPorts } from "./types";
+import type { AutoCommitOutcome, DraftBase, StayPorts } from "./types";
 import { OFFER } from "./words";
 import { appHidden, watchWindows } from "../windows";
 
@@ -49,12 +50,13 @@ export interface StayDeps {
   setStayConnected: (on: boolean) => Promise<void>;
   model: ChangesModel;
   flows: ChangesFlows;
-  review: Pick<ReviewApi, "status"> & Partial<Pick<ReviewApi, "details">>;
+  review: Pick<ReviewApi, "status"> & Partial<Pick<ReviewApi, "details" | "mergePreview">>;
   status: StatusBoard;
   connections: Connections;
   bases: BaseStore;
   gitFile: (doc: DocumentRef, at?: string) => Promise<MainFile>;
   wasDeleted: (doc: DocumentRef) => Promise<{ deletedAt: number } | null | "unknown">;
+  renamedTo?: (doc: DocumentRef) => Promise<RenamedTarget | null | "unknown">;
   gitBlobs?: (repo: string, commit: string, files: ReadonlyArray<{ sha: string; path: string }>) => Promise<BlobsAnswer>;
   gitExist?: (repo: string, paths: ReadonlyArray<string>) => Promise<{ kind: "answered"; files: Map<string, boolean> } | { kind: "missing" } | { kind: "outage" }>;
   gitBlobsByOid?: (repo: string, files: ReadonlyArray<{ sha: string; path: string }>) => Promise<BlobsAnswer>;
@@ -88,12 +90,25 @@ export interface StayHandle {
   heardDraft(repoPath: string, sha?: string): void;
   addToMyNote(path: string): void;
   offered(): readonly string[];
+  policyFor(path: string, draft: Pick<Draft, "blob">): StayDrafts;
   addOffered(): void;
   heardReview(branch: string): void;
   bringFor(path: string, text: string): Promise<void>;
   bringInNewer(): Promise<BroughtNewer>;
   bringInDraft(path: string): Promise<BroughtDraft>;
   copyIn(files: readonly CopyInFile[], skipped?: readonly string[]): Promise<CopyInResult>;
+}
+
+async function readDraftBase(
+  mergePreview: NonNullable<StayDeps["review"]["mergePreview"]>,
+  doc: DocumentRef,
+  branch: string,
+): Promise<DraftBase | null> {
+  const seen = await mergePreview(doc, branch, NOTE_BRANCH);
+  if (!seen.ok) return null;
+  const body = seen.body as { baseSource?: unknown; theirsSource?: unknown } | null;
+  if (typeof body?.baseSource !== "string" || body.baseSource === "" || typeof body?.theirsSource !== "string") return null;
+  return { base: body.baseSource, main: body.theirsSource };
 }
 
 export const PLACE_SETTLES_MS = 1_000;
@@ -316,6 +331,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     disconnected: (doc) => deps.connections.isDisconnected(doc),
     gitFile: deps.gitFile,
     wasDeleted: deps.wasDeleted,
+    ...(deps.renamedTo ? { renamedTo: deps.renamedTo } : {}),
     git: { checkSince: (saved) => git.checkSince(saved), poll: () => git.poll() },
     ...(deps.gitBlobs ? { blobTexts: blobTexts } : {}),
     ...(deps.gitBlobsByOid ? { draftTexts } : {}),
@@ -337,17 +353,23 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     recordBase: (path, doc, _text, raw) => recordMainBase(deps.bases, path, doc, raw),
     rebase: (path, sha) => deps.model.rebased(path, sha),
     chooseWhatToKeep: deps.chooseWhatToKeep,
-    commit: async (row: ChangeRow, isCurrent, hooks): Promise<{ result: Committed; writes: number; deletedAt?: number; retryAfterMs?: number }> => {
+    commit: async (row: ChangeRow, isCurrent, hooks): Promise<AutoCommitOutcome> => {
       const done = await deps.flows.autoCommit(row, isCurrent, hooks);
-      if (done.result === "committed" && (row.change.kind === "new" || row.change.kind === "renamed")) deps.connections.defaultsChanged();
+      if (done.result === "committed" && done.inVault !== false && (row.change.kind === "new" || row.change.kind === "renamed")) deps.connections.defaultsChanged();
       return done;
     },
+    localSentBase: (path, doc, draft) => deps.flows.localSentBase?.(path, doc, draft) ?? Promise.resolve(null),
     retryAttachments: (row, isCurrent, hooks) => deps.flows.autoAttachments(row, isCurrent, hooks),
     hidden: appHidden,
     offline: () => deps.model.offline(),
     login: deps.login,
     policy: () => deps.settings().stayDrafts,
     draftFile: deps.branchFile,
+    ...(deps.review.mergePreview
+      ? {
+          draftBase: (doc, branch) => readDraftBase((...args) => deps.review.mergePreview!(...args), doc, branch),
+        }
+      : {}),
     reviewEnd: async (doc, group = false) => {
       const read = await deps.review.status(doc);
       if (read === null) return "unknown";
@@ -476,6 +498,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     });
     on(win, "beforeunload", () => flushAll());
     on(win, "pagehide", () => flushAll());
+    watchCanvasEditing(win, on, () => engine?.panesChanged());
   });
 
   plugin.registerInterval(window.setInterval(() => void engine?.pollGit(), 1_000));
@@ -512,21 +535,27 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   });
 
   let lastWanted = deps.settings().stayConnected;
+  let lastDrafts = deps.settings().stayDrafts;
   let settling: number | undefined;
   plugin.register(() => window.clearTimeout(settling));
   const settingsChanged = (): void => {
     window.clearTimeout(settling);
     const wanted = deps.settings().stayConnected;
+    const drafts = deps.settings().stayDrafts;
     const flipped = wanted !== lastWanted;
+    const draftsChanged = drafts !== lastDrafts;
     lastWanted = wanted;
+    lastDrafts = drafts;
     if (engine !== null && engineIdentity !== identity()) {
       moving = true;
       if (wanted) engine.stop();
       else engine.disable();
       engine = null;
     }
-    if (!flipped && (wanted === (engine !== null) || (moving && wanted))) settling = window.setTimeout(sync, PLACE_SETTLES_MS);
-    else sync();
+    if (!flipped && (wanted === (engine !== null) || (moving && wanted))) {
+      if (draftsChanged && wanted) deps.connections.defaultsChanged();
+      if (!draftsChanged || moving) settling = window.setTimeout(sync, PLACE_SETTLES_MS);
+    } else sync();
   };
 
   return {
@@ -542,6 +571,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     attachmentProblems: (path, problems) => engine?.attachmentProblems(path, problems),
     heardDraft: (repoPath, sha) => engine?.heardDraft(deps.vaultPath(repoPath), undefined, undefined, sha),
     offered: () => engine?.offered() ?? [],
+    policyFor: (path, draft) => engine?.policyFor(path, draft) ?? deps.settings().stayDrafts,
     addOffered: () => engine?.addOffered(),
     addToMyNote: (path) => {
       if (engine) return engine.addToMyNote(path);

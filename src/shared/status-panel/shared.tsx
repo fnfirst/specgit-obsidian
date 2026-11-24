@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { STATUS_CONTROL_TIPS, STATUS_LABELS, STATUS_NO_STEP, STATUS_PILL_WORDS, STATUS_RUNNING, STATUS_TIPS, statusLiveWho, STATUS_OTHER_STEP, statusOtherStepLine, statusWho, type StatusPillState } from "../review-flow";
+import { anonymousDisplayName, STATUS_CONTROL_TIPS, STATUS_LABELS, STATUS_NO_STEP, STATUS_PILL_WORDS, STATUS_RUNNING, STATUS_TIPS, statusLiveWho, STATUS_OTHER_STEP, statusOtherStepLine, statusWho, type StatusPillState } from "../review-flow";
 import { loginsOf, type Checkable } from "./logic";
 import type { Tips, TipContent } from "./tips";
 import { DotsIcon } from "./icons";
@@ -36,7 +36,7 @@ export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [
     case "edited":
       return { picture: "ladder", lit: null, name, line: STATUS_TIPS.edited };
     case "draft":
-      return { picture: "ladder", lit: "draft", name, line: STATUS_TIPS.draft };
+      return { picture: "ladder", lit: "draft", name, line: reason ?? STATUS_TIPS.draft };
     case "in-review":
       return { picture: "ladder", lit: "in-review", name, line: autoPublish ? STATUS_TIPS.autoPublish : asksYou ? STATUS_TIPS.waitingForYou(tipPeople) : STATUS_TIPS.inReview(tipPeople) };
     case "changes-requested":
@@ -184,9 +184,10 @@ export type FacesKind = "live" | "asked" | "worked";
 export function Faces({ people, id, kind, ctx }: { people: readonly (string | StatusPerson)[]; id: string; kind: FacesKind; ctx: Ctx }) {
   const logins = othersOf(people).map((one) => one.login);
   if (logins.length === 0) return null;
-  const tip: TipContent = { picture: kind === "live" ? "join" : "changes", name: logins.join(", "), line: kind === "live" ? STATUS_TIPS.live(logins.length) : kind === "asked" ? STATUS_TIPS.asked : STATUS_TIPS.worked };
+  const names = logins.map(anonymousDisplayName).join(", ");
+  const tip: TipContent = { picture: kind === "live" ? "join" : "changes", name: names, line: kind === "live" ? STATUS_TIPS.live(logins.length) : kind === "asked" ? STATUS_TIPS.asked : STATUS_TIPS.worked };
   return (
-    <span className="sp-who" tabIndex={0} role="group" aria-label={logins.join(", ")} {...ctx.tips.bind(`${id}:faces`, tip)}>
+    <span className="sp-who" tabIndex={0} role="group" aria-label={names} {...ctx.tips.bind(`${id}:faces`, tip)}>
       {statusLiveWho(logins)}
     </span>
   );
@@ -195,9 +196,10 @@ export function Faces({ people, id, kind, ctx }: { people: readonly (string | St
 export function LiveWho({ people, id, ctx }: { people: readonly (string | StatusPerson)[]; id: string; ctx: Ctx }) {
   const logins = othersOf(people).map((one) => one.login);
   if (logins.length === 0) return null;
-  const tip: TipContent = { picture: "join", name: logins.join(", "), line: STATUS_TIPS.live(logins.length) };
+  const names = logins.map(anonymousDisplayName).join(", ");
+  const tip: TipContent = { picture: "join", name: names, line: STATUS_TIPS.live(logins.length) };
   return (
-    <span className="sp-live-who" tabIndex={0} role="group" aria-label={logins.join(", ")} {...ctx.tips.bind(`${id}:faces`, tip)}>
+    <span className="sp-live-who" tabIndex={0} role="group" aria-label={names} {...ctx.tips.bind(`${id}:faces`, tip)}>
       <span className="sp-live-dot" aria-hidden="true" />
       <span className="sp-live-names">{statusLiveWho(logins)}</span>
     </span>

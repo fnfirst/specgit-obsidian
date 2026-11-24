@@ -33,6 +33,7 @@ export interface StayData {
   caseHeld?: Record<string, string>;
   attachments?: Record<string, { problems: Array<{ name: string; why: string; server?: true }>; tries: number }>;
   gitMark?: StayGitMark;
+  renameTold?: Record<string, number>;
 }
 
 export const ATTACHMENTS_KEPT = 100;
@@ -40,6 +41,7 @@ export const ATTACHMENTS_PER_NOTE = 50;
 const WORDS_MAX = 300;
 
 export const TYPED_KEPT = 200;
+export const RENAME_TOLD_KEPT = 200;
 export const STAY_SAVE_DEBOUNCE_MS = 30_000;
 export const MAX_SEEN = 50_000;
 export const ENDED_OWN_KEPT = 500;
@@ -115,8 +117,10 @@ function read(stored: unknown): StayData {
   const attachments = typeof left === "object" && left !== null && !Array.isArray(left) && Object.keys(left).length <= ATTACHMENTS_KEPT && Object.values(left).every(isKept) ? { attachments: left as NonNullable<StayData["attachments"]> } : {};
   const parsedMark = readGitMark(record.gitMark);
   const gitMark = parsedMark !== undefined ? { gitMark: parsedMark } : {};
+  const renamed = record.renameTold;
+  const renameTold = typeof renamed === "object" && renamed !== null && !Array.isArray(renamed) && Object.values(renamed).every((at) => typeof at === "number" && Number.isFinite(at)) ? { renameTold: renamed as Record<string, number> } : {};
   const baselinePending = record.baselinePending === true ? { baselinePending: true as const } : {};
-  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, ...baselinePending, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...flurryUntil, ...deletedAt, ...offerTold, ...caseHeld, ...attachments, ...gitMark };
+  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, ...baselinePending, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...flurryUntil, ...deletedAt, ...offerTold, ...caseHeld, ...attachments, ...gitMark, ...renameTold };
 }
 
 export class StayState {
@@ -147,11 +151,19 @@ export class StayState {
     return this.dirty;
   }
 
+  noteRenameTold(from: string, to: string, token: string, at: number): boolean {
+    const key = `${from}|${to}|${token}`;
+    if (this.data.renameTold?.[key] !== undefined) return false;
+    (this.data.renameTold ??= {})[key] = at;
+    return true;
+  }
+
   private prune(): void {
     capRecord(this.data.seen, MAX_SEEN);
     capByTimestamp(this.data.typed, TYPED_KEPT, (one) => one.at);
     capRecord(this.data.endedOwn, ENDED_OWN_KEPT);
     capByTimestamp(this.data.deletedAt, MAX_DELETED_AT, (at) => at);
+    capByTimestamp(this.data.renameTold, RENAME_TOLD_KEPT, (at) => at);
   }
 
   save(): void {

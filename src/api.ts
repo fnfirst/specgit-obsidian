@@ -36,15 +36,19 @@ export class SpecgitApi {
     this.server = normalizeServer(options.server);
   }
 
-  async call(method: "GET" | "POST", path: string, input: { query?: Record<string, string>; body?: unknown } = {}): Promise<ApiAnswer> {
+  async call(method: "GET" | "POST", path: string, input: { query?: Record<string, string>; body?: unknown; signal?: AbortSignal } = {}): Promise<ApiAnswer> {
     const query = input.query ? `?${new URLSearchParams(input.query).toString()}` : "";
-    const response = await withBearer(this.options.auth, (token) =>
-      this.options.transport({
-        url: `${this.server}${path}${query}`,
-        method,
-        headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version },
-        ...(input.body === undefined ? {} : { contentType: "application/json", body: JSON.stringify(input.body) }),
-      }),
+    const response = await withBearer(
+      this.options.auth,
+      (token) =>
+        this.options.transport({
+          url: `${this.server}${path}${query}`,
+          method,
+          headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version },
+          ...(input.body === undefined ? {} : { contentType: "application/json", body: JSON.stringify(input.body) }),
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        }),
+      input.signal,
     );
     const answer = parseApiAnswer(response.status, response.text);
     const retryAfterMs = answer.status === 429 || answer.code === "rate_limited" ? retryAfterFromResponse(response.headers, answer.body) : undefined;

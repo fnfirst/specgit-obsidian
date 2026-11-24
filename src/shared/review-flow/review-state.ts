@@ -68,7 +68,17 @@ export function publishedState(branch: string | null): ReviewState {
   };
 }
 
+export const PENDING_REVIEW_LABEL = "Saved, not in review yet";
+
 const NONE: ReviewState = { kind: "none", label: "Up to date", short: "Up to date", icon: "circle-dashed", tone: "muted", title: "No open review" };
+const PENDING: ReviewState = {
+  kind: "in_progress",
+  label: PENDING_REVIEW_LABEL,
+  short: PENDING_REVIEW_LABEL,
+  icon: "git-pull-request",
+  tone: "muted",
+  title: "Saved, not in review yet. Submit for review when you're ready.",
+};
 
 function docStage(pr: PrInfo) {
   return {
@@ -82,9 +92,14 @@ export function viewerCanApprove(pr: PrInfo | null, viewerLogin: string): boolea
   return pr !== null && pr.state === "open" && waitsOnViewer(docStage(pr), viewerLogin);
 }
 
-export function fileReviewState(pr: PrInfo | null, liveBranch: string | null, viewerLogin: string, options: { savesAsYouType?: boolean } = {}): ReviewState {
+export function fileReviewState(
+  pr: PrInfo | null,
+  liveBranch: string | null,
+  viewerLogin: string,
+  options: { savesAsYouType?: boolean; pending?: boolean } = {},
+): ReviewState {
   if (liveBranch || pr?.state === "merged") return publishedState(liveBranch ?? pr?.baseRef ?? null);
-  if (!pr || pr.state === "closed") return NONE;
+  if (!pr || pr.state === "closed") return options.pending ? PENDING : NONE;
   const doc = docStage(pr);
   return stageState(doc.stage, { block: doc.block, yourReview: viewerCanApprove(pr, viewerLogin), requested: pr.requestedReviewers ?? [], pr: pr.number, ...options });
 }

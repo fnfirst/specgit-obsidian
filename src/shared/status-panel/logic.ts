@@ -1,4 +1,4 @@
-import type { Lane, CheckKind, StatusChipKey, StatusDoc, StatusGroup, StatusItem, StatusPanelModel, StatusPerson, StatusPinned } from "./types";
+import type { Lane, CheckKind, StatusChipKey, StatusDoc, StatusFold, StatusGroup, StatusItem, StatusPanelModel, StatusPerson, StatusPinned } from "./types";
 
 export const DRAW_LIMIT = 20;
 export const ASK_ABOVE = 5;
@@ -188,6 +188,17 @@ export function pillRepeatsChip(chip: Lane, state: StatusDoc["state"], asksYou?:
   if (chip === "publish") return state === "ready";
   if (chip === "drafts") return state === "draft";
   return false;
+}
+
+export function isSoleOpen(layout: Pick<Layout, "pinned" | "all" | "live">, folds?: readonly StatusFold[]): boolean {
+  return (
+    layout.pinned !== null &&
+    layout.all.length === 1 &&
+    layout.all[0]?.open === true &&
+    layout.all[0].item.kind === "doc" &&
+    layout.live.length === 0 &&
+    (!folds || folds.length === 0)
+  );
 }
 
 export const isDoc = (item: StatusItem): item is StatusDoc => item.kind === "doc";

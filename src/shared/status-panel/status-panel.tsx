@@ -26,22 +26,61 @@ import {
 } from "../review-flow";
 import { CloseIcon } from "./icons";
 import { FoldRow } from "./folds";
-import { DRAW_LIMIT, asksBeforeSubmit, checkablesOf, layoutOf, loginsOf, selectionOf, type Checkable, type Entry } from "./logic";
+import { DRAW_LIMIT, asksBeforeSubmit, checkablesOf, isSoleOpen, layoutOf, loginsOf, selectionOf, type Checkable, type Entry, type Layout } from "./logic";
 import { ConfirmDialog, MenuPopover, placeMenu, type OpenMenu } from "./overlays";
-import { PINNED_MENU_LABEL, PinnedCard, type CardButton } from "./pinned";
+import { PINNED_MENU_LABEL, PinnedCard, cardButtons, type CardButton } from "./pinned";
 import { GroupCard, Row, groupMenuItems, groupMenuLabel, memberMenuId, rowMenuItems, rowMenuLabel } from "./rows";
 import { boxesWait, buttonsOff, cx, runningLabel, type Ctx } from "./shared";
 import { SubmitStep } from "./submit-step";
 import { TipCard, useTips, type TipContent } from "./tips";
-import type { ConfirmQuestion, Lane, PanelAction, PanelHost, PanelMenuItem, StatusChipKey, StatusNotice, StatusPanelModel, StatusRowMenuItem } from "./types";
+import type { ConfirmQuestion, Lane, PanelAction, PanelHost, PanelMenuItem, PinnedMenuItem, StatusChipKey, StatusNotice, StatusNoun, StatusPanelModel, StatusRowMenuItem } from "./types";
 
 const NOTICE_MS = 4000;
 const FLASH_MS = 1000;
 
 const laneWord = (lane: Exclude<Lane, "none">): string => STATUS_CHIPS[lane];
-const CARD_OWN_STEPS: readonly StatusRowMenuItem[] = ["open", "show-changes", "submit-only", "publish-only"];
 const GROUP_CARD_ITEMS: readonly StatusGroupMenuItem[] = ["add-reviewer", "move-back", "stop-review"];
 const CHIP_LANES = ["approve", "publish", "drafts"] as const;
+
+export function cardMenuItemsFor(
+  layout: Pick<Layout, "pinned" | "entries">,
+  options: { noun: StatusNoun; readOnly: boolean; cardOnly: boolean; singleOpen: boolean },
+  callbacks: {
+    onPinned: (action: PinnedMenuItem) => void;
+    onRow: (id: string, action: StatusRowMenuItem) => void;
+    onGroup: (id: string, action: StatusGroupMenuItem) => void;
+  },
+): PanelMenuItem[] {
+  const open = layout.pinned;
+  if (!open) return [];
+  const ownItems = open.menu ?? [];
+  const before = ownItems.filter((item) => item !== "view-on-github").map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => callbacks.onPinned(item) }));
+  const after = ownItems.filter((item) => item === "view-on-github").map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => callbacks.onPinned(item) }));
+  const hideList = options.cardOnly || options.singleOpen;
+  if (!hideList && !open.reviewMenu) return [...before, ...after];
+  const ownNames = new Set<string>(ownItems);
+  const keepGitHub = options.singleOpen && !options.cardOnly && !open.reviewMenu;
+  const buttons = options.readOnly ? [] : cardButtons(open);
+  const ownStep = (item: StatusRowMenuItem): boolean =>
+    item === "open" ||
+    item === "show-changes" ||
+    (item === "submit-only" && (open.local === true || buttons.includes("submit"))) ||
+    (item === "publish-only" && (open.local === true || buttons.includes("publish")));
+  const openEntry = layout.entries.find((entry) => entry.open);
+  let derived: PanelMenuItem[] = [];
+  if (openEntry?.item.kind === "doc") {
+    const row = openEntry.item;
+    derived = rowMenuItems(row, { noun: options.noun, readOnly: options.readOnly })
+      .filter((item) => (keepGitHub || item !== "view-on-github") && !ownStep(item) && !ownNames.has(item))
+      .map((item): PanelMenuItem => ({ label: rowMenuLabel(item), run: () => callbacks.onRow(row.id, item) }));
+  } else if (openEntry?.item.kind === "group") {
+    const group = openEntry.item;
+    derived = groupMenuItems(group, { readOnly: options.readOnly })
+      .filter((item) => GROUP_CARD_ITEMS.includes(item) && !ownNames.has(item))
+      .map((item): PanelMenuItem => ({ label: groupMenuLabel(item), run: () => callbacks.onGroup(group.id, item) }));
+  }
+  return [...before, ...derived, ...after];
+}
 
 function useCoarse(): boolean {
   const [coarse, setCoarse] = useState(false);
@@ -101,6 +140,10 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const coarse = pointerCoarse || host.touch === true;
   const tips = useTips(rootRef);
   const layout = useMemo(() => layoutOf(model), [model]);
+  const cardOnly = !!model.cardOnly;
+  const soleOpen = isSoleOpen(layout, model.folds);
+  const singleOpen = !model.loading && !model.loadFailed && soleOpen;
+  const hideList = cardOnly || singleOpen;
   const [chip, setChip] = useState<StatusChipKey>(() => model.start?.chip ?? "all");
   const [checkedRaw, setCheckedRaw] = useState<ReadonlySet<string>>(() => new Set(model.checked));
   const [shownAll, setShownAll] = useState<ReadonlySet<string>>(() => new Set());
@@ -114,7 +157,10 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const previousLanes = useRef<ReadonlyMap<string, Lane> | null>(null);
 
   const checkables = useMemo(() => checkablesOf(layout, chip), [layout, chip]);
-  const checked = useMemo(() => new Set([...checkedRaw].filter((id) => checkables.has(id))), [checkedRaw, checkables]);
+  const checked = useMemo(
+    () => (hideList ? new Set<string>() : new Set([...checkedRaw].filter((id) => checkables.has(id)))),
+    [hideList, checkedRaw, checkables],
+  );
   const selection = useMemo(() => selectionOf(checkables, checked), [checkables, checked]);
   const order = useMemo(() => [...checkables.keys()], [checkables]);
   const kind = selection.checked[0]?.kind ?? null;
@@ -126,6 +172,11 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   useEffect(() => {
     if (!touched.current) setCheckedRaw(new Set(startKey === "" ? [] : startKey.split("\n")));
   }, [startKey]);
+  useEffect(() => {
+    if (!singleOpen || checkedRaw.size === 0) return;
+    setCheckedRaw(new Set());
+    if (touched.current) onChecked?.([]);
+  }, [singleOpen, checkedRaw, onChecked]);
   const setChecked = useCallback(
     (next: Set<string>) => {
       touched.current = true;
@@ -293,30 +344,15 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     else act({ type: "pinned", action: "ask-changes" });
   };
 
-  const cardMenuItems = (): PanelMenuItem[] => {
-    const open = layout.pinned;
-    if (!open) return [];
-    const ownItems = open.menu ?? [];
-    const before = ownItems.filter((item) => item !== "view-on-github").map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => act({ type: "pinned", action: item }) }));
-    const after = ownItems.filter((item) => item === "view-on-github").map((item): PanelMenuItem => ({ label: PINNED_MENU_LABEL[item], run: () => act({ type: "pinned", action: item }) }));
-    if (!model.cardOnly && !open.reviewMenu) return [...before, ...after];
-    const ownNames = new Set<string>(ownItems);
-    const openEntry = layout.entries.find((entry) => entry.open);
-    let derived: PanelMenuItem[] = [];
-    if (openEntry?.item.kind === "doc") {
-      const row = openEntry.item;
-      derived = rowMenuItems(row, { noun, readOnly: !!model.readOnly })
-        .filter((item) => item !== "view-on-github" && !CARD_OWN_STEPS.includes(item) && !ownNames.has(item))
-        .map((item): PanelMenuItem => ({ label: rowMenuLabel(item), run: () => act({ type: "row", id: row.id, action: item }) }));
-    } else if (openEntry?.item.kind === "group") {
-      const group = openEntry.item;
-      derived = groupMenuItems(group, { readOnly: !!model.readOnly })
-        .filter((item) => GROUP_CARD_ITEMS.includes(item) && !ownNames.has(item))
-        .map((item): PanelMenuItem => ({ label: groupMenuLabel(item), run: () => act({ type: "group", id: group.id, action: item }) }));
-    }
-    return [...before, ...derived, ...after];
-  };
-  const cardMenu = cardMenuItems();
+  const cardMenu = cardMenuItemsFor(
+    layout,
+    { noun, readOnly: !!model.readOnly, cardOnly, singleOpen },
+    {
+      onPinned: (action) => act({ type: "pinned", action }),
+      onRow: (id, action) => runStepItem(action, id, 1, () => act({ type: "row", id, action })),
+      onGroup: (id, action) => act({ type: "group", id, action }),
+    },
+  );
   const onCardMore = (anchor: HTMLElement) => openMenu(cardMenu, anchor, "pinned");
 
   const dimGroup: TipContent = { picture: "group", name: STATUS_BAR.group, line: STATUS_TIPS.groupTogether(noun), reason: model.grouping?.reason ?? STATUS_BAR.groupReason(noun), ...(model.grouping?.link ? { link: model.grouping.link } : {}) };
@@ -468,9 +504,9 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
       </div>
     ) : null;
 
-  const cardOnly = !!model.cardOnly;
-  const quiet = !cardOnly && checked.size > 0;
-  const card = layout.pinned ? <PinnedCard pinned={layout.pinned} ctx={ctx} quiet={quiet} hasMore={cardMenu.length > 0} onButton={onCardButton} onMore={onCardMore} /> : null;
+  const quiet = !hideList && checked.size > 0;
+  const hasOpenRow = !hideList && !model.loading && !model.loadFailed && layout.all.some((entry) => entry.open && entry.item.kind === "doc");
+  const card = layout.pinned ? <PinnedCard pinned={layout.pinned} ctx={ctx} quiet={quiet} hasMore={cardMenu.length > 0} showReason={!hasOpenRow} onButton={onCardButton} onMore={onCardMore} /> : null;
   const failed = (
     <div className="sp-state">
       <p>{STATUS_FAILED}</p>
@@ -515,6 +551,8 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
             <p className="sp-state">{STATUS_EMPTY}</p>
             {foldRows}
           </>
+        ) : singleOpen ? (
+          card
         ) : (
           <>
             {card}
@@ -606,7 +644,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
             setStep(null);
           }}
         />
-      ) : cardOnly ? null : (
+      ) : hideList ? null : (
         footer
       )}
       {tips.open ? <TipCard tip={tips.open} id={tips.id} root={rootRef} /> : null}

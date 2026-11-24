@@ -6,6 +6,17 @@ import { gitBlobSha } from "./blob-sha";
 
 export type AutoCommit = "committed" | "held" | "limited" | "retry" | "unsure" | "later" | "conflict" | "deleted";
 
+export interface AutoStepOutcome {
+  result: AutoCommit;
+  retryAfterMs?: number;
+  inVault?: false;
+}
+
+export interface AutoCommitOutcome extends AutoStepOutcome {
+  writes: number;
+  deletedAt?: number;
+}
+
 export interface Carried {
   text: string;
   body: string;
@@ -30,8 +41,8 @@ export function transientFailure(result: Extract<StepResult, { ok: false }>, fal
   return null;
 }
 
-export function autoOutcome(sent: Sent, options: { conflicted?: boolean; retryMoved?: boolean } = {}): { result: AutoCommit; retryAfterMs?: number } | null {
-  if (sent.ok) return { result: "committed" };
+export function autoOutcome(sent: Sent, options: { conflicted?: boolean; retryMoved?: boolean } = {}): AutoStepOutcome | null {
+  if (sent.ok) return sent.inVault === false ? { result: "committed", inVault: false } : { result: "committed" };
   if ("held" in sent) return { result: options.conflicted ? "conflict" : "held" };
   if (sent.deleted !== undefined) return { result: "deleted" };
   if (sent.limited) return { result: "limited", ...(sent.retryAfterMs === undefined ? {} : { retryAfterMs: sent.retryAfterMs }) };

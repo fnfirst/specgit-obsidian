@@ -35,7 +35,7 @@ function liveControl(plugin: NonNullable<StatusPinned["plugin"]>): { label: stri
   }
 }
 
-export function PinnedCard({ pinned, ctx, quiet, hasMore, onButton, onMore }: { pinned: StatusPinned; ctx: Ctx; quiet: boolean; hasMore: boolean; onButton: (button: CardButton) => void; onMore: (anchor: HTMLElement) => void }) {
+export function PinnedCard({ pinned, ctx, quiet, hasMore, showReason = false, onButton, onMore }: { pinned: StatusPinned; ctx: Ctx; quiet: boolean; hasMore: boolean; showReason?: boolean; onButton: (button: CardButton) => void; onMore: (anchor: HTMLElement) => void }) {
   const here = othersOf(pinned.here ?? []);
   const plugin = pinned.plugin;
   const live = plugin ? liveControl(plugin) : null;
@@ -79,6 +79,16 @@ export function PinnedCard({ pinned, ctx, quiet, hasMore, onButton, onMore }: { 
             </button>
           ) : null}
         </div>
+        {pinned.warning ? (
+          <p className="sp-card-warning" role="status" data-testid="sp-card-warning">
+            {pinned.warning}
+          </p>
+        ) : null}
+        {showReason && pinned.reason ? (
+          <p className="sp-reason sp-card-reason" data-testid="sp-card-reason">
+            {pinned.reason}
+          </p>
+        ) : null}
         {here.length > 0 || plugin ? (
           <div className="sp-pinned-here">
             {here.length > 0 ? (

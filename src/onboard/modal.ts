@@ -1,5 +1,6 @@
 import { type App, Setting, setIcon, setTooltip, type TextComponent } from "obsidian";
 import { bringForward, buttonRow, SpecgitModal } from "../brand/modal";
+import { PublicRepoConfirmModal } from "../brand/public-repo-modal";
 import type { OnboardEvents, OnboardUi, OnboardView } from "./flow";
 import { VAULT_MAX_FILES, VAULT_MAX_TOTAL_BYTES } from "../shared/review-flow";
 import { safeRepoName } from "./plan";
@@ -287,6 +288,7 @@ export class OnboardModal extends SpecgitModal {
 
 export class OnboardWindow implements OnboardUi {
   private modal: OnboardModal | null = null;
+  private confirming: PublicRepoConfirmModal | null = null;
 
   constructor(private readonly app: App) {}
 
@@ -295,13 +297,28 @@ export class OnboardWindow implements OnboardUi {
     this.modal.present(view, on);
   }
 
+  confirmPublic(repo: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const modal = new PublicRepoConfirmModal(this.app, repo, (confirmed) => {
+        if (this.confirming === modal) this.confirming = null;
+        resolve(confirmed);
+      });
+      this.confirming = modal;
+      modal.open();
+    });
+  }
+
   close(): void {
+    const confirming = this.confirming;
+    this.confirming = null;
+    confirming?.close();
     const modal = this.modal;
     this.modal = null;
     modal?.closeQuietly();
   }
 
   bringForward(): boolean {
+    if (this.confirming !== null && bringForward(this.confirming)) return true;
     return this.modal !== null && bringForward(this.modal);
   }
 }

@@ -45,6 +45,7 @@ export class DraftDeletes {
       return;
     }
     ports.agreed(path, null);
+    this.host.forgetEnded(path);
     this.host.settled(path);
   }
 

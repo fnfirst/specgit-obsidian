@@ -13,7 +13,8 @@ export type HoldReason = NonNullable<StayData["heldWhy"]>[string];
 const hasPendingDraft = (looked: Looked, path: string): boolean => {
   const draft = looked.drafts?.byPath.get(path);
   const entry = looked.files.get(path);
-  return draft !== undefined && draft.blob !== null && entry?.sent !== undefined && draft.blob !== entry.sent;
+  const base = entry?.sent ?? entry?.base ?? null;
+  return draft !== undefined && draft.blob !== null && base !== null && draft.blob !== base;
 };
 
 export const caseCollisionWords = (name: string): string => `${name} on GitHub differs from a note here only in capital letters, so it was not copied in.`;
@@ -101,6 +102,24 @@ export class StayHolds {
   holdEnded(path: string, sha: string): void {
     (this.state.data.editsHeld ??= {})[path] = sha;
     (this.state.data.heldWhy ??= {})[path] = "ended";
+    this.setFlurryUntil(path, null);
+    this.noteChanged();
+  }
+
+  holdRenamedKept(looked: Looked, path: string): void {
+    const { data } = this.state;
+    const entry = looked.files.get(path);
+    if (!entry) return;
+    const newKey = changeKey({ kind: "new", path });
+    const row = looked.rows.find((one) => one.change.path === path && (one.change.kind === "new" || one.change.kind === "renamed"));
+    const rowKey = row ? changeKey(row.change) : newKey;
+    data.committed = data.committed.filter((one) => one !== newKey && !one.startsWith(`renamed|${path}|`));
+    if (row !== undefined || !looked.repo.has(path)) {
+      if (!data.held.includes(rowKey)) data.held.push(rowKey);
+      (data.heldShas ??= {})[rowKey] = entry.sha;
+    }
+    (data.editsHeld ??= {})[path] = entry.sha;
+    (data.heldWhy ??= {})[path] = "ended";
     this.setFlurryUntil(path, null);
     this.noteChanged();
   }
