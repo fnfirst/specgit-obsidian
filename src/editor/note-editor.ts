@@ -89,6 +89,7 @@ export class NoteEditor implements PluginValue {
   private session: BoundSession | null = null;
   private restoreFocus = false;
   private shownNote = true;
+  private baseOpened = false;
 
   constructor(
     private readonly view: EditorView,
@@ -129,21 +130,39 @@ export class NoteEditor implements PluginValue {
   }
 
   update(update: ViewUpdate): void {
+    let sawLocal = false;
+    let sawSet = false;
+    let sawRoom = false;
     if (update.docChanged) {
       this.ownWrites.remember(update.state.doc);
       this.textVersion += 1;
-      if (!this.binding) {
-        for (const tr of update.transactions) {
-          if (!tr.docChanged || tr.annotation(fromRoom) !== undefined || tr.isUserEvent("set")) continue;
-          this.locallyEdited = true;
-          if (this.services.ownLinks && this.path !== "") {
-            const added = addedAttachmentLinks(this.path, tr);
-            if (added.length > 0) this.services.ownLinks.added(this.path, added);
-          }
+      for (const tr of update.transactions) {
+        if (!tr.docChanged) continue;
+        if (tr.annotation(fromRoom) !== undefined) {
+          sawRoom = true;
+          continue;
+        }
+        if (tr.isUserEvent("set")) {
+          sawSet = true;
+          continue;
+        }
+        sawLocal = true;
+        if (!this.binding && this.services.ownLinks && this.path !== "") {
+          const added = addedAttachmentLinks(this.path, tr);
+          if (added.length > 0) this.services.ownLinks.added(this.path, added);
         }
       }
     }
     this.binding?.update(update);
+    if (sawLocal) {
+      if (!this.binding) this.locallyEdited = true;
+      this.room?.markLocalEdit();
+      if (this.path !== "") this.services.roomWrote?.(this.path, null);
+    } else if (sawSet && this.binding && this.room?.localEdited && this.path !== "") {
+      this.services.roomWrote?.(this.path, null);
+    } else if (sawRoom && this.binding && this.room && !this.room.localEdited && this.path !== "") {
+      this.services.roomWrote?.(this.path, update.state.doc.toString());
+    }
     this.carets?.update(update);
     if (this.phase === "local" && this.ref && !this.destroyed && !this.shownNote && this.showsItsNote()) this.matchChoice();
   }
@@ -198,15 +217,23 @@ export class NoteEditor implements PluginValue {
 
   private enter(ref: DocumentRef): void {
     this.ref = ref;
+    this.baseOpened = false;
     this.registry.add(this.path, this);
     this.moveTo("local");
-    this.services.gitBases.opened(this.path, ref);
+    this.openGitBase(ref);
     this.matchChoice();
+  }
+
+  private openGitBase(ref: DocumentRef): void {
+    if (this.baseOpened || this.services.isLocalOnlyNew?.(this.path) === true) return;
+    this.baseOpened = true;
+    this.services.gitBases.opened(this.path, ref);
   }
 
   private matchChoice(): void {
     const { ref } = this;
     if (this.destroyed || !ref) return;
+    this.openGitBase(ref);
     const shown = this.showsItsNote();
     this.shownNote = shown;
     if (!shown) return;
@@ -368,6 +395,7 @@ export class NoteEditor implements PluginValue {
   private follow(next: Room): void {
     const key = this.ref ? docKey(this.ref) : null;
     const agreed = this.binding && this.room ? (this.room.vouched ?? "") : null;
+    if (agreed !== null && agreed !== "" && this.path !== "") this.services.roomAcked?.(this.path, agreed, true);
     this.takenText = this.room ? (this.room.vouched ?? this.room.text.toJSON()) : null;
     const leaving = this.room?.steps ?? null;
     if (key !== null && this.services.ownRestarts.pending(key)) this.join.cutOffEither((room) => this.ownStep(key, leaving, room), agreed);
@@ -436,6 +464,11 @@ export class NoteEditor implements PluginValue {
   private bindTo(room: Room, text: string, notice: string | null, kept = false, git?: string | null, base: string | null = null): void {
     const before = this.view.state.doc.toString();
     const roomBefore = toLf(room.text.toJSON());
+    const peers = this.registry.editorsOf(this.path);
+    const pushedLocal = !room.readOnly && toLf(text) !== roomBefore;
+    if (this.locallyEdited || peers.some((editor) => editor.locallyEdited) || pushedLocal || this.services.hasLocalEdit?.(this.path, before) === true) {
+      room.markLocalEdit();
+    }
     this.session = {
       boundFrom: toLf(before),
       boundBase: base !== null ? toLf(base) : null,
@@ -446,6 +479,8 @@ export class NoteEditor implements PluginValue {
     this.seedLinks(before, roomBefore, base, git, text);
     const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), text, this.linkSink());
     this.binding = binding;
+    if (room.localEdited) this.services.roomWrote?.(this.path, null);
+    else if (toLf(before) !== toLf(text)) this.services.roomWrote?.(this.path, toLf(text));
     this.join.bound();
     if (this.answered !== null) this.services.ownRestarts.settle(this.answered.key, this.answered.steps, true);
     this.answered = null;
@@ -520,6 +555,8 @@ export class NoteEditor implements PluginValue {
       const merged = !room.readOnly && base !== null ? mergeRegions(base, followerText, roomText, new Budget(250)) : null;
       if (merged !== null && conflictsIn(merged) === 0) {
         const kept = theirsStanding(merged);
+        room.markLocalEdit();
+        this.services.roomWrote?.(this.path, null);
         this.seedLinks(followerText, roomText, base, undefined, kept);
         const binding = Binding.bind(this.view, room, () => later(() => this.lost(binding)), kept, this.linkSink());
         this.binding = binding;
@@ -597,6 +634,7 @@ export class NoteEditor implements PluginValue {
       if (file === null || room.name === null || this.binding !== binding || toLf(file) !== text || !room.acknowledged) return;
       if (this.endsSoon(room)) return;
       this.services.bases.write(this.path, { room: room.name, text, eol: eolOf(file), lineage: lineageOf(room.doc) });
+      this.services.roomAcked?.(this.path, text);
       if (this.session) this.session.recorded = text;
     } catch {
       void 0;
@@ -660,6 +698,7 @@ export class NoteEditor implements PluginValue {
   }
 
   private resetDocument(): void {
+    this.baseOpened = false;
     this.locallyEdited = false;
     this.takenText = null;
     this.refusedTold = false;
@@ -704,19 +743,27 @@ export class NoteEditor implements PluginValue {
     const wasHeldJoining = this.phase === "joining" && !this.joiningEditable && !this.mayOnlyRead;
     if (this.phase !== phase || this.joiningEditable !== editable) {
       const doc = this.view.dom.ownerDocument;
-      const focused = this.view.hasFocus || this.view.dom.contains(doc.activeElement);
+      const active = doc.activeElement;
+      const inBody = active !== null && this.view.contentDOM.contains(active);
+      const focused = inBody || (this.view.hasFocus && (active === null || active === doc.body));
       if (!wasHeldJoining && phase === "joining" && !editable && !this.mayOnlyRead) this.restoreFocus = focused;
       const refocus =
         wasHeldJoining &&
         phase === "live" &&
-        (focused || (this.restoreFocus && (doc.activeElement === null || doc.activeElement === doc.body)));
+        (focused || (this.restoreFocus && (active === null || active === doc.body)));
       if (phase !== "joining") this.restoreFocus = false;
       this.phase = phase;
       this.joiningEditable = editable;
       later(() => {
         if (this.destroyed) return;
         this.view.dispatch({ effects: [setJoiningEditable.of(editable), setPhase.of(phase)] });
-        if (refocus) this.view.focus();
+        if (refocus) {
+          const currentDoc = this.view.dom.ownerDocument;
+          const current = currentDoc.activeElement;
+          if (current === null || current === currentDoc.body || this.view.contentDOM.contains(current)) {
+            this.view.focus();
+          }
+        }
       });
     }
     this.report();

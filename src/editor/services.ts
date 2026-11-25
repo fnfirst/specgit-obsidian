@@ -68,6 +68,9 @@ export interface EditorServices {
   ownRestarts: Pick<OwnRestarts, "pending" | "own" | "settle">;
   ownLinks?: Pick<OwnLinks, "added" | "moved" | "forget">;
   joined?(path: string): void;
+  roomWrote?(path: string, text: string | null): void;
+  roomAcked?(path: string, text: string, pin?: boolean): void;
+  hasLocalEdit?(path: string, text: string): boolean;
   sentBase?(path: string, doc: DocumentRef, since?: number, signal?: AbortSignal): Promise<string | null> | null;
   gitCopy(doc: DocumentRef, signal?: AbortSignal): Promise<string | null>;
 }

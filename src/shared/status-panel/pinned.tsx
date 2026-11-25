@@ -60,7 +60,7 @@ export function PinnedCard({ pinned, ctx, quiet, hasMore, showReason = false, on
       <div className="sp-card">
         <div className="sp-pinned-head">
           <span className="sp-name sp-grow">{pinned.name}</span>
-          <Pill state={pinned.state} tipPeople={pinned.tipPeople} reason={pinned.reason} asksYou={pinned.asksYou} autoPublish={pinned.autoPublish} id={pinned.id} ctx={ctx} />
+          <Pill state={pinned.state} tipPeople={pinned.tipPeople} reason={pinned.reason} asksYou={pinned.asksYou} autoPublish={pinned.autoPublish} approved={pinned.approved} id={pinned.id} ctx={ctx} />
           {hasMore ? (
             <button
               type="button"

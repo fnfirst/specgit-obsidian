@@ -307,6 +307,7 @@ export class ChangesFlows {
     return sendThroughBranch({ deps: deps, memory: memory }, row, mine, first, (body, there, levelledWith) => this.saveToReview(row, { text, body, there, main, merged: merging, levelledWith, options }), {
       branch,
       ...(merging && prior?.branch !== undefined ? { held: prior.branch } : {}),
+      ...(options.stopOnBehind ? { stopOnBehind: true } : {}),
       level: options.toReview ? async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) : "level",
     });
   }

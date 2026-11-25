@@ -58,12 +58,12 @@ export function draftOf(entries: readonly InFlightBranch[] | undefined, login: s
   const { group, own, branch } = pickFileReview(entries, login, groups, saves);
   if (group) {
     const mine = branch === null || isGroupBranch(branch) ? null : entries.find((one) => one.branch === branch);
-    if (!mine) return { branch: group.entry.branch, blob: group.entry.docBlobSha ?? null, by: reviewAuthor(group.entry), prNumber: group.overview.prNumber, inGroup: true, viaGroup: true };
-    return { branch: mine.branch, blob: mine.docBlobSha ?? null, by: reviewAuthor(mine), prNumber: mine.prNumber ?? null, inGroup: true };
+    if (!mine) return { branch: group.entry.branch, blob: group.entry.docBlobSha ?? null, by: reviewAuthor(group.entry), lastBy: group.entry.authorLogin || null, prNumber: group.overview.prNumber, inGroup: true, viaGroup: true };
+    return { branch: mine.branch, blob: mine.docBlobSha ?? null, by: reviewAuthor(mine), lastBy: mine.authorLogin || null, prNumber: mine.prNumber ?? null, inGroup: true };
   }
   const entry = openedBy(entries, login) ?? own ?? (login === null || login === "" ? null : teammateEntry(entries, login));
   if (!entry) return null;
-  return { branch: entry.branch, blob: entry.docBlobSha ?? null, by: reviewAuthor(entry), prNumber: entry.prNumber ?? null };
+  return { branch: entry.branch, blob: entry.docBlobSha ?? null, by: reviewAuthor(entry), lastBy: entry.authorLogin || null, prNumber: entry.prNumber ?? null };
 }
 
 export function removalsByBranch(paths: Readonly<Record<string, readonly InFlightBranch[]>>, vaultPath: (path: string) => string): Map<string, Map<string, string | null>> {

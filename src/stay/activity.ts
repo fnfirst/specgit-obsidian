@@ -25,7 +25,9 @@ export class Activity {
   private readonly wrote = new Map<string, { sha: string; at: number }>();
   private readonly pending = new Map<string, Map<number, number>>();
   private writes = 0;
-  listener: ((path: string) => void) | null = null;
+  listener: ((path: string, deferRead?: boolean, from?: string) => void) | null = null;
+  remoteCheck: ((path: string, sha: string | undefined) => boolean) | null = null;
+  onRename: ((from: string, to: string) => void) | null = null;
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -41,7 +43,7 @@ export class Activity {
   }
 
   changedByPersonSince(path: string, since: number, mtime: number, typedAt: number | undefined, sha?: string): boolean {
-    if (this.isSuspect(path)) return false;
+    if (this.isSuspect(path) || this.remoteCheck?.(path, sha) === true) return false;
     const left = this.wrote.get(path);
     if (left !== undefined && sha !== undefined) return sha !== left.sha && mtime > since;
     if (mtime <= since) return false;
@@ -88,7 +90,7 @@ export class Activity {
     }
   }
 
-  touched(path: string): void {
+  touched(path: string, deferRead = false, from?: string): void {
     const now = this.now();
     if ((this.own.get(path) ?? 0) > now || this.writing(path)) {
       this.ownAt.set(path, now);
@@ -109,7 +111,7 @@ export class Activity {
     }
     if (now < this.flurryEnds || now < this.gitEnds) this.suspect.set(path, now);
     if (now < this.gitEnds) this.git.set(path, now);
-    this.listener?.(path);
+    this.listener?.(path, deferRead, from);
   }
 
   renamed(from: string, to: string): void {
@@ -123,8 +125,9 @@ export class Activity {
       for (const event of this.history) if (event.path === from) event.path = to;
       this.moveMark(this.suspect, from, to);
       this.moveMark(this.git, from, to);
+      this.onRename?.(from, to);
     }
-    this.touched(to);
+    this.touched(to, true, from !== to ? from : undefined);
   }
 
   private moveMark(marks: Map<string, number>, from: string, to: string): void {

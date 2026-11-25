@@ -332,5 +332,6 @@ export class Discard {
   private forget(path: string): void {
     this.host.memory.forget(path);
     this.host.model.learnSent(path, null);
+    this.host.deps.restored?.(path);
   }
 }

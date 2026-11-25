@@ -14,7 +14,8 @@ export function barLines(row: AwareRow | undefined, live: boolean, doing: { join
   if (choice) lines.push({ kind: "choice", words: `${choice.words} ${choice.label}.`, action: { label: choice.label, run: choice.run } });
   if (row?.who && !live && !panelShown) lines.push({ kind: "live", words: noteBarLive(row.who.names, row.who.many), action: { label: JOIN, run: doing.join } });
   const draft = row?.draft;
-  if (draft && !draft.mine && draft.inNote === false && draft.others !== "") lines.push({ kind: "draft", words: noteBarDraft(draft.others, draft.others.includes(" and ") || draft.others.includes(", ")), action: { label: ADD_TO_MY_NOTE, run: doing.add } });
+  const draftWho = !draft || draft.inNote !== false ? "" : !draft.mine ? draft.others : (draft.lastOther ?? "");
+  if (draftWho !== "") lines.push({ kind: "draft", words: noteBarDraft(draftWho, draftWho.includes(" and ") || draftWho.includes(", ")), action: { label: ADD_TO_MY_NOTE, run: doing.add } });
   return lines;
 }
 

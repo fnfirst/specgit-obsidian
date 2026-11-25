@@ -66,7 +66,7 @@ export async function sendThroughBranch(
   text: string,
   first: BranchHead | undefined,
   send: (body: string, there: BranchHead | undefined, levelledWith: string | null) => Promise<Sent | Behind>,
-  from: { branch?: string; held?: string; level: "level" | ((text: string) => Promise<Levelled>) },
+  from: { branch?: string; held?: string; stopOnBehind?: boolean; level: "level" | ((text: string) => Promise<Levelled>) },
 ): Promise<Sent> {
   const { deps, memory } = host;
   const name = noteName(row.change.path);
@@ -93,6 +93,7 @@ export async function sendThroughBranch(
     const answer = await send(body, there, levelledWith);
     if (!("behind" in answer)) return answer;
     const { head, message } = answer.behind;
+    if (from.stopOnBehind) return { ok: false, unreadable: true, message };
     if (head === null) return { ok: false, message, moved: true };
     if (attempt >= MOVED_ATTEMPTS) return { ok: false, message: BRANCH_MOVED_AGAIN(name) };
     there = { text: head.source, sha: head.sha };

@@ -58,6 +58,7 @@ export class Room {
   private readonly own = new OwnChanges(this.text, { acknowledged: () => this.acknowledged });
   private readonly refusedListeners = new Set<(why: "riff" | "schema") => void>();
   private readonly leaving = new Map<number, boolean>();
+  private wroteLocally = false;
 
   constructor(
     readonly ref: DocumentRef,
@@ -167,11 +168,20 @@ export class Room {
     void this.connect();
   }
 
+  get localEdited(): boolean {
+    return this.wroteLocally;
+  }
+
+  markLocalEdit(): void {
+    this.wroteLocally = true;
+  }
+
   get successor(): Room | null {
     return this.replacement;
   }
 
   supersede(next: Room): void {
+    if (this.wroteLocally) next.markLocalEdit();
     this.replacement = next;
     this.notify();
   }

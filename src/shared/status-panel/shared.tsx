@@ -30,7 +30,7 @@ export interface Ctx {
 
 export const cx = (...names: (string | false | null | undefined)[]): string => names.filter(Boolean).join(" ");
 
-export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [], reason?: string, asksYou?: boolean, autoPublish?: boolean): TipContent | null {
+export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [], reason?: string, asksYou?: boolean, autoPublish?: boolean, approved?: boolean): TipContent | null {
   const name = STATUS_PILL_WORDS[state];
   switch (state) {
     case "edited":
@@ -42,7 +42,7 @@ export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [
     case "changes-requested":
       return { picture: "ladder", lit: "in-review", name, line: STATUS_TIPS.changesRequested(tipPeople) };
     case "ready":
-      return { picture: "ladder", lit: "ready", name, line: STATUS_TIPS.ready };
+      return { picture: "ladder", lit: "ready", name, line: approved ? STATUS_TIPS.ready : STATUS_TIPS.readyUnblocked };
     case "out-of-date":
       return { picture: "ladder", lit: "ready", name, line: reason ?? STATUS_TIPS.outOfDate };
     case "changed-in-both":
@@ -59,9 +59,9 @@ export function pillTip(state: StatusPillState, tipPeople: readonly string[] = [
   }
 }
 
-export function Pill({ state, tipPeople, reason, asksYou, autoPublish, id, ctx }: { state: StatusPillState; tipPeople?: readonly string[]; reason?: string; asksYou?: boolean; autoPublish?: boolean; id: string; ctx: Ctx }) {
+export function Pill({ state, tipPeople, reason, asksYou, autoPublish, approved, id, ctx }: { state: StatusPillState; tipPeople?: readonly string[]; reason?: string; asksYou?: boolean; autoPublish?: boolean; approved?: boolean; id: string; ctx: Ctx }) {
   const word = STATUS_PILL_WORDS[state];
-  const tip = pillTip(state, tipPeople, reason, asksYou, autoPublish);
+  const tip = pillTip(state, tipPeople, reason, asksYou, autoPublish, approved);
   if (!tip) return <span className={`sp-pill sp-pill-${state}`}>{word}</span>;
   const key = `${id}:pill`;
   return (

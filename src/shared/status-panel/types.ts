@@ -40,6 +40,7 @@ export interface StatusDoc extends StatusPeople {
   views?: readonly ("github" | "difference")[];
   openComments?: number;
   autoPublish?: boolean;
+  approved?: boolean;
 }
 
 export interface StatusGroupMember {
@@ -67,6 +68,7 @@ export interface StatusGroup extends StatusPeople {
   draft?: boolean;
   openComments?: number;
   autoPublish?: boolean;
+  approved?: boolean;
   ending?: boolean;
 }
 
@@ -114,6 +116,7 @@ export interface StatusPinned extends StatusPeople {
   fixBelow?: boolean;
   openComments?: number;
   autoPublish?: boolean;
+  approved?: boolean;
   plugin?: { connected: boolean; joining?: boolean; people?: number; action?: PluginLiveAction };
 }
 

@@ -22,6 +22,7 @@ export interface SendHooks {
   memberBranch?: string;
   edit: true;
   ended?: true;
+  policy?: StayDrafts;
   notWritten(path: string): void;
   during<T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T>;
 }

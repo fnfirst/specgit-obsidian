@@ -11,11 +11,12 @@ const LANE_OF_KIND: Record<CheckKind, Lane> = { approve: "approve", publish: "pu
 export const loginsOf = (people: readonly (string | StatusPerson)[] | undefined): string[] =>
   (people ?? []).map((one) => (typeof one === "string" ? one : one.login)).filter((login) => login !== "you");
 
-export function laneOf(item: { lane?: Lane; check?: CheckKind; state?: StatusDoc["state"]; asksYou?: boolean; teammate?: boolean; here?: readonly unknown[] }): Lane {
+export function laneOf(item: { lane?: Lane; check?: CheckKind; state?: StatusDoc["state"]; asksYou?: boolean; teammate?: boolean; draft?: boolean; here?: readonly unknown[] }): Lane {
   if (item.lane) return item.lane;
   if (item.check) return LANE_OF_KIND[item.check];
   switch (item.state) {
     case "out-of-date":
+      return item.teammate ? "others" : item.draft ? "drafts" : "publish";
     case "ready":
       return item.teammate ? "others" : "publish";
     case "held":
@@ -111,6 +112,7 @@ export function layoutOf(model: StatusPanelModel): Layout {
         openComments: pinned.openComments,
         reason: pinned.reason,
         autoPublish: pinned.autoPublish,
+        ...(pinned.approved ? { approved: true } : {}),
         ...(pinned.propose ? { propose: pinned.propose } : {}),
         check: pinnedCheck(pinned),
         views: pinned.views,

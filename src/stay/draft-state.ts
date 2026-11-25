@@ -6,18 +6,24 @@ export interface Draft {
   branch: string;
   blob: string | null;
   by: string | null;
+  lastBy?: string | null;
   prNumber: number | null;
   inGroup?: true;
   viaGroup?: true;
   removes?: ReadonlyMap<string, string | null>;
 }
 
+export const draftWriter = (draft: Pick<Draft, "by" | "lastBy">): string | null => (draft.lastBy !== undefined ? draft.lastBy : draft.by);
+
 export const draftKey = (draft: Pick<Draft, "prNumber" | "inGroup">): string | null => (draft.prNumber === null ? null : draft.inGroup === true ? `group:${draft.prNumber}` : `pr:${draft.prNumber}`);
 
-export function follows(draft: Pick<Draft, "by" | "prNumber" | "inGroup">, login: string, sentTo: string | null | undefined, policy: StayDrafts): boolean {
-  if (policy === "everyone" || sameLogin(draft.by, login)) return true;
+export type DraftAgreement = Pick<FileFacts, "sent" | "sentTo">;
+
+export function follows(draft: Pick<Draft, "by" | "lastBy" | "blob" | "prNumber" | "inGroup">, login: string, agreed: DraftAgreement | null | undefined, policy: StayDrafts): boolean {
+  if (policy === "everyone" || sameLogin(draftWriter(draft), login)) return true;
+  if (draft.blob === null || agreed?.sent !== draft.blob) return false;
   const key = draftKey(draft);
-  return key !== null && sentTo === key;
+  return key === null ? agreed.sentTo === undefined : agreed.sentTo === key;
 }
 
 export type LeftAlone = "live" | "unsaved" | "disconnected" | "recent" | "tool";
@@ -63,7 +69,7 @@ export function draftCase({ file, draft, login, policy, leftAlone, ended, unread
   }
   const clean = isClean(file);
   if (draft) {
-    if (!follows(draft, login, file.sentTo, policy)) return { kind: "offer" };
+    if (!follows(draft, login, file, policy)) return { kind: "offer" };
     if (unreadable) return { kind: "wait" };
     const unmoved = draft.blob === null ? file.sent !== undefined : draft.blob === file.sent;
     if (clean) return unmoved || draft.blob === null ? { kind: "settled" } : { kind: "take" };

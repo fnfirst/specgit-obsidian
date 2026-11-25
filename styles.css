@@ -3206,6 +3206,12 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   .sp-theme-obsidian .sp-footer {
     padding-inline: 8px;
   }
+  .sp-theme-obsidian .sp-group-row .sp-line {
+    gap: 6px;
+  }
+  .sp-theme-obsidian .sp-group-row .sp-name:not(.sp-name-input) {
+    min-width: 0;
+  }
   .sp-theme-obsidian .sp-row-conflict .sp-line-2 {
     flex-wrap: wrap;
   }

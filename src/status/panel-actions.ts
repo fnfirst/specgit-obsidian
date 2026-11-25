@@ -306,7 +306,8 @@ export async function runAction(action: PanelAction, ports: StatusPorts): Promis
     case "rename-group": {
       const card = units.rows.get(action.id);
       ports.editGroup(null);
-      return card ? void (await flows.renameGroup(card, action.name)) : undefined;
+      if (!card || card.group?.overview.name === action.name) return;
+      return void (await flows.renameGroup(card, action.name));
     }
     case "add-reviewer": {
       const rows = rowsOf(units, action.ids);

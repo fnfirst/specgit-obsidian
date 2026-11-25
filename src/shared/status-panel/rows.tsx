@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   GROUP_CARD,
   STATUS_GROUP_MENU,
@@ -131,7 +131,7 @@ export function Row({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }
   const check = <Check item={doc} ctx={ctx} />;
   const boxed = ctx.boxes || (!ctx.readOnly && ctx.checkables.has(doc.id));
   const dropPill = !!doc.state && pillRepeatsChip(lane, doc.state, doc.asksYou);
-  const pill = doc.state && !dropPill ? <Pill state={doc.state} tipPeople={doc.tipPeople} reason={doc.reason} asksYou={doc.asksYou} autoPublish={doc.autoPublish} id={doc.id} ctx={ctx} /> : null;
+  const pill = doc.state && !dropPill ? <Pill state={doc.state} tipPeople={doc.tipPeople} reason={doc.reason} asksYou={doc.asksYou} autoPublish={doc.autoPublish} approved={doc.approved} id={doc.id} ctx={ctx} /> : null;
   const classes = cx("sp-row", entry.open && "sp-row-open", entry.needs && "sp-row-needs", flashClass(doc.id, ctx));
   if (fix && fix !== "join") {
     const conflict = doc.state === "changed-in-both";
@@ -165,6 +165,179 @@ export function Row({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }
   );
 }
 
+const TOUCH_BLUR_WINDOW_MS = 500;
+const TOUCH_BLUR_FALLBACK_MS = 250;
+
+function GroupNameInput({ group, ctx }: { group: Pick<StatusGroup, "id" | "name">; ctx: Pick<Ctx, "act"> }) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const winRef = useRef<Window | null>(null);
+  const committed = useRef(false);
+  const pointerActive = useRef(false);
+  const lastTouchEnd = useRef(0);
+  const pendingName = useRef<string | null>(null);
+  const flushTimer = useRef<number | null>(null);
+  const fallbackTimer = useRef<number | null>(null);
+  const clickCleanup = useRef<(() => void) | null>(null);
+  const latest = useRef({ id: group.id, name: group.name, act: ctx.act });
+  latest.current = { id: group.id, name: group.name, act: ctx.act };
+
+  const winOf = (): Window => winRef.current ?? inputRef.current?.ownerDocument.defaultView ?? window;
+
+  const clearFallback = () => {
+    if (fallbackTimer.current !== null) {
+      winOf().clearTimeout(fallbackTimer.current);
+      fallbackTimer.current = null;
+    }
+    if (clickCleanup.current) {
+      clickCleanup.current();
+      clickCleanup.current = null;
+    }
+  };
+
+  const clearTimers = () => {
+    if (flushTimer.current !== null) {
+      winOf().clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+    }
+    clearFallback();
+  };
+
+  const commit = (name: string) => {
+    if (committed.current) return;
+    committed.current = true;
+    pendingName.current = null;
+    clearTimers();
+    latest.current.act({ type: "rename-group", id: latest.current.id, name });
+  };
+
+  const flush = () => {
+    const name = pendingName.current;
+    clearTimers();
+    if (name === null) return;
+    commit(name);
+  };
+
+  const scheduleFlush = () => {
+    if (committed.current || pendingName.current === null) return;
+    clearFallback();
+    if (flushTimer.current === null) {
+      flushTimer.current = winOf().setTimeout(flush, 0);
+    }
+  };
+
+  const waitForClickOrFallback = (doc: Document) => {
+    clearTimers();
+    const win = doc.defaultView ?? window;
+    winRef.current = win;
+    const onClick = () => {
+      scheduleFlush();
+    };
+    doc.addEventListener("click", onClick, true);
+    clickCleanup.current = () => doc.removeEventListener("click", onClick, true);
+    fallbackTimer.current = win.setTimeout(flush, TOUCH_BLUR_FALLBACK_MS);
+  };
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const doc = el.ownerDocument;
+    winRef.current = doc.defaultView ?? window;
+    const onDown = (event: Event) => {
+      const button = (event as MouseEvent).button;
+      if (event.target !== el && (button === undefined || button === 0)) pointerActive.current = true;
+    };
+    const onUp = (event: Event) => {
+      pointerActive.current = false;
+      if (pendingName.current === null) return;
+      if (event.type === "pointerup" && ((event as PointerEvent).pointerType === "touch" || Date.now() - lastTouchEnd.current < TOUCH_BLUR_WINDOW_MS)) {
+        waitForClickOrFallback(doc);
+        return;
+      }
+      scheduleFlush();
+    };
+    const onContextMenu = () => {
+      pointerActive.current = false;
+      if (pendingName.current !== null) scheduleFlush();
+    };
+    const onTouchEnd = (event: Event) => {
+      if (event.target !== el) lastTouchEnd.current = Date.now();
+    };
+    const onDocClick = (event: Event) => {
+      if (event.target !== el && pendingName.current === null) lastTouchEnd.current = 0;
+    };
+    doc.addEventListener("pointerdown", onDown, true);
+    doc.addEventListener("mousedown", onDown, true);
+    doc.addEventListener("pointerup", onUp, true);
+    doc.addEventListener("mouseup", onUp, true);
+    doc.addEventListener("pointercancel", onUp, true);
+    doc.addEventListener("contextmenu", onContextMenu, true);
+    doc.addEventListener("touchend", onTouchEnd, true);
+    doc.addEventListener("click", onDocClick, true);
+    return () => {
+      doc.removeEventListener("pointerdown", onDown, true);
+      doc.removeEventListener("mousedown", onDown, true);
+      doc.removeEventListener("pointerup", onUp, true);
+      doc.removeEventListener("mouseup", onUp, true);
+      doc.removeEventListener("pointercancel", onUp, true);
+      doc.removeEventListener("contextmenu", onContextMenu, true);
+      doc.removeEventListener("touchend", onTouchEnd, true);
+      doc.removeEventListener("click", onDocClick, true);
+      const pending = pendingName.current;
+      pendingName.current = null;
+      clearTimers();
+      if (!committed.current && pending !== null) {
+        committed.current = true;
+        latest.current.act({ type: "rename-group", id: latest.current.id, name: pending });
+      }
+    };
+  }, []);
+
+  return (
+    <input
+      className="sp-name sp-name-input"
+      aria-label={GROUP_CARD.name}
+      defaultValue={group.name}
+      ref={(el) => {
+        inputRef.current = el;
+        if (el && el.ownerDocument.activeElement !== el && !el.dataset.focused) {
+          el.dataset.focused = "1";
+          el.focus();
+          el.select();
+        }
+      }}
+      onFocus={() => {
+        if (!committed.current && pendingName.current !== null) {
+          pendingName.current = null;
+          clearTimers();
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit(event.currentTarget.value.trim() || group.name);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          commit(group.name);
+        }
+      }}
+      onBlur={(event) => {
+        if (committed.current) return;
+        const nextName = event.currentTarget.value.trim() || group.name;
+        if (pointerActive.current) {
+          pendingName.current = nextName;
+          return;
+        }
+        if (Date.now() - lastTouchEnd.current < TOUCH_BLUR_WINDOW_MS) {
+          pendingName.current = nextName;
+          waitForClickOrFallback(event.currentTarget.ownerDocument);
+          return;
+        }
+        commit(nextName);
+      }}
+    />
+  );
+}
+
 export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }) {
   const group = entry.item as StatusGroup;
   const [open, setOpen] = useState(ctx.openGroups.has(group.id));
@@ -186,20 +359,7 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
             <ChevronIcon />
           </button>
           {group.editing ? (
-            <input
-              className="sp-name sp-name-input"
-              aria-label={GROUP_CARD.name}
-              defaultValue={group.name}
-              ref={(el) => {
-                if (el && el.ownerDocument.activeElement !== el && !el.dataset.focused) {
-                  el.dataset.focused = "1";
-                  el.focus();
-                  el.select();
-                }
-              }}
-              onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
-              onBlur={(event) => ctx.act({ type: "rename-group", id: group.id, name: event.currentTarget.value.trim() || group.name })}
-            />
+            <GroupNameInput group={group} ctx={ctx} />
           ) : (
             <>
               <span className="sp-name" title={group.name}>
@@ -210,7 +370,7 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
           )}
           {pillRepeatsChip(lane, group.state) ? null : (
             <span className="sp-pill-slot">
-              <Pill state={group.state} tipPeople={group.tipPeople} reason={group.reason} autoPublish={group.autoPublish} id={group.id} ctx={ctx} />
+              <Pill state={group.state} tipPeople={group.tipPeople} reason={group.reason} autoPublish={group.autoPublish} approved={group.approved} id={group.id} ctx={ctx} />
             </span>
           )}
           <Edge when={group.when} more={groupMore} open={ctx.openMenuId === group.id} />

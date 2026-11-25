@@ -41,6 +41,10 @@ export interface InboundContext {
   state: StayState;
   activity: Activity;
   holds?: StayHolds;
+  isRemoteRoom?(path: string, sha: string): boolean;
+  isOwnBlob?(path: string, sha: string): boolean;
+  onSettled?(path: string, sha: string | null): void;
+  onRebasedSent?(path: string, sha: string): void;
   current(): boolean;
   onResolved?: (path: string) => void;
 }
@@ -100,10 +104,15 @@ export class Inbound {
     return doc !== null && this.ctx.ports.disconnected(doc);
   }
 
+  private isUnchanged(path: string, entry: CacheEntry): boolean {
+    return unchangedHere(entry) || this.ctx.isRemoteRoom?.(path, entry.sha) === true;
+  }
+
   private clearPending(path: string): void {
     this.waiting.delete(path);
     this.deferredUnsaved.delete(path);
     this.cues.delete(path);
+    this.dropChoice(path);
     this.announced.delete(path);
     this.reviewTold.delete(path);
     this.pendingRenames.delete(path);
@@ -210,7 +219,7 @@ export class Inbound {
   async bringIn(looked: Looked, path: string): Promise<boolean> {
     const sha = looked.repo.get(path);
     const entry = looked.files.get(path);
-    if (sha === undefined || !entry || entry.sha === sha || !unchangedHere(entry)) return false;
+    if (sha === undefined || !entry || entry.sha === sha || !this.isUnchanged(path, entry)) return false;
     this.looked = looked;
     this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
     this.reads = 0;
@@ -229,7 +238,8 @@ export class Inbound {
     for (const [path, sha] of added) {
       const doc = ports.documentFor(path);
       const entry = looked.files.get(path);
-      if (!doc || ports.disconnected(doc) || inMove.has(path) || seen.has(sha) || entry?.sha === sha || (!entry && this.caseIndex.collision(path) !== null) || (entry && this.followsDraft(looked, path, doc, entry.sentTo)) || !this.ready(path, sha, false)) continue;
+      const unchanged = entry !== undefined && (entry.sha === this.ctx.state.data.seen?.[path] || this.isUnchanged(path, entry));
+      if (!doc || ports.disconnected(doc) || inMove.has(path) || seen.has(sha) || entry?.sha === sha || (!entry && this.caseIndex.collision(path) !== null) || (entry && ((!unchanged && this.isOwnBlob(path, entry, sha)) || this.followsDraft(looked, path, doc, entry))) || !this.ready(path, sha, false)) continue;
       seen.add(sha);
       asked.push({ doc, sha });
       if (asked.length >= TEXTS_PER_PASS) break;
@@ -250,7 +260,7 @@ export class Inbound {
     for (const [path, sha] of deletes) {
       const entry = looked.files.get(path);
       const doc = ports.documentFor(path);
-      if (!entry || !doc || ports.disconnected(doc) || looked.repo.has(path) || (hold && !this.releasedDeletes.has(path)) || (entry.sha !== sha && !unchangedHere(entry)) || !this.ready(path, sha, false)) continue;
+      if (!entry || !doc || ports.disconnected(doc) || looked.repo.has(path) || (hold && !this.releasedDeletes.has(path)) || (entry.sha !== sha && !this.isUnchanged(path, entry)) || !this.ready(path, sha, false)) continue;
       asked.push(doc);
     }
     if (asked.length === 0) return new Map();
@@ -292,6 +302,7 @@ export class Inbound {
     if (!seen || !this.ctx.current()) return;
     if (sha === null) delete seen[path];
     else seen[path] = sha;
+    this.ctx.onSettled?.(path, sha);
   }
 
   private tell(said: Said): void {
@@ -319,7 +330,7 @@ export class Inbound {
     for (const [path, sha] of added) {
       if (this.isPaused(path)) continue;
       const entry = looked.files.get(path);
-      if (!entry || entry.sha === sha || entry.sha === seen[path] || unchangedHere(entry)) continue;
+      if (!entry || entry.sha === sha || entry.sha === seen[path] || this.isUnchanged(path, entry)) continue;
       here.add(path);
       if (this.cues.get(path)?.sha !== sha) this.cues.set(path, { sha, since: now, told: false });
     }
@@ -380,7 +391,7 @@ export class Inbound {
     for (const [from, sha] of removed) {
       if (inMove.has(from) || sha === "" || sha === EMPTY_BLOB) continue;
       const entry = looked.files.get(from);
-      if (!entry || entry.sha === sha || unchangedHere(entry)) continue;
+      if (!entry || entry.sha === sha || this.isUnchanged(from, entry)) continue;
       removedBySha.set(sha, [...(removedBySha.get(sha) ?? []), from]);
     }
     const addedBySha = new Map<string, string[]>();
@@ -403,7 +414,7 @@ export class Inbound {
     for (const [from, sha] of removed) {
       const to = added.find(([path, other]) => other === sha && seen[path] === undefined && !taken.has(path) && !looked.files.has(path));
       const entry = looked.files.get(from);
-      if (!to || !entry || (entry.sha !== sha && !unchangedHere(entry))) continue;
+      if (!to || !entry || (entry.sha !== sha && !this.isUnchanged(from, entry))) continue;
       taken.add(to[0]);
       moves.push({ from, to: to[0], sha, held: entry.sha });
     }
@@ -433,7 +444,7 @@ export class Inbound {
   private tellReview(path: string, sha: string): void {
     const entry = this.looked?.files.get(path);
     const seen = this.ctx.state.data.seen?.[path];
-    if (!entry || entry.sha === sha || entry.sha === seen || unchangedHere(entry) || this.reviewTold.get(path) === sha) return;
+    if (!entry || entry.sha === sha || entry.sha === seen || this.isUnchanged(path, entry) || this.reviewTold.get(path) === sha) return;
     this.reviewTold.set(path, sha);
     this.askChoice(path, CHOICE_WORDS.review, CHOICE_WORDS.catchUp, () => this.ctx.ports.settleReview(path), `${noteName(path)} is in review and was also changed on GitHub. Catch up adds the GitHub changes, and asks only about places you both changed.`, `${noteName(path)} changed on GitHub while in review. Click Catch up to bring the changes in.`);
   }
@@ -459,10 +470,14 @@ export class Inbound {
     return false;
   }
 
-  private rebaseOwn(path: string, doc: DocumentRef, entry: CacheEntry, sha: string): void {
+  private isOwnBlob(path: string, entry: CacheEntry, sha: string): boolean {
     const endedOwn = this.ctx.state.data.endedOwn;
-    const ours = entry.sent === sha || endedOwn?.[path]?.sent === sha || agreedOf(entry) === sha;
-    if (!ours) return;
+    return entry.sent === sha || endedOwn?.[path]?.sent === sha || agreedOf(entry) === sha || this.ctx.isOwnBlob?.(path, sha) === true;
+  }
+
+  private rebaseOwn(looked: Looked, path: string, doc: DocumentRef, entry: CacheEntry, sha: string): void {
+    if (!this.isOwnBlob(path, entry, sha)) return;
+    const endedOwn = this.ctx.state.data.endedOwn;
     if (entry.base !== sha) {
       const known = this.texts.get(sha);
       if (known !== undefined) this.ctx.ports.recordBase(path, doc, toLf(known), known);
@@ -471,6 +486,15 @@ export class Inbound {
       this.rescan = true;
     }
     if (endedOwn?.[path]?.sent === sha) delete endedOwn[path];
+    const draft = looked.drafts?.byPath.get(path);
+    if (looked.drafts?.level === true && !draft && entry.sent === sha) {
+      this.ctx.ports.agreed(path, null);
+      clearSent(entry);
+      this.rescan = true;
+    } else if (entry.sent === sha) {
+      this.ctx.onRebasedSent?.(path, sha);
+    }
+    this.ctx.onResolved?.(path);
   }
 
   private async add(looked: Looked, path: string, sha: string, said: Said, explicit = false): Promise<void> {
@@ -491,8 +515,13 @@ export class Inbound {
     }
     if (!entry && looked.deleted.some((gone) => gone.path === path)) return this.settled(path, sha);
     if (!entry && this.caseIndex.collision(path) !== null) return this.holdCaseCollision(path, sha);
-    if (entry && this.followsDraft(looked, path, doc, entry.sentTo)) {
-      this.rebaseOwn(path, doc, entry, sha);
+    const seenBefore = this.ctx.state.data.seen?.[path] ?? null;
+    const diskUnchanged = entry !== undefined && (entry.sha === seenBefore || this.isUnchanged(path, entry));
+    if (entry && !diskUnchanged && this.isOwnBlob(path, entry, sha)) {
+      this.rebaseOwn(looked, path, doc, entry, sha);
+      return this.settled(path, sha);
+    }
+    if (entry && this.followsDraft(looked, path, doc, entry)) {
       return this.settled(path, sha);
     }
     if (!(await this.free(path, doc, sha))) return;
@@ -510,15 +539,15 @@ export class Inbound {
     }
     if (!entry) return this.create(path, doc, main, said);
     const before = this.ctx.state.data.seen?.[path] ?? null;
-    const unchanged = entry.sha === before || unchangedHere(entry);
+    const unchanged = entry.sha === before || this.isUnchanged(path, entry);
     return unchanged ? this.update(path, doc, entry.sha, main, said) : this.merge(path, doc, entry, before, main, said);
   }
 
-  private followsDraft(looked: Looked, path: string, doc: DocumentRef, sentTo: string | undefined): boolean {
+  private followsDraft(looked: Looked, path: string, doc: DocumentRef, entry: Pick<CacheEntry, "sent" | "sentTo">): boolean {
     const { ports } = this.ctx;
     const draft = looked.drafts?.byPath.get(path);
     if (!draft || ports.phaseOf(path) !== "local" || ports.disconnected(doc) || ports.inGroup(path)) return false;
-    return follows(draft, ports.login(), sentTo, ports.policy());
+    return follows(draft, ports.login(), entry, ports.policy());
   }
 
   private async readMain(doc: DocumentRef): Promise<MainFile> {
@@ -684,7 +713,7 @@ export class Inbound {
     }
     if (!doc) return this.settled(path, null);
     if (ports.disconnected(doc)) return;
-    if (entry.sha !== sha && !unchangedHere(entry)) {
+    if (entry.sha !== sha && !this.isUnchanged(path, entry)) {
       if (!state.data.kept.includes(path)) state.data.kept.push(path);
       const moved = this.pendingRenames.get(path);
       if (moved !== undefined && moved.sha === sha && state.noteRenameTold(path, moved.to, sha, ports.now())) {

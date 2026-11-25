@@ -862,6 +862,12 @@ button.sp-pill {
   .sp-footer {
     padding-inline: 8px;
   }
+  .sp-group-row .sp-line {
+    gap: 6px;
+  }
+  .sp-group-row .sp-name:not(.sp-name-input) {
+    min-width: 0;
+  }
   .sp-row-conflict .sp-line-2 {
     flex-wrap: wrap;
   }

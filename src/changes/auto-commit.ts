@@ -1,6 +1,7 @@
 import type { BranchFile } from "../auth/git-copy";
-import { reviewIsOpen } from "../review/review-api";
+import { reviewIsOpen, type ReviewStatus } from "../review/review-api";
 import { isGroupBranch } from "../shared/review-flow";
+import { draftWriter, follows } from "../stay/draft-state";
 import type { SendHooks } from "../stay/types";
 import { gitBlobShaOfText } from "./blob-sha";
 import type { FlowDeps } from "./flow-deps";
@@ -22,6 +23,7 @@ export interface SendOptions {
   branch?: string;
   found?: BranchFile;
   viaGroup?: true;
+  stopOnBehind?: boolean;
 }
 
 export interface AutoCommitHost {
@@ -94,6 +96,23 @@ export class AutoCommitFlows {
     return { deps, memory, conflicted: () => conflicted };
   }
 
+  private canAutoSaveToHead(path: string, headSha: string, status: ReviewStatus, policy: SendHooks["policy"], inGroup = false): boolean {
+    if (policy !== "mine") return true;
+    const sentSha = this.host.model.sentSha(path);
+    const sentTo = this.host.model.sentTo(path);
+    const known = this.host.model.draftFor(path);
+    const prNumber = status.pr?.number ?? known?.prNumber ?? null;
+    const matched = known !== undefined && known.blob === headSha;
+    const draft = {
+      by: matched ? known.by : null,
+      lastBy: matched ? draftWriter(known) : null,
+      blob: headSha,
+      prNumber,
+      ...(inGroup || status.pr?.group ? { inGroup: true as const } : {}),
+    };
+    return follows(draft, this.host.deps.viewerLogin(), { ...(sentSha !== null ? { sent: sentSha } : {}), ...(sentTo !== null ? { sentTo } : {}) }, "mine");
+  }
+
   private async autoMember(row: ChangeRow, isCurrent: () => boolean, hooks: SendHooks): Promise<AutoStepOutcome> {
     const { deps, memory, conflicted } = this.quiet(hooks);
     if (!isCurrent()) return { result: "retry" };
@@ -102,9 +121,15 @@ export class AutoCommitFlows {
     const status = await this.host.deps.review.status(row.doc);
     if (status === null) return { result: "later" };
     if (status.reviewBranch !== hooks.memberBranch || !reviewIsOpen(status)) return { result: "held" };
+    if (hooks.policy === "mine") {
+      const found = await this.host.deps.branchFile(row.doc, status.reviewBranch);
+      if (found.kind === "unreadable") return { result: "later" };
+      if (found.kind === "absent") return { result: "held" };
+      if (!this.canAutoSaveToHead(row.change.path, found.sha, status, hooks.policy, true)) return { result: "later" };
+    }
     const attachments = await this.host.sendAttachmentsAlone({ ...row, review: status }, deps);
     if (attachments !== null) return autoOutcome(attachments) ?? { result: "retry" };
-    const members = new MemberSync({ deps, backs: this.host.backs, memory, send: async () => ({ ok: false, held: true }) });
+    const members = new MemberSync({ deps, backs: this.host.backs, memory, ...(hooks.policy === "mine" ? { stopOnBehind: true } : {}), send: async () => ({ ok: false, held: true }) });
     const sent = await members.syncAll([{ ...row, review: status }], "its group");
     return autoOutcome(sent, { conflicted: conflicted() }) ?? { result: "retry" };
   }
@@ -119,7 +144,8 @@ export class AutoCommitFlows {
       const found = await this.host.deps.branchFile(row.doc, groupBranch);
       if (found.kind === "unreadable") return { result: "later" };
       if (found.kind === "absent") return { result: "held" };
-      const sent = await this.host.sendOnce({ ...row, review: status }, { quiet: true, auto: { deps, memory }, toReview: true, branch: groupBranch, found, viaGroup: true });
+      if (!this.canAutoSaveToHead(row.change.path, found.sha, status, hooks.policy, true)) return { result: "later" };
+      const sent = await this.host.sendOnce({ ...row, review: status }, { quiet: true, auto: { deps, memory }, ...(hooks.policy === "mine" ? { stopOnBehind: true } : {}), toReview: true, branch: groupBranch, found, viaGroup: true });
       const outcome = autoOutcome(sent, { conflicted: conflicted(), retryMoved: true });
       if (outcome !== null) return outcome;
     }
@@ -139,8 +165,9 @@ export class AutoCommitFlows {
         found = await this.host.deps.branchFile(row.doc, draft);
         if (found.kind === "unreadable") return { result: "later" };
         if (found.kind === "absent") return { result: "held" };
+        if (!this.canAutoSaveToHead(row.change.path, found.sha, status, hooks.policy, false)) return { result: "later" };
       }
-      const sent = await this.host.sendOnce(row, { quiet: true, auto: { deps, memory }, ...(draft !== null ? { toReview: true, branch: draft, found: found! } : { edit: row.change.kind === "edited" }) });
+      const sent = await this.host.sendOnce(row, { quiet: true, auto: { deps, memory }, ...(hooks.policy === "mine" ? { stopOnBehind: true } : {}), ...(draft !== null ? { toReview: true, branch: draft, found: found! } : { edit: row.change.kind === "edited" }) });
       const outcome = autoOutcome(sent, { conflicted: conflicted(), retryMoved: true });
       if (outcome !== null) return outcome;
     }

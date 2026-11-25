@@ -22,6 +22,8 @@ export const releasedChange = (id: string, ended: boolean, files: Extract<InFlig
 
 const branchOf = (id: string): string => `${GROUP_BRANCH_PREFIX}${id}`;
 
+const groupInPaths = (response: InFlightResponse, branch: string): boolean => Object.values(response.paths).some((entries) => entries.some((entry) => entry.branch === branch));
+
 const isReview = (entry: InFlightBranch): boolean => entry.isReviewBranch;
 
 function withPaths(response: InFlightResponse, paths: InFlightMap, groups: Record<string, GroupOverview> | undefined): InFlightResponse {
@@ -165,8 +167,9 @@ export function agrees(response: InFlightResponse, change: InFlightChange): bool
       return releasedSettled(response, change, []);
     }
     case "renamed": {
-      const overview = response.groups?.[branchOf(change.id)];
-      return overview === undefined || overview.name === change.name;
+      const branch = branchOf(change.id);
+      const overview = response.groups?.[branch];
+      return overview === undefined ? !groupInPaths(response, branch) : overview.name === change.name;
     }
     case "draft": {
       const groupsDone = change.groupIds.every((id) => {
@@ -381,7 +384,7 @@ export function stillPending(response: InFlightResponse, pending: readonly Pendi
   const trimmedDrafts = new Map<PendingChange, PendingChange>();
   for (let at = youngEntries.length - 1; at >= 0; at--) {
     const { one, index } = youngEntries[at]!;
-    if (confirmed.has(one)) {
+    if (confirmed.has(one) && (one.change.kind !== "renamed" || response.groups?.[branchOf(one.change.id)] !== undefined)) {
       settled.add(one);
       continue;
     }
@@ -400,6 +403,12 @@ export function stillPending(response: InFlightResponse, pending: readonly Pendi
     } else if (laterSettled.some((later) => undoes(later, one.change) === "wholly")) {
       settled.add(one);
     }
+  }
+  for (let at = young.length - 1; at >= 0; at--) {
+    const one = young[at]!;
+    if (one.change.kind !== "renamed" || settled.has(one) || !confirmed.has(one)) continue;
+    const id = one.change.id;
+    if (!young.some((earlier, i) => i < at && !settled.has(earlier) && earlier.change.kind === "grouped" && earlier.change.id === id)) settled.add(one);
   }
   const kept = new Set<PendingChange>();
   const effective = (one: PendingChange): PendingChange => trimmedDrafts.get(one) ?? one;

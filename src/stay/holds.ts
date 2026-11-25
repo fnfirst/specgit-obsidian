@@ -1,6 +1,6 @@
 import { gitBlobShaOfText } from "../changes/blob-sha";
 import { agreedOf } from "../changes/cache";
-import type { Looked } from "../changes/model";
+import type { ChangeRow, Looked } from "../changes/model";
 import type { GuardedVault } from "../disk/guarded-vault";
 import { CasePathIndex, type DocumentRef } from "../mapping";
 import type { Activity } from "./activity";
@@ -34,14 +34,91 @@ export interface HoldPorts {
 const heldKeyForPath = (key: string, path: string): boolean => key.startsWith(`new|${path}|`) || key.startsWith(`renamed|${path}|`);
 
 export class StayHolds {
+  private static readonly EMPTY_SET: ReadonlySet<string> = new Set();
   private batching = 0;
   private dirty = false;
+  private readonly rowIndexes = new WeakMap<Looked["rows"], { length: number; newOrRenamed: Map<string, ChangeRow>; edited: Set<string> }>();
+  private heldCache: { ref: readonly string[]; length: number; set: Set<string> } | null = null;
+  private burstCache: { ref: readonly string[]; length: number; set: Set<string> } | null = null;
+  private baselineCache: { ref: readonly string[]; length: number; set: Set<string> } | null = null;
 
   constructor(
     private readonly state: StayState,
     private readonly activity: Activity,
     private readonly ports: HoldPorts,
   ) {}
+
+  private rowsIndex(looked: Looked): { newOrRenamed: ReadonlyMap<string, ChangeRow>; edited: ReadonlySet<string> } {
+    const { rows } = looked;
+    const cached = this.rowIndexes.get(rows);
+    if (cached !== undefined && cached.length === rows.length) return cached;
+    const newOrRenamed = new Map<string, ChangeRow>();
+    const edited = new Set<string>();
+    for (const one of rows) {
+      if (one.change.kind === "new" || one.change.kind === "renamed") {
+        if (!newOrRenamed.has(one.change.path)) newOrRenamed.set(one.change.path, one);
+      } else if (one.change.kind === "edited") {
+        edited.add(one.change.path);
+      }
+    }
+    const built = { length: rows.length, newOrRenamed, edited };
+    this.rowIndexes.set(rows, built);
+    return built;
+  }
+
+  private heldSet(): ReadonlySet<string> {
+    const ref = this.state.data.held;
+    if (this.heldCache !== null && this.heldCache.ref === ref && this.heldCache.length === ref.length) return this.heldCache.set;
+    const set = new Set(ref);
+    this.heldCache = { ref, length: ref.length, set };
+    return set;
+  }
+
+  private burstSet(): ReadonlySet<string> {
+    const ref = this.state.data.burst;
+    if (this.burstCache !== null && this.burstCache.ref === ref && this.burstCache.length === ref.length) return this.burstCache.set;
+    const set = new Set(ref);
+    this.burstCache = { ref, length: ref.length, set };
+    return set;
+  }
+
+  private baselineSet(): ReadonlySet<string> {
+    const ref = this.state.data.baseline;
+    if (ref === null) {
+      this.baselineCache = null;
+      return StayHolds.EMPTY_SET;
+    }
+    if (this.baselineCache !== null && this.baselineCache.ref === ref && this.baselineCache.length === ref.length) return this.baselineCache.set;
+    const set = new Set(ref);
+    this.baselineCache = { ref, length: ref.length, set };
+    return set;
+  }
+
+  private addHeld(key: string): void {
+    const ref = this.state.data.held;
+    if (this.heldSet().has(key)) return;
+    ref.push(key);
+    if (this.heldCache !== null && this.heldCache.ref === ref) {
+      this.heldCache.set.add(key);
+      this.heldCache.length = ref.length;
+    }
+  }
+
+  private addBurst(key: string): void {
+    const ref = this.state.data.burst;
+    if (this.burstSet().has(key)) return;
+    ref.push(key);
+    if (this.burstCache !== null && this.burstCache.ref === ref) {
+      this.burstCache.set.add(key);
+      this.burstCache.length = ref.length;
+    }
+  }
+
+  private invalidateSets(): void {
+    this.heldCache = null;
+    this.burstCache = null;
+    this.baselineCache = null;
+  }
 
   noteChanged(): void {
     if (this.batching > 0) this.dirty = true;
@@ -80,8 +157,8 @@ export class StayHolds {
   }
 
   holdNew(looked: Looked, key: string, path: string, why: HoldReason, options?: { flurryUntil?: number; burst?: boolean }): void {
-    if (!this.state.data.held.includes(key)) this.state.data.held.push(key);
-    if (options?.burst === true && !this.state.data.burst.includes(key)) this.state.data.burst.push(key);
+    this.addHeld(key);
+    if (options?.burst === true) this.addBurst(key);
     (this.state.data.heldWhy ??= {})[path] = why;
     const sha = looked.files.get(path)?.sha;
     if (sha !== undefined) (this.state.data.heldShas ??= {})[key] = sha;
@@ -111,11 +188,11 @@ export class StayHolds {
     const entry = looked.files.get(path);
     if (!entry) return;
     const newKey = changeKey({ kind: "new", path });
-    const row = looked.rows.find((one) => one.change.path === path && (one.change.kind === "new" || one.change.kind === "renamed"));
+    const row = this.rowsIndex(looked).newOrRenamed.get(path);
     const rowKey = row ? changeKey(row.change) : newKey;
     data.committed = data.committed.filter((one) => one !== newKey && !one.startsWith(`renamed|${path}|`));
     if (row !== undefined || !looked.repo.has(path)) {
-      if (!data.held.includes(rowKey)) data.held.push(rowKey);
+      this.addHeld(rowKey);
       (data.heldShas ??= {})[rowKey] = entry.sha;
     }
     (data.editsHeld ??= {})[path] = entry.sha;
@@ -128,7 +205,7 @@ export class StayHolds {
     const { data } = this.state;
     const entry = looked.files.get(path);
     data.committed = data.committed.filter((key) => key !== changeKey({ kind: "new", path }) && !key.startsWith(`renamed|${path}|`));
-    if (!looked.repo.has(path) && !data.held.includes(changeKey({ kind: "new", path }))) data.held.push(changeKey({ kind: "new", path }));
+    if (!looked.repo.has(path)) this.addHeld(changeKey({ kind: "new", path }));
     if (entry) {
       (data.editsHeld ??= {})[path] = entry.sha;
       (data.heldWhy ??= {})[path] = "deleted";
@@ -227,6 +304,7 @@ export class StayHolds {
     }
     data.held = data.held.filter((one) => one !== key);
     data.burst = data.burst.filter((one) => one !== key);
+    this.invalidateSets();
     delete data.heldShas?.[key];
     this.setFlurryUntil(path, null);
     this.state.save();
@@ -316,6 +394,7 @@ export class StayHolds {
     data.held = keptHeld;
     const keptHeldSet = new Set(keptHeld);
     data.burst = data.burst.filter((key) => keptHeldSet.has(key));
+    this.invalidateSets();
     if (data.heldShas) for (const key of Object.keys(data.heldShas)) if (!keptHeldSet.has(key)) delete data.heldShas[key];
     for (const path of Object.keys(data.heldWhy ?? {})) {
       if (data.editsHeld?.[path] === undefined && !heldPaths.has(path)) {
@@ -399,20 +478,21 @@ export class StayHolds {
     const held = data.editsHeld?.[path];
     const reason = data.heldWhy?.[path] ?? "github";
     const own = held !== undefined && looked?.files.get(path)?.sha === held ? (reason === "closedElsewhere" && looked?.drafts?.byPath.has(path) ? STAY_HELD.closedElsewhereNew : STAY_HELD[reason]) : null;
-    const row = own === null ? looked?.rows.find((one) => one.change.path === path && (one.change.kind === "new" || one.change.kind === "renamed")) : undefined;
+    const index = looked !== null ? this.rowsIndex(looked) : null;
+    const row = own === null ? index?.newOrRenamed.get(path) : undefined;
     const onGithub = row !== undefined && hasOwnOrAgreedRow(row, looked, this.ports.login());
     const key = row && !onGithub ? changeKey(row.change) : null;
     const newWhy = data.heldWhy?.[path];
     const heldNew =
-      key !== null && data.held.includes(key)
+      key !== null && this.heldSet().has(key)
         ? newWhy !== undefined
           ? STAY_HELD[newWhy]
-          : data.burst.includes(key)
+          : this.burstSet().has(key)
             ? STAY_HELD.flurry
             : STAY_HELD.held
         : null;
-    const baseline = key !== null && heldNew === null && (data.baseline?.includes(key) ?? false) ? STAY_HELD.baseline : null;
-    const grouped = own === null && heldNew === null && baseline === null && this.ports.inGroup(path) && looked?.drafts?.byPath.get(path)?.inGroup !== true && looked?.rows.some((one) => one.change.path === path && one.change.kind === "edited") === true ? STAY_HELD.group : null;
+    const baseline = key !== null && heldNew === null && this.baselineSet().has(key) ? STAY_HELD.baseline : null;
+    const grouped = own === null && heldNew === null && baseline === null && this.ports.inGroup(path) && looked?.drafts?.byPath.get(path)?.inGroup !== true && index?.edited.has(path) === true ? STAY_HELD.group : null;
     const found = own ?? heldNew ?? baseline ?? grouped;
     return found !== null && attachmentNote !== null ? `${found} ${attachmentNote}` : (found ?? attachmentNote);
   }

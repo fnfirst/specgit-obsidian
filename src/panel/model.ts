@@ -37,8 +37,25 @@ export interface PanelDeps {
   signals?: PollSignals;
 }
 
+function samePanelState(a: PanelState, b: PanelState): boolean {
+  return (
+    a.signedIn === b.signedIn &&
+    a.mapped === b.mapped &&
+    a.repo === b.repo &&
+    a.folder === b.folder &&
+    a.stay === b.stay &&
+    a.elsewhere === b.elsewhere &&
+    a.status === b.status &&
+    a.people === b.people &&
+    a.cameIn === b.cameIn &&
+    (a.note === b.note || (a.note !== null && b.note !== null && a.note.path === b.note.path && a.note.name === b.note.name)) &&
+    (a.file === b.file || (a.file !== null && b.file !== null && a.file.path === b.file.path && a.file.name === b.file.name && a.file.kind === b.file.kind))
+  );
+}
+
 export class PanelModel {
   private current: PanelState;
+  private boardRevision: number;
   private readonly listeners = new Set<() => void>();
   private readonly asked = new Map<string, { people: number | null; at: number }>();
   private readonly asking = new Set<string>();
@@ -49,7 +66,12 @@ export class PanelModel {
 
   constructor(private readonly deps: PanelDeps) {
     this.now = deps.now ?? Date.now;
+    this.boardRevision = this.readBoardRevision();
     this.current = this.read();
+  }
+
+  private readBoardRevision(): number {
+    return typeof this.deps.status.revision === "function" ? this.deps.status.revision() : -1;
   }
 
   state(): PanelState {
@@ -89,8 +111,13 @@ export class PanelModel {
   }
 
   update(): void {
-    this.current = this.read();
-    this.listeners.forEach((listener) => listener());
+    const next = this.read();
+    const boardRevision = this.readBoardRevision();
+    if (boardRevision !== this.boardRevision || !samePanelState(this.current, next)) {
+      this.boardRevision = boardRevision;
+      this.current = next;
+      this.listeners.forEach((listener) => listener());
+    }
     this.askPeople();
   }
 

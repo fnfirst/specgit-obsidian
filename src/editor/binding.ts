@@ -53,6 +53,7 @@ export interface BoundRoom {
   readonly origin: object;
   readonly undo: RoomUndo;
   readonly readOnly: boolean;
+  markLocalEdit?(): void;
 }
 
 const NARROW_MS = 30;
@@ -122,6 +123,7 @@ export class Binding {
     const target = room.readOnly ? inRoom : note;
     const toRoom = splices(inRoom, target, budget);
     if (toRoom.length > 0) {
+      room.markLocalEdit?.();
       text.doc?.transact(() => write(text, toRoom.map((change) => lens.toRoom(change))), JOINING);
       lens.changed(toRoom.map((change) => change.insert).join(""));
     }
@@ -160,6 +162,7 @@ export class Binding {
       }
     });
     if (edits.length === 0) return;
+    this.room.markLocalEdit?.();
     this.room.undo.remember(transaction.startState.selection);
     const changes = edits.map((edit) => this.lens.toRoom(edit));
     this.room.text.doc?.transact((written) => {

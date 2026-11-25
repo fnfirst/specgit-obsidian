@@ -80,6 +80,8 @@ interface PaneView {
 
 const idleCanvasEdits = new WeakSet<object>();
 const clearTokens = new WeakMap<object, number>();
+let hasIdleCanvasEdits = false;
+let pendingCanvasFocusouts = 0;
 
 function elementOf(target: EventTarget | null): Element | null {
   if (!target || typeof target !== "object") return null;
@@ -107,8 +109,9 @@ function isEditingKey(event: KeyboardEvent): boolean {
   return event.key.length === 1 || event.key === "Backspace" || event.key === "Delete" || event.key === "Enter";
 }
 
-export function watchCanvasEditing(win: Window, on: OnWindow, onChange?: () => void): void {
+export function watchCanvasEditing(win: Window, on: OnWindow, onChange?: () => void, hasCanvas?: () => boolean): void {
   const clearNode = (target: EventTarget | null): void => {
+    if ((!hasIdleCanvasEdits && pendingCanvasFocusouts === 0) || hasCanvas?.() === false) return;
     const node = canvasNodeOf(target, ".canvas-node");
     if (!node) return;
     idleCanvasEdits.delete(node);
@@ -127,30 +130,37 @@ export function watchCanvasEditing(win: Window, on: OnWindow, onChange?: () => v
     return active !== null && editing.contains(active);
   };
   on(win, "blur", () => {
-    for (const editing of win.document.querySelectorAll(".canvas-node.is-editing")) {
-      if (activeInChildFrame(editing)) continue;
-      idleCanvasEdits.add(editing);
+    if (hasCanvas?.() !== false) {
+      for (const editing of win.document.querySelectorAll(".canvas-node.is-editing")) {
+        if (activeInChildFrame(editing)) continue;
+        idleCanvasEdits.add(editing);
+        hasIdleCanvasEdits = true;
+      }
     }
     onChange?.();
   });
   on(win.document, "focusout", (event) => {
-    const editing = canvasNodeOf(event.target, ".canvas-node.is-editing");
+    const editing = hasCanvas?.() === false ? null : canvasNodeOf(event.target, ".canvas-node.is-editing");
     if (editing !== null) {
       const related = (event as FocusEvent).relatedTarget;
       const staysInside = related !== null && typeof related === "object" && "nodeType" in related && editing.contains(related as Node);
       if (!staysInside) {
         if (related === null) {
           const token = clearTokens.get(editing) ?? 0;
+          pendingCanvasFocusouts++;
           win.setTimeout(() => {
+            pendingCanvasFocusouts = Math.max(0, pendingCanvasFocusouts - 1);
             if ((clearTokens.get(editing) ?? 0) !== token) return;
             if (!editing.isConnected || !editing.classList.contains("is-editing")) return;
             if (staysFocusedInNode(editing)) return;
             idleCanvasEdits.add(editing);
+            hasIdleCanvasEdits = true;
             onChange?.();
           }, 0);
           return;
         }
         idleCanvasEdits.add(editing);
+        hasIdleCanvasEdits = true;
       }
     }
     onChange?.();

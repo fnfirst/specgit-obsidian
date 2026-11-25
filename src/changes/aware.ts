@@ -1,4 +1,4 @@
-import { draftStateWord, groupWriters, type GroupOverview, type InFlightBranch, isGroupBranch, isViewersBranch, liveLine, liveWho, openedBy, writersLine } from "../shared/review-flow";
+import { draftStateWord, groupWriters, type GroupOverview, type InFlightBranch, isGroupBranch, isViewersBranch, liveLine, liveWho, openedBy, sameLogin, writersLine } from "../shared/review-flow";
 import type { PresenceRead } from "../review/review-api";
 
 export interface AwareDraft {
@@ -8,6 +8,7 @@ export interface AwareDraft {
   at: string;
   others: string;
   mine: boolean;
+  lastOther?: string | null;
   inNote: boolean | null;
 }
 
@@ -84,11 +85,12 @@ export function awareState(input: AwareInput): AwareState | null {
     if (!picked) continue;
     inProgress.add(path);
     if (isViewersBranch(picked, viewer)) own.add(path);
+    const lastOther = picked.authorLogin && !sameLogin(picked.authorLogin, viewer) ? picked.authorLogin : null;
     rows.set(path, {
       path,
       live: null,
       who: null,
-      draft: { branch: picked.branch, state: draftStateWord(picked.prIsDraft !== false), names: namesOf(picked, viewer), others: writersLine(writersOf(picked).filter((login) => viewer === null || login.toLowerCase() !== viewer.toLowerCase()), null), at: picked.lastCommitAt, mine: isViewersBranch(picked, viewer), inNote: picked.docBlobSha === undefined ? null : file.holds(picked.docBlobSha) },
+      draft: { branch: picked.branch, state: draftStateWord(picked.prIsDraft !== false), names: namesOf(picked, viewer), others: writersLine(writersOf(picked).filter((login) => viewer === null || login.toLowerCase() !== viewer.toLowerCase()), null), at: picked.lastCommitAt, mine: isViewersBranch(picked, viewer), ...(lastOther !== null ? { lastOther } : {}), inNote: picked.docBlobSha === undefined ? null : file.holds(picked.docBlobSha) },
     });
   }
   const live: AwareRow[] = [];

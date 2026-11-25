@@ -45,6 +45,7 @@ export class DraftDeletes {
       return;
     }
     ports.agreed(path, null);
+    this.ctx.clearOwnBlobs?.(path);
     this.host.forgetEnded(path);
     this.host.settled(path);
   }
@@ -52,6 +53,7 @@ export class DraftDeletes {
   keep(looked: Looked, path: string, deletedAt: number): void {
     const { ports } = this.ctx;
     ports.agreed(path, null);
+    this.ctx.clearOwnBlobs?.(path);
     this.host.forgetEnded(path);
     this.host.settled(path);
     const newlyTold = this.host.holdDeleted(looked, path, deletedAt);
@@ -105,6 +107,7 @@ export class DraftDeletes {
       this.host.noteRemoved(path);
       if (!looked.repo.has(path)) ports.forgetDelete(path);
       ports.agreed(path, null);
+      this.ctx.clearOwnBlobs?.(path);
       this.host.forgetEnded(path);
       this.host.settled(path);
       const { data } = state;

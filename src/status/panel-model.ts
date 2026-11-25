@@ -123,7 +123,69 @@ function hereOf(status: NoteStatus | null): StatusPerson[] {
   return (status?.here ?? []).flatMap((one) => ((one.login ?? one.name) === "" ? [] : [{ login: one.login ?? one.name, ...(one.picture ? { avatarUrl: one.picture } : {}) }]));
 }
 
-export function panelModelOf(input: PanelInput): Built {
+export type VaultPanelInput = Pick<
+  PanelInput,
+  | "state"
+  | "viewer"
+  | "now"
+  | "facts"
+  | "flight"
+  | "rooms"
+  | "vaultHas"
+  | "docFor"
+  | "holdOf"
+  | "told"
+  | "both"
+  | "viewsOf"
+  | "newer"
+  | "heldDeletes"
+  | "offered"
+  | "isLive"
+  | "openComments"
+  | "linked"
+  | "editingGroup"
+>;
+
+export type ActivePanelInput = Pick<
+  PanelInput,
+  | "state"
+  | "viewer"
+  | "unchanged"
+  | "holdOf"
+  | "isLive"
+  | "stay"
+  | "isPaused"
+  | "openComments"
+  | "plansUrl"
+  | "active"
+  | "showChanges"
+  | "checked"
+  | "notice"
+  | "reviewers"
+  | "readOnly"
+  | "onAction"
+  | "onChecked"
+>;
+
+export interface VaultPanelBase {
+  readonly items: StatusItem[];
+  readonly listedCount: number;
+  readonly docsCount: number;
+  readonly folds: StatusFold[];
+  readonly units: Units;
+  readonly loosePaths: ReadonlySet<string>;
+  readonly looseByPath: ReadonlyMap<string, ChangeRow>;
+  readonly rowByPath: ReadonlyMap<string, ChangeRow>;
+  readonly groupByPath: ReadonlyMap<string, ChangeRow>;
+  readonly docIndexById: ReadonlyMap<string, number>;
+  readonly holdById: ReadonlyMap<string, string | null>;
+  readonly joinCandidates: ReadonlyArray<{ index: number; raw: StatusDoc }>;
+  readonly factsOf: (number: number, pr?: PrInfo | null) => ReviewFacts | null;
+  readonly drawDoc: (path: string, from: Drawn, holdOverride?: string | null) => StatusDoc;
+  readonly fromChange: (row: ChangeRow, behind?: boolean) => Drawn;
+}
+
+export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
   const { state, viewer, now } = input;
   const flight = input.flight;
   const branches = branchesOf(flight, viewer);
@@ -134,22 +196,31 @@ export function panelModelOf(input: PanelInput): Built {
   const rows = new Map<string, ChangeRow>();
   const members = new Map<string, ChangeRow>();
   const urls = new Map<string, string>();
+  const loosePaths = new Set<string>();
+  const looseByPath = new Map<string, ChangeRow>();
+  const rowByPath = new Map<string, ChangeRow>();
+  const holdById = new Map<string, string | null>();
+  for (const row of state.rows) if (!rowByPath.has(row.change.path)) rowByPath.set(row.change.path, row);
 
   const folderOf = (path: string): { folder?: string } => {
     const { folder } = placeUnder(input.linked, path);
     return folder === "" ? {} : { folder };
   };
-  const joinable = (item: StatusDoc): StatusDoc => ((item.here?.length ?? 0) > 0 && !item.button && input.vaultHas(item.id) && !input.isLive(item.id) && item.id !== input.active?.path ? { ...item, button: "join" as const } : item);
+  const drawDoc = (path: string, from: Drawn, holdOverride?: string | null): StatusDoc => {
+    const held = from.extra?.held !== undefined ? from.extra.held : holdOverride !== undefined ? holdOverride : input.holdOf(path);
+    const item = docItemOf({ entry: from.entry, branch: branches.get(path) ?? null, facts: from.facts, here: rooms.get(path), viewer, now, extra: { ...from.extra, held, ...folderOf(path) } });
+    const views = input.viewsOf(path);
+    const comments = input.openComments(path);
+    return { ...item, ...(views.length > 0 ? { views } : {}), ...(comments > 0 ? { openComments: comments } : {}) };
+  };
   const drawn = (path: string, from: Drawn): StatusDoc => {
     rows.set(path, from.acts);
     if (from.url !== null) urls.set(path, from.url);
     const held = from.extra?.held !== undefined ? from.extra.held : input.holdOf(path);
-    const item = docItemOf({ entry: from.entry, branch: branches.get(path) ?? null, facts: from.facts, here: rooms.get(path), viewer, now, extra: { ...from.extra, held, ...folderOf(path) } });
-    const views = input.viewsOf(path);
-    const comments = input.openComments(path);
-    return joinable({ ...item, ...(views.length > 0 ? { views } : {}), ...(comments > 0 ? { openComments: comments } : {}) });
+    holdById.set(path, held);
+    return drawDoc(path, from, held);
   };
-  const fromChange = (row: ChangeRow): Drawn => {
+  const fromChange = (row: ChangeRow, behind?: boolean): Drawn => {
     const path = row.change.path;
     const listedOwn = row.entry === null ? (ownListed.get(path) ?? null) : null;
     const settled = state.aware?.settled.has(path) === true;
@@ -177,27 +248,29 @@ export function panelModelOf(input: PanelInput): Built {
         edited: unsent && !deleted,
         changedInBoth: state.choices.has(path) || input.both.has(path) || (unsent && row.change.mainMoved),
         ...(told === null ? {} : { reason: told }),
-        behind: input.active?.path === path ? input.active.behind : undefined,
+        behind,
         ...(row.change.kind === "renamed" && from ? { renamedFrom: noteName(from) } : {}),
         ...(row.unchanged ? {} : { hasChanges: true }),
       },
     };
   };
-  const docs: StatusDoc[] = state.loose.map((row) => drawn(row.change.path, fromChange(row)));
-  const openPath = input.active?.path ?? null;
-  const unchanged = openPath !== null && !rows.has(openPath) ? input.unchanged?.(openPath) : undefined;
-  if (openPath !== null && unchanged?.entry) {
-    const { entry } = unchanged;
-    docs.push(drawn(openPath, { entry, facts: factsOf(entry.prNumber, unchanged.review?.pr), acts: unchanged, url: entry.prUrl }));
-  }
+  const docs: StatusDoc[] = state.loose.map((row) => {
+    loosePaths.add(row.change.path);
+    looseByPath.set(row.change.path, row);
+    return drawn(row.change.path, fromChange(row));
+  });
 
+  const groupByPath = new Map<string, ChangeRow>();
   const branchOf = (id: string): string => Object.entries(flight?.groups ?? {}).find(([, overview]) => overview.id === id)?.[0] ?? `${GROUP_BRANCH_PREFIX}${id}`;
   const groups: StatusGroup[] = state.groups.flatMap((card) => {
     const info = card.group;
     if (!info) return [];
     const { overview } = info;
     rows.set(groupId(overview.id), card);
-    for (const file of info.files) if (file.row) members.set(file.path, file.row);
+    for (const file of info.files) {
+      if (file.row) members.set(file.path, file.row);
+      if (!groupByPath.has(file.path)) groupByPath.set(file.path, card);
+    }
     const branch = branchOf(overview.id);
     const entries = overview.paths.flatMap((path) => (flight?.paths[path] ?? []).filter((one) => one.branch === branch).slice(0, 1));
     const item = groupItemOf({ overview, entries, facts: factsOf(overview.prNumber, card.review?.pr), rooms, viewer, now, ...(input.editingGroup === groupId(overview.id) ? { editing: true } : {}) });
@@ -205,19 +278,42 @@ export function panelModelOf(input: PanelInput): Built {
     return [info.members.length > 0 ? { ...item, hasChanges: true } : item];
   });
 
-  const named = new Set<string>([...docs.map((one) => one.id), ...state.groups.flatMap((card) => card.group?.files.map((file) => file.path) ?? [])]);
+  const named = new Set<string>([...docs.map((one) => one.id), ...groupByPath.keys()]);
   const listed: StatusItem[] = flight
-    ? itemsFromInFlight({ inFlight: flight, facts: input.facts, rooms, viewer, now, exclude: named, holdOf: (path) => (input.vaultHas(path) ? input.holdOf(path) : null) }).flatMap((item): StatusItem[] => {
+    ? itemsFromInFlight({
+        inFlight: flight,
+        facts: input.facts,
+        rooms,
+        viewer,
+        now,
+        exclude: named,
+        holdOf: (path) => {
+          const held = input.vaultHas(path) ? input.holdOf(path) : null;
+          holdById.set(path, held);
+          return held;
+        },
+      }).flatMap((item): StatusItem[] => {
         if (item.kind === "group") return [];
         const entry = flight.paths[item.id]?.find((one) => one.prUrl);
         if (entry?.prUrl) urls.set(item.id, entry.prUrl);
         const listedItem: StatusDoc = { ...item, ...folderOf(item.id) };
-        if (input.vaultHas(item.id)) return [joinable(listedItem)];
+        if (input.vaultHas(item.id)) return [listedItem];
         const { check, ...rest } = listedItem;
         return [{ ...(check === "submit" ? rest : listedItem), bringIn: true }];
       })
     : [];
   const items: StatusItem[] = [...listed, ...docs, ...groups];
+  const docIndexById = new Map<string, number>();
+  const joinCandidates: Array<{ index: number; raw: StatusDoc }> = [];
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]!;
+    if (item.kind !== "doc") continue;
+    if (!docIndexById.has(item.id)) docIndexById.set(item.id, index);
+    if ((item.here?.length ?? 0) > 0 && !item.button && input.vaultHas(item.id)) {
+      joinCandidates.push({ index, raw: item });
+      if (!input.isLive(item.id)) items[index] = { ...item, button: "join" as const };
+    }
+  }
   if (flight) {
     for (const entry of inFlightEntries(flight, viewer, flight.base)) {
       if (named.has(entry.path) || entry.group || rows.has(entry.path)) continue;
@@ -226,9 +322,6 @@ export function panelModelOf(input: PanelInput): Built {
       if (found) rows.set(entry.path, found);
     }
   }
-
-  const active = input.active ?? null;
-  const pinned = active ? pinnedOf(input, active, items, state, factsOf, rows) : null;
 
   const copying = state.copying;
   const newerItems = input.newer.map((path) => ({ id: path, name: noteName(path), ...folderOf(path) }));
@@ -239,6 +332,98 @@ export function panelModelOf(input: PanelInput): Built {
     { id: "offered" as const, count: input.offered },
   ].filter((fold) => fold.count > 0 || (fold.id === "not-here" && copying !== null));
 
+  return {
+    items,
+    listedCount: listed.length,
+    docsCount: docs.length,
+    folds,
+    units: { rows, members, urls },
+    loosePaths,
+    looseByPath,
+    rowByPath,
+    groupByPath,
+    docIndexById,
+    holdById,
+    joinCandidates,
+    factsOf,
+    drawDoc,
+    fromChange,
+  };
+}
+
+export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInput): Built {
+  const { state } = input;
+  const active = input.active ?? null;
+  const openPath = active?.path ?? null;
+  const activeHold = openPath !== null ? input.holdOf(openPath) : null;
+  let items = base.items;
+  let units = base.units;
+  let shifted = false;
+  let activeReplaced = false;
+
+  const unchanged = openPath !== null && !base.loosePaths.has(openPath) ? input.unchanged?.(openPath) : undefined;
+  if (openPath !== null && unchanged?.entry) {
+    const { entry } = unchanged;
+    const doc = base.drawDoc(openPath, { entry, facts: base.factsOf(entry.prNumber, unchanged.review?.pr), acts: unchanged, url: entry.prUrl }, activeHold);
+    const listedSlice = base.items.slice(0, base.listedCount).filter((one) => !(one.kind === "doc" && one.id === openPath));
+    const docsSlice = base.items.slice(base.listedCount, base.listedCount + base.docsCount);
+    const groupsSlice = base.items.slice(base.listedCount + base.docsCount);
+    items = [...listedSlice, ...docsSlice, doc, ...groupsSlice];
+    const nextRows = new Map(base.units.rows);
+    nextRows.set(openPath, unchanged);
+    const nextUrls = new Map(base.units.urls);
+    if (entry.prUrl !== null) nextUrls.set(openPath, entry.prUrl);
+    units = { rows: nextRows, members: base.units.members, urls: nextUrls };
+    shifted = true;
+  }
+
+  if (!shifted && openPath !== null) {
+    const looseRow = base.looseByPath.get(openPath);
+    const holdChanged = looseRow !== undefined && activeHold !== (base.holdById.get(openPath) ?? null);
+    if (looseRow && (active?.behind === true || holdChanged)) {
+      const at = base.docIndexById.get(openPath);
+      if (at !== undefined) {
+        const updated = base.drawDoc(openPath, base.fromChange(looseRow, active?.behind === true), activeHold);
+        items = [...base.items];
+        items[at] = updated;
+        activeReplaced = true;
+      }
+    }
+  }
+
+  if (base.joinCandidates.length > 0) {
+    for (const { index, raw } of base.joinCandidates) {
+      if (activeReplaced && raw.id === openPath) continue;
+      const at = shifted ? items.findIndex((one) => one.kind === "doc" && one.id === raw.id) : index;
+      if (at < 0) continue;
+      const current = items[at] as StatusDoc;
+      const wantJoin = !input.isLive(raw.id) && raw.id !== openPath;
+      if ((current.button === "join") === wantJoin) continue;
+      if (items === base.items) items = [...base.items];
+      items[at] = wantJoin ? { ...raw, button: "join" as const } : raw;
+    }
+  }
+
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]!;
+    if (item.kind !== "doc") continue;
+    const comments = input.openComments(item.id);
+    if ((item.openComments ?? 0) === comments) continue;
+    if (items === base.items) items = [...base.items];
+    if (comments > 0) items[index] = { ...item, openComments: comments };
+    else {
+      const { openComments: _, ...rest } = item;
+      items[index] = rest;
+    }
+  }
+
+  let ownDoc: StatusDoc | undefined;
+  if (openPath !== null) {
+    const at = shifted ? items.findIndex((one) => one.kind === "doc" && one.id === openPath) : base.docIndexById.get(openPath);
+    ownDoc = at !== undefined && at >= 0 ? (items[at] as StatusDoc) : undefined;
+  }
+
+  const pinned = active ? pinnedOf(input, active, activeHold, ownDoc, base.rowByPath, base.groupByPath, base.factsOf, units.rows) : null;
   const offline = state.phase === "offline";
   const running = state.doing?.kind;
   const model: StatusPanelModel = {
@@ -252,14 +437,18 @@ export function panelModelOf(input: PanelInput): Built {
     ...(input.readOnly ? { readOnly: true } : {}),
     ...(pinned ? { pinned } : {}),
     items,
-    ...(folds.length > 0 ? { folds } : {}),
+    ...(base.folds.length > 0 ? { folds: base.folds } : {}),
     checked: input.checked,
     ...(input.reviewers.length > 0 ? { reviewers: input.reviewers } : {}),
     ...(input.notice ? { notice: input.notice } : {}),
     ...(input.onChecked ? { onChecked: input.onChecked } : {}),
     onAction: input.onAction,
   };
-  return { model, units: { rows, members, urls } };
+  return { model, units };
+}
+
+export function panelModelOf(input: PanelInput): Built {
+  return panelModelFromVault(vaultPanelOf(input), input);
 }
 
 function reviewRowOf(entry: ChangeSetEntry, branch: InFlightBranch | null, doc: DocumentRef | null): ChangeRow | null {
@@ -271,17 +460,19 @@ function reviewRowOf(entry: ChangeSetEntry, branch: InFlightBranch | null, doc: 
 }
 
 function pinnedOf(
-  input: PanelInput,
-  active: NonNullable<PanelInput["active"]>,
-  items: readonly StatusItem[],
-  state: ChangesState,
+  input: ActivePanelInput,
+  active: NonNullable<ActivePanelInput["active"]>,
+  hold: string | null,
+  own: StatusDoc | undefined,
+  rowByPath: ReadonlyMap<string, ChangeRow>,
+  groupByPath: ReadonlyMap<string, ChangeRow>,
   factsOf: (number: number, pr?: PrInfo | null) => ReviewFacts | null,
   rows: ReadonlyMap<string, ChangeRow>,
 ): StatusPinned {
   const { path, status } = active;
-  const own = items.find((item): item is StatusDoc => item.kind === "doc" && item.id === path);
-  const row = rows.get(path) ?? state.rows.find((one) => one.change.path === path);
-  const card = state.groups.find((one) => one.group?.files.some((file) => file.path === path));
+  const { state } = input;
+  const row = rows.get(path) ?? rowByPath.get(path);
+  const card = groupByPath.get(path);
   const memberRow = card?.group?.files.find((file) => file.path === path)?.row ?? null;
   const groupedBehind =
     card?.group !== undefined &&
@@ -300,7 +491,6 @@ function pinnedOf(
   const comments = input.openComments(path);
   const saver = active.saver ?? row?.review?.saver ?? memberRow?.review?.saver ?? null;
   const warning = saver?.state === "waiting" ? saverWaitingLine(saver.reason) : null;
-  const hold = input.holdOf(path);
   const paused = input.stay === true && input.isPaused?.(path) === true;
   const publishedHeld = own === undefined && !state.choices.has(path) && !groupedBehind && hold !== null;
   const noChangesToShow = publishedHeld && row === undefined && memberRow === null;
@@ -334,6 +524,8 @@ function pinnedOf(
     ...(own?.tipPeople ? { tipPeople: own.tipPeople } : {}),
     ...(card?.group ? { groupId: groupId(card.group.id) } : {}),
     hasReview: own?.hasReview ?? false,
+    ...(own?.draft || (groupedBehind && card?.group?.overview.isDraft) ? { draft: true } : {}),
+    ...(own?.approved || facts?.reviewDecision === "approved" ? { approved: true } : {}),
     ...(own?.teammate ? { teammate: true } : {}),
     ...(own?.teammate && !own.hasChanges ? { nothingToSend: true } : {}),
     ...(publishable ? { publishable: true } : {}),

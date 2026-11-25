@@ -49,6 +49,7 @@ export class AuthStorage {
   private readonly server: string;
   private memory: string | null = null;
   private pendingMemory: string | null = null;
+  private settledOffDisk = false;
 
   constructor(
     private readonly secrets: SecretStore,
@@ -71,7 +72,9 @@ export class AuthStorage {
   }
 
   private storedToken(): string | null {
-    return this.secrets.getSecret(this.serverId) === this.server ? this.secrets.getSecret(this.refreshId) || null : null;
+    const token = this.secrets.getSecret(this.refreshId) || null;
+    if (token === null) return null;
+    return this.secrets.getSecret(this.serverId) === this.server ? token : null;
   }
 
   private storeToken(token: string): void {
@@ -79,8 +82,9 @@ export class AuthStorage {
     this.secrets.setSecret(this.refreshId, token);
   }
 
-  private settle(announce = true): void {
-    if (this.onDisk()) {
+  private settle(announce = true, onDisk = this.onDisk()): boolean {
+    if (onDisk) {
+      this.settledOffDisk = false;
       if (this.memory !== null) {
         this.storeToken(this.memory);
         this.memory = null;
@@ -89,25 +93,26 @@ export class AuthStorage {
         this.secrets.setSecret(this.pendingId, this.pendingMemory);
         this.pendingMemory = null;
       }
-      return;
+      return true;
     }
+    if (this.settledOffDisk) return false;
     const stored = this.storedToken();
     const waiting = this.secrets.getSecret(this.pendingId);
     if (waiting) this.pendingMemory ??= waiting;
     for (const id of [this.refreshId, this.serverId, this.pendingId]) this.removeSecret(id);
-    if (stored === null) return;
+    this.settledOffDisk = true;
+    if (stored === null) return false;
     this.memory ??= stored;
     if (announce) this.options.moved?.();
+    return false;
   }
 
   refreshToken(): string | null {
-    this.settle();
-    return this.onDisk() ? this.storedToken() : this.memory;
+    return this.settle() ? this.storedToken() : this.memory;
   }
 
   setRefreshToken(token: string): void {
-    this.settle();
-    if (this.onDisk()) this.storeToken(token);
+    if (this.settle()) this.storeToken(token);
     else this.memory = token;
   }
 
@@ -123,6 +128,7 @@ export class AuthStorage {
       kept: () => choice.read(),
       keep: (on) => {
         choice.write(on);
+        this.settledOffDisk = false;
         this.settle(false);
       },
     };
@@ -139,8 +145,7 @@ export class AuthStorage {
   }
 
   private stored(): PendingSignIn | null {
-    this.settle();
-    const stored = this.onDisk() ? this.secrets.getSecret(this.pendingId) : this.pendingMemory;
+    const stored = this.settle() ? this.secrets.getSecret(this.pendingId) : this.pendingMemory;
     if (!stored) return null;
     try {
       const found = JSON.parse(stored) as Partial<PendingSignIn>;
@@ -152,8 +157,7 @@ export class AuthStorage {
   }
 
   setPending(pending: PendingSignIn): void {
-    this.settle();
-    if (this.onDisk()) this.secrets.setSecret(this.pendingId, JSON.stringify(pending));
+    if (this.settle()) this.secrets.setSecret(this.pendingId, JSON.stringify(pending));
     else this.pendingMemory = JSON.stringify(pending);
   }
 

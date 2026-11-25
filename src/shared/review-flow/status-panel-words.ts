@@ -34,7 +34,7 @@ export const STATUS_CHIPS = {
 } as const;
 export const STATUS_CHIP_TIPS = {
   approve: "Reviews in this repository that ask you.",
-  publish: "Your approved reviews in this repository.",
+  publish: "Your reviews ready to publish in this repository.",
   drafts: "Your unsubmitted changes in this repository.",
 } as const;
 export type StatusChipKey = "all" | "live" | "approve" | "publish" | "drafts";
@@ -205,6 +205,7 @@ export const STATUS_TIPS = {
   inReview: (logins: readonly string[]): string => `Waiting for ${peopleList(logins)}.`,
   changesRequested: (logins: readonly string[]): string => `${peopleList(logins)} asked for changes.`,
   ready: "Approved. Publish when you like.",
+  readyUnblocked: "Nothing blocks publishing. Publish when you like.",
   outOfDate: "The published version changed.",
   waitingForYou: (logins: readonly string[]): string => `${peopleList(logins)} ${logins.length > 1 ? "are" : "is"} waiting for you.`,
   live: (count: number): string => (count > 1 ? "Are in it now." : "Is in it now."),

@@ -1,4 +1,22 @@
 import * as Y from "yjs";
+import {
+  findInSyntax,
+  findRunStart,
+  frontMatterEnd,
+  isLineBreak,
+  isSkippableSyntax,
+  isSpace,
+  listItemEnd,
+  listMarkerEnd,
+  reachesEnd,
+  readNeedle,
+  regionsOf,
+  scanInSyntax,
+  stepForward,
+  trimmedEnd,
+  type Region,
+  type ScanBudget,
+} from "./markdown-scan";
 import { isAtom, type TextRun, type TreeRun } from "./tree-index";
 
 interface PartialMatch {
@@ -6,21 +24,17 @@ interface PartialMatch {
   readonly prefixEnd: number;
   readonly suffixOffsets: readonly number[];
   readonly suffixStart: number;
+  readonly suffixEnd: number;
 }
 
 interface Placement {
   readonly run: TreeRun;
   readonly from: number;
   readonly to: number;
+  readonly blockEnd: boolean;
   readonly partial?: PartialMatch;
 }
 
-interface Needle {
-  readonly head: number;
-  readonly tail: number | null;
-}
-
-type ScanDir = 1 | -1;
 type ListRole = "start" | "inside" | null;
 
 export interface TreePoint {
@@ -29,92 +43,7 @@ export interface TreePoint {
   assoc: number;
 }
 
-interface Region {
-  from: number;
-  to: number;
-}
-
 const LOOKAHEAD = 24;
-
-const isSpace = (unit: number): boolean => unit <= 32;
-
-const isHighSurrogate = (unit: number): boolean => unit >= 0xd800 && unit <= 0xdbff;
-const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff;
-
-const isSkippableSyntax = (unit: number): boolean =>
-  unit <= 32 ||
-  unit === 0xa0 ||
-  (unit >= 33 && unit <= 47) ||
-  (unit >= 58 && unit <= 64) ||
-  (unit >= 91 && unit <= 96) ||
-  (unit >= 123 && unit <= 126) ||
-  (unit >= 0x2000 && unit <= 0x206f);
-
-const charMatches = (unit: number, wanted: number): boolean => (isSpace(wanted) ? isSpace(unit) : unit === wanted);
-
-function frontMatterEnd(markdown: string): number {
-  if (!markdown.startsWith("---")) return 0;
-  let at = markdown.indexOf("\n");
-  if (at < 0 || markdown.slice(0, at).trim() !== "---") return 0;
-  for (at++; at <= markdown.length; ) {
-    let end = markdown.indexOf("\n", at);
-    if (end < 0) end = markdown.length;
-    const line = markdown.slice(at, end).trim();
-    if (line === "---" || line === "...") return Math.min(end + 1, markdown.length);
-    if (end === markdown.length) return 0;
-    at = end + 1;
-  }
-  return 0;
-}
-
-function fenceOf(markdown: string, from: number, to: number): { unit: number; size: number } | null {
-  let at = from;
-  while (at < to && at - from < 3 && markdown.charCodeAt(at) === 32) at++;
-  const unit = markdown.charCodeAt(at);
-  if (unit !== 96 && unit !== 126) return null;
-  let size = 0;
-  while (at + size < to && markdown.charCodeAt(at + size) === unit) size++;
-  return size >= 3 ? { unit, size } : null;
-}
-
-function closesFence(markdown: string, from: number, to: number, open: { unit: number; size: number }): boolean {
-  const fence = fenceOf(markdown, from, to);
-  if (!fence || fence.unit !== open.unit || fence.size < open.size) return false;
-  for (let at = from; at < to; at++) {
-    const unit = markdown.charCodeAt(at);
-    if (unit !== open.unit && !isSpace(unit)) return false;
-  }
-  return true;
-}
-
-function regionsOf(markdown: string, start: number): Region[] {
-  const regions: Region[] = [];
-  let open: Region | null = null;
-  let fence: { unit: number; size: number } | null = null;
-  for (let at = start; at < markdown.length; ) {
-    let end = markdown.indexOf("\n", at);
-    if (end < 0) end = markdown.length;
-    const lineEnd = end > at && markdown.charCodeAt(end - 1) === 13 ? end - 1 : end;
-    let blank = true;
-    for (let i = at; i < lineEnd && blank; i++) blank = isSpace(markdown.charCodeAt(i));
-    if (fence) {
-      if (closesFence(markdown, at, lineEnd, fence)) fence = null;
-    } else if (blank) {
-      open = null;
-    } else {
-      fence = fenceOf(markdown, at, lineEnd);
-    }
-    if (!blank || fence) {
-      if (!open) {
-        open = { from: at, to: lineEnd };
-        regions.push(open);
-      }
-      open.to = lineEnd;
-    }
-    at = end + 1;
-  }
-  return regions;
-}
 
 export function find(markdown: string, wanted: number, from: number, end: number): number {
   const space = isSpace(wanted);
@@ -125,87 +54,66 @@ export function find(markdown: string, wanted: number, from: number, end: number
   return -1;
 }
 
-function match(markdown: string, value: string, start: number, end: number): { first: number; last: number } | null {
-  let at = start;
-  let first = -1;
-  for (let i = 0; i < value.length; i++) {
-    at = find(markdown, value.charCodeAt(i), at, end);
-    if (at < 0) return null;
-    if (i === 0) first = at;
-    at++;
-  }
-  return { first, last: at };
-}
-
-function skipLinkDestForward(markdown: string, at: number, end: number): number | null {
-  let depth = 1;
-  for (let p = at + 2; p < end; p++) {
-    const ch = markdown.charCodeAt(p);
-    if (isSpace(ch)) return null;
-    if (ch === 40) depth++;
-    else if (ch === 41 && --depth === 0) return p + 1;
-  }
-  return null;
-}
-
-function skipLinkDestBackward(markdown: string, at: number, limit: number): number | null {
-  let depth = 1;
-  for (let p = at - 1; p >= limit; p--) {
-    const ch = markdown.charCodeAt(p);
-    if (isSpace(ch)) return null;
-    if (ch === 41) depth++;
-    else if (ch === 40 && --depth === 0) return p > limit && markdown.charCodeAt(p - 1) === 93 ? p - 2 : null;
-  }
-  return null;
-}
-
-function readNeedle(value: string, index: number, dir: ScanDir, min = 0): { needle: Needle; next: number } {
-  const unit = value.charCodeAt(index);
-  if (dir === 1 && index + 1 < value.length && isHighSurrogate(unit) && isLowSurrogate(value.charCodeAt(index + 1))) {
-    return { needle: { head: unit, tail: value.charCodeAt(index + 1) }, next: index + 2 };
-  }
-  if (dir === -1 && index - 1 >= min && isLowSurrogate(unit) && isHighSurrogate(value.charCodeAt(index - 1))) {
-    return { needle: { head: value.charCodeAt(index - 1), tail: unit }, next: index - 2 };
-  }
-  return { needle: { head: unit, tail: null }, next: index + dir };
-}
-
-function skipSyntax(markdown: string, at: number, limit: number, end: number, dir: ScanDir): number | null {
-  const unit = markdown.charCodeAt(at);
-  if (dir === 1 && unit === 93 && at + 1 < end && markdown.charCodeAt(at + 1) === 40) {
-    const after = skipLinkDestForward(markdown, at, end);
-    if (after !== null) return after;
-  } else if (dir === -1 && unit === 41) {
-    const before = skipLinkDestBackward(markdown, at, limit);
-    if (before !== null) return before;
-  }
-  return isSkippableSyntax(unit) ? at + dir : null;
-}
-
-function findInSyntax(markdown: string, needle: Needle, from: number, limit: number, end: number, dir: ScanDir): number {
-  for (let at = dir === 1 ? from : from - 1; dir === 1 ? at < end : at >= limit; ) {
-    if (needle.tail !== null) {
-      const start = dir === 1 ? at : at - 1;
-      if (start >= limit && start + 1 < end && markdown.charCodeAt(start) === needle.head && markdown.charCodeAt(start + 1) === needle.tail) return start;
-    } else if (charMatches(markdown.charCodeAt(at), needle.head)) {
-      return at;
+function match(markdown: string, value: string, start: number, end: number, rejectTrailingLineBreak: boolean): { first: number; last: number } | null {
+  if (value.length === 0) return null;
+  const trimmedLen = trimmedEnd(value);
+  const { needle: headNeedle, next: headNext } = readNeedle(value, 0, 1);
+  const headAllowLineBreak = !rejectTrailingLineBreak || 0 < trimmedLen || isLineBreak(headNeedle.head);
+  let headRepeat = headNext;
+  if (headNeedle.tail === null) {
+    if (isSpace(headNeedle.head)) {
+      while (headRepeat < value.length && isSpace(value.charCodeAt(headRepeat))) headRepeat++;
+    } else {
+      while (headRepeat < value.length && value.charCodeAt(headRepeat) === headNeedle.head) headRepeat++;
     }
-    const next = skipSyntax(markdown, at, limit, end, dir);
-    if (next === null) return -1;
-    at = next;
   }
-  return -1;
-}
-
-function listItemEnd(markdown: string, start: number, end: number): number {
-  for (let nl = markdown.indexOf("\n", start); nl >= 0 && nl < end; nl = markdown.indexOf("\n", nl + 1)) {
-    if (LIST_MARKER.test(markdown.slice(nl + 1, Math.min(end, nl + 201)))) return nl;
+  let budget = Math.max(512, (end - start) * 4);
+  const complexBudget: ScanBudget = { remaining: Math.max(4096, (end - start) * 4) };
+  for (let probe = start; end - probe >= value.length; ) {
+    const first = findRunStart(markdown, headNeedle, probe, end, headAllowLineBreak, complexBudget);
+    if (first < 0 || end - first < value.length) return null;
+    budget -= first - probe + 1;
+    let at = first + headNext;
+    let i = headNext;
+    let failStoppedAt = at;
+    let failComplex = false;
+    while (i < value.length) {
+      const { needle, next } = readNeedle(value, i, 1);
+      const allowLineBreak = !rejectTrailingLineBreak || i < trimmedLen || isLineBreak(needle.head);
+      const scan = scanInSyntax(markdown, needle, at, first, end, 1, allowLineBreak, complexBudget);
+      budget -= scan.stoppedAt - at + 1;
+      if (scan.hit < 0) {
+        failStoppedAt = scan.stoppedAt;
+        failComplex = scan.complex;
+        break;
+      }
+      at = scan.hit + (next - i);
+      i = next;
+    }
+    if (i >= value.length) return { first, last: at };
+    if (budget <= 0) return null;
+    if (
+      headNeedle.head > 32 &&
+      headRepeat > headNext &&
+      i === headRepeat &&
+      at - first === i &&
+      at < end &&
+      markdown.charCodeAt(at) === headNeedle.head
+    ) {
+      let runEnd = at + 1;
+      while (runEnd < end && markdown.charCodeAt(runEnd) === headNeedle.head) runEnd++;
+      probe = Math.max(first + headNext, runEnd - headRepeat);
+    } else if (i === headNext && !failComplex && failStoppedAt > at) {
+      probe = failStoppedAt;
+    } else {
+      probe = first + headNext;
+    }
   }
-  return end;
+  return null;
 }
 
 function hasReliablePartialMatch(value: string, prefixLen: number, suffixLen: number, windowLen: number): boolean {
-  const trimmedLen = value.trimEnd().length;
+  const trimmedLen = trimmedEnd(value);
   const onlyTrailingWhitespace = trimmedLen > 0 && trimmedLen < value.length && prefixLen >= trimmedLen;
   if (onlyTrailingWhitespace) return true;
   const matched = prefixLen + suffixLen;
@@ -213,56 +121,75 @@ function hasReliablePartialMatch(value: string, prefixLen: number, suffixLen: nu
   return matched >= 2 && (matched >= 4 || matched * 2 >= shorter);
 }
 
-function matchPartial(markdown: string, run: TextRun, start: number, end: number): Placement | null {
+function matchPartial(markdown: string, run: TextRun, start: number, end: number, rejectTrailingLineBreak: boolean): Placement | null {
   const value = run.value;
+  const trimmedLen = trimmedEnd(value);
+  const complexBudget: ScanBudget = { remaining: Math.max(4096, (end - start) * 4) };
   const prefixOffsets: number[] = [];
   let cursor = start;
   for (let i = 0; i < value.length; ) {
-    const { needle, next } = readNeedle(value, i, 1);
-    const hit = findInSyntax(markdown, needle, cursor, start, end, 1);
-    if (hit < 0) break;
-    if (needle.tail !== null) {
-      prefixOffsets.push(hit, hit + 1);
-      cursor = hit + 2;
+    const step = stepForward(markdown, value, i, trimmedLen, rejectTrailingLineBreak, cursor, start, end, complexBudget);
+    if (!step) break;
+    if (step.next - i === 2) {
+      prefixOffsets.push(step.hit, step.hit + 1);
+      cursor = step.hit + 2;
     } else {
-      prefixOffsets.push(hit);
-      cursor = hit + 1;
+      prefixOffsets.push(step.hit);
+      cursor = step.hit + 1;
     }
-    i = next;
+    i = step.next;
   }
   const prefixLimit = prefixOffsets.length > 0 ? prefixOffsets[prefixOffsets.length - 1]! + 1 : start;
 
   const suffixReversed: number[] = [];
-  let tailCursor = end;
-  for (let j = value.length - 1; j >= prefixOffsets.length; ) {
-    const { needle, next } = readNeedle(value, j, -1, prefixOffsets.length);
-    const hit = findInSyntax(markdown, needle, tailCursor, prefixLimit, end, -1);
-    if (hit < 0) break;
-    if (needle.tail !== null) {
-      suffixReversed.push(hit + 1, hit);
-    } else {
-      suffixReversed.push(hit);
+  if (prefixOffsets.length < trimmedLen) {
+    const suffixBudget: ScanBudget = { remaining: Math.max(4096, (end - prefixLimit) * 4) };
+    let tailCursor = end;
+    for (let j = trimmedLen - 1; j >= prefixOffsets.length; ) {
+      const { needle, next } = readNeedle(value, j, -1, prefixOffsets.length);
+      const hit = findInSyntax(markdown, needle, tailCursor, prefixLimit, end, -1, true, suffixBudget);
+      if (hit < 0) break;
+      if (needle.tail !== null) {
+        suffixReversed.push(hit + 1, hit);
+      } else {
+        suffixReversed.push(hit);
+      }
+      tailCursor = hit;
+      j = next;
     }
-    tailCursor = hit;
-    j = next;
+    if (suffixReversed.length === 1) {
+      const onlyAt = suffixReversed[0]!;
+      if (onlyAt > prefixLimit && !isSkippableSyntax(markdown.charCodeAt(onlyAt - 1))) {
+        suffixReversed.length = 0;
+      }
+    }
+  }
+  if (suffixReversed.length === 0) {
+    while (prefixOffsets.length > 0) {
+      const last = prefixOffsets[prefixOffsets.length - 1]!;
+      if (!isLineBreak(markdown.charCodeAt(last)) || isLineBreak(value.charCodeAt(prefixOffsets.length - 1))) break;
+      prefixOffsets.pop();
+    }
   }
   const suffixOffsets = suffixReversed.reverse();
+  const adjustedPrefixLimit = prefixOffsets.length > 0 ? prefixOffsets[prefixOffsets.length - 1]! + 1 : start;
 
   if (!hasReliablePartialMatch(value, prefixOffsets.length, suffixOffsets.length, end - start)) return null;
 
   const from = prefixOffsets.length > 0 ? prefixOffsets[0]! : suffixOffsets[0]!;
-  const suffixStart = suffixOffsets.length > 0 ? suffixOffsets[0]! : prefixLimit;
-  const prefixEnd = prefixOffsets.length > 0 ? prefixLimit : suffixStart;
+  const suffixStart = suffixOffsets.length > 0 ? suffixOffsets[0]! : adjustedPrefixLimit;
+  const prefixEnd = prefixOffsets.length > 0 ? adjustedPrefixLimit : suffixStart;
   const to = suffixOffsets.length > 0 ? suffixOffsets[suffixOffsets.length - 1]! + 1 : prefixEnd;
-  return { run, from, to, partial: { prefixOffsets, prefixEnd, suffixOffsets, suffixStart } };
+  return { run, from, to, blockEnd: rejectTrailingLineBreak, partial: { prefixOffsets, prefixEnd, suffixOffsets, suffixStart, suffixEnd: trimmedLen } };
 }
 
 function partialToText(length: number, to: number, partial: PartialMatch, at: number, assoc: number): number {
   if (at >= length) return to;
-  const { prefixOffsets, prefixEnd, suffixOffsets } = partial;
+  const { prefixOffsets, prefixEnd, suffixOffsets, suffixEnd } = partial;
   if (at < prefixOffsets.length) return assoc < 0 && at > 0 ? prefixOffsets[at - 1]! + 1 : prefixOffsets[at]!;
-  const suffixFrom = length - suffixOffsets.length;
+  const suffixFrom = suffixEnd - suffixOffsets.length;
   if (suffixOffsets.length > 0 && at >= suffixFrom) {
+    if (at >= suffixEnd) return to;
     const j = at - suffixFrom;
     if (assoc < 0) return j === 0 ? prefixEnd : suffixOffsets[j - 1]! + 1;
     return suffixOffsets[j]!;
@@ -271,7 +198,7 @@ function partialToText(length: number, to: number, partial: PartialMatch, at: nu
 }
 
 function partialToTreeIndex(length: number, partial: PartialMatch, offset: number): { value: number; assoc: number } {
-  const { prefixOffsets, prefixEnd, suffixOffsets, suffixStart } = partial;
+  const { prefixOffsets, prefixEnd, suffixOffsets, suffixStart, suffixEnd } = partial;
   if (offset <= prefixEnd && prefixOffsets.length > 0) {
     for (let i = 0; i < prefixOffsets.length; i++) {
       if (prefixOffsets[i]! >= offset) return { value: i, assoc: prefixOffsets[i] === offset ? 0 : -1 };
@@ -279,7 +206,7 @@ function partialToTreeIndex(length: number, partial: PartialMatch, offset: numbe
     return { value: prefixOffsets.length, assoc: -1 };
   }
   if (suffixOffsets.length > 0 && offset >= suffixStart) {
-    const suffixFrom = length - suffixOffsets.length;
+    const suffixFrom = suffixEnd - suffixOffsets.length;
     for (let j = 0; j < suffixOffsets.length; j++) {
       if (suffixOffsets[j]! >= offset) return { value: suffixFrom + j, assoc: suffixOffsets[j] === offset ? 0 : -1 };
     }
@@ -301,39 +228,59 @@ function matchAtom(markdown: string, target: string, start: number, end: number)
   return null;
 }
 
-const LIST_MARKER = /^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/;
-
-function itemTextStart(markdown: string, base: number, end: number): number {
+function itemTextStart(markdown: string, base: number, end: number, requireMarker: boolean): number {
   let line = base;
   if (base > 0 && markdown.charCodeAt(base - 1) !== 10) {
     const newline = markdown.indexOf("\n", base);
-    if (newline < 0 || newline >= end) return base;
+    if (newline < 0 || newline >= end) return requireMarker ? end : base;
     line = newline + 1;
   }
-  const marker = LIST_MARKER.exec(markdown.slice(line, Math.min(end, line + 200)));
-  return marker ? line + marker[0].length : base;
+  const textAt = listMarkerEnd(markdown, line, end);
+  return textAt !== null ? textAt : requireMarker ? end : base;
 }
 
-function listRole(run: TreeRun): ListRole {
+function listInfo(run: TreeRun): { role: ListRole; item: Y.XmlElement | null; inFirstBlock: boolean } {
   const node = isAtom(run) ? run.atom : run.node;
-  const paragraph = node.parent;
-  if (!(paragraph instanceof Y.XmlElement)) return null;
-  const item = paragraph.parent;
-  if (!(item instanceof Y.XmlElement) || !/item$/i.test(item.nodeName)) return null;
-  return item.get(0) === paragraph && paragraph.get(0) === node ? "start" : "inside";
+  const block = node.parent;
+  if (!(block instanceof Y.XmlElement) || (block.nodeName !== "paragraph" && block.nodeName !== "heading")) {
+    return { role: null, item: null, inFirstBlock: false };
+  }
+  const item = block.parent;
+  if (!(item instanceof Y.XmlElement) || !/item$/i.test(item.nodeName)) return { role: null, item: null, inFirstBlock: false };
+  const inFirstBlock = item.get(0) === block;
+  return { role: inFirstBlock && block.get(0) === node ? "start" : "inside", item, inFirstBlock };
 }
 
-function partialSlices(markdown: string, role: ListRole, from: number, to: number): Region[] {
-  if (role === null) return [{ from, to }];
-  const slices: Region[] = [];
-  let cursor = role === "start" ? itemTextStart(markdown, from, to) : from;
+function isBlockEnd(run: TreeRun): boolean {
+  const node = isAtom(run) ? run.atom : run.node;
+  const block = node.parent;
+  if (!(block instanceof Y.XmlElement) || (block.nodeName !== "paragraph" && block.nodeName !== "heading")) return false;
+  const container = block.parent;
+  if (container instanceof Y.XmlElement && (container.nodeName === "tableCell" || container.nodeName === "tableHeader")) return false;
+  const children = block.toArray();
+  for (let i = children.indexOf(node) + 1; i < children.length; i++) {
+    const sibling = children[i];
+    if (sibling instanceof Y.XmlText) {
+      if (sibling.length > 0) return false;
+    } else if (sibling instanceof Y.XmlElement) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function* listSlices(markdown: string, role: ListRole, from: number, to: number, requireMarker: boolean): Iterable<Region> {
+  if (role === null) {
+    yield { from, to };
+    return;
+  }
+  let cursor = role === "start" ? itemTextStart(markdown, from, to, requireMarker) : from;
   for (let n = 0; cursor < to && n <= LOOKAHEAD; n++) {
     const end = listItemEnd(markdown, cursor, to);
-    if (cursor < end) slices.push({ from: cursor, to: end });
+    if (cursor < end) yield { from: cursor, to: end };
     if (role !== "start" || end >= to) break;
-    cursor = itemTextStart(markdown, end + 1, to);
+    cursor = itemTextStart(markdown, end + 1, to, requireMarker);
   }
-  return slices;
 }
 
 function valueIndex(run: TextRun, index: number): number {
@@ -366,23 +313,36 @@ export class Alignment {
     this.bodyStart = frontMatterEnd(markdown);
     const regions = regionsOf(markdown, this.bodyStart);
     const slots = new Array<Placement | null>(runs.length).fill(null);
+    const placedItems = new Set<Y.XmlElement>();
     let current = 0;
     let cursor = this.bodyStart;
     let missed = 0;
     for (let r = 0; r < runs.length; r++) {
       const run = runs[r]!;
       if (run.value === "" && !isAtom(run)) continue;
-      const item = listRole(run) === "start";
+      const { role, item, inFirstBlock } = listInfo(run);
+      const effectiveRole = role === "inside" && inFirstBlock && item && !placedItems.has(item) ? "start" : role;
+      const blockEnd = isBlockEnd(run);
       let placed = false;
       for (let k = current; k < regions.length && k <= current + LOOKAHEAD; k++) {
         const region = regions[k]!;
-        let start = k === current ? Math.max(cursor, region.from) : region.from;
-        if (item) start = itemTextStart(markdown, start, region.to);
-        const hit = isAtom(run) ? matchAtom(markdown, run.target, start, region.to) : match(markdown, run.value, start, region.to);
+        const start = k === current ? Math.max(cursor, region.from) : region.from;
+        const enforceEnd = !isAtom(run) && blockEnd && !region.table;
+        let hit: { first: number; last: number } | null = null;
+        for (const slice of listSlices(markdown, effectiveRole, start, region.to, true)) {
+          const candidate = isAtom(run)
+            ? matchAtom(markdown, run.target, slice.from, slice.to)
+            : match(markdown, run.value, slice.from, slice.to, blockEnd);
+          if (candidate && (!enforceEnd || reachesEnd(markdown, candidate.last, slice.to, candidate.first))) {
+            hit = candidate;
+            break;
+          }
+        }
         if (!hit) continue;
         current = k;
         cursor = hit.last;
-        slots[r] = { run, from: hit.first, to: hit.last };
+        slots[r] = { run, from: hit.first, to: hit.last, blockEnd };
+        if (item && inFirstBlock) placedItems.add(item);
         placed = true;
         break;
       }
@@ -409,7 +369,9 @@ export class Alignment {
         const boundHi = nextFrom[r]!;
         if (lo >= boundHi) continue;
         while (regionIdx < regions.length && regions[regionIdx]!.to <= lo) regionIdx++;
-        const role = listRole(run);
+        const { role, item, inFirstBlock } = listInfo(run);
+        const effectiveRole = role === "inside" && inFirstBlock && item && !placedItems.has(item) ? "start" : role;
+        const blockEnd = isBlockEnd(run);
         let checked = 0;
         for (let k = regionIdx; k < regions.length && checked <= LOOKAHEAD; k++) {
           const region = regions[k]!;
@@ -419,12 +381,13 @@ export class Alignment {
           const regionEnd = Math.min(boundHi, region.to);
           if (regionStart >= regionEnd) continue;
           let partial: Placement | null = null;
-          for (const slice of partialSlices(markdown, role, regionStart, regionEnd)) {
-            partial = matchPartial(markdown, run, slice.from, slice.to);
+          for (const slice of listSlices(markdown, effectiveRole, regionStart, regionEnd, false)) {
+            partial = matchPartial(markdown, run, slice.from, slice.to, blockEnd);
             if (partial) break;
           }
           if (!partial) continue;
           slots[r] = partial;
+          if (item && inFirstBlock) placedItems.add(item);
           lo = partial.to;
           regionIdx = k;
           break;
@@ -470,10 +433,20 @@ export class Alignment {
       const hit = partialToTreeIndex(length, placement.partial, offset);
       return this.point(placement, hit.value, hit.assoc);
     }
+    const value = placement.run.value;
+    const trimmedLen = trimmedEnd(value);
+    const budget: ScanBudget = { remaining: Math.max(4096, (placement.to - placement.from) * 4) };
     let at = placement.from;
-    for (let i = 0; i < length; i++) {
+    for (let i = 0; i < length; ) {
+      const { needle, next } = readNeedle(value, i, 1);
       if (at >= offset) return this.point(placement, i, at === offset ? 0 : -1);
-      if (i + 1 < length) at = find(this.markdown, placement.run.value.charCodeAt(i + 1), at + 1, this.markdown.length);
+      if (needle.tail !== null && at + 1 >= offset) return this.point(placement, i + 1, at + 1 === offset ? 0 : -1);
+      if (next < length) {
+        const step = stepForward(this.markdown, value, next, trimmedLen, placement.blockEnd, at + (next - i), placement.from, placement.to, budget);
+        if (!step) break;
+        at = step.hit;
+      }
+      i = next;
     }
     return this.point(placement, length, -1);
   }
@@ -494,9 +467,19 @@ export class Alignment {
     return placeOf(children[index])?.from ?? placeOf(children[index - 1])?.to ?? null;
   }
 
-  private offsetOf(placement: Placement, at: number): number {
+  private offsetOf(placement: Placement, target: number): number {
+    const value = placement.run.value;
+    const trimmedLen = trimmedEnd(value);
+    const budget: ScanBudget = { remaining: Math.max(4096, (placement.to - placement.from) * 4) };
     let offset = placement.from;
-    for (let i = 1; i <= at; i++) offset = find(this.markdown, placement.run.value.charCodeAt(i), offset + 1, this.markdown.length);
+    for (let i = 0; i < target; ) {
+      const { next } = readNeedle(value, i, 1);
+      if (next > target) return offset + (target - i);
+      const step = stepForward(this.markdown, value, next, trimmedLen, placement.blockEnd, offset + (next - i), placement.from, placement.to, budget);
+      if (!step) return placement.to;
+      offset = step.hit;
+      i = next;
+    }
     return offset;
   }
 

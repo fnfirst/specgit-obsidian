@@ -87,6 +87,9 @@ export interface StayHandle {
   heldWhy(path: string): string | null;
   attachmentProblems(path: string, problems: ReadonlyArray<{ name: string; why: string }>): void;
   touched(path: string): void;
+  roomWrote(path: string, text: string | null): void;
+  roomAcked(path: string, text: string, pin?: boolean): void;
+  hasLocalEdit(path: string, text: string): boolean;
   heardDraft(repoPath: string, sha?: string): void;
   addToMyNote(path: string): void;
   offered(): readonly string[];
@@ -348,7 +351,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     baseText: (path, sha) => {
       const read = deps.bases.read(path);
       if (sha === null || read.status !== "found") return null;
-      return gitBlobShaOfText(withEol(read.base.text, read.base.eol)) === sha ? read.base.text : null;
+      return gitBlobShaOfText(withEol(read.base.text, read.base.eol)) === sha || gitBlobShaOfText(read.base.text) === sha ? read.base.text : null;
     },
     recordBase: (path, doc, _text, raw) => recordMainBase(deps.bases, path, doc, raw),
     rebase: (path, sha) => deps.model.rebased(path, sha),
@@ -467,18 +470,18 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     return new StayConnected(tied, state, activity, WriteBudget.open(localState, deps.login(), Date.now, serverTakes));
   };
 
-  const touched = (path: string): void => activity.touched(path);
+  const touched = (path: string, deferRead = false): void => activity.touched(path, deferRead);
   const isTrackedPath = (path: string): boolean => !isHiddenPath(path) && mapped(path) !== null;
   const isTrackedFile = (file: { path: string; children?: unknown }): boolean => !("children" in file) && isTrackedPath(file.path);
   app.workspace.onLayoutReady(() => {
-    plugin.registerEvent(app.vault.on("create", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
+    plugin.registerEvent(app.vault.on("create", (file) => (isTrackedFile(file) ? touched(file.path, true) : undefined)));
     plugin.registerEvent(app.vault.on("modify", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
-    plugin.registerEvent(app.vault.on("delete", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
+    plugin.registerEvent(app.vault.on("delete", (file) => (isTrackedFile(file) ? touched(file.path, true) : undefined)));
     plugin.registerEvent(
       app.vault.on("rename", (file, from) => {
         if ("children" in file) return;
         if (isTrackedPath(file.path)) activity.renamed(from, file.path);
-        else if (isTrackedPath(from)) touched(from);
+        else if (isTrackedPath(from)) touched(from, true);
       }),
     );
     plugin.registerEvent(app.workspace.on("active-leaf-change", () => engine?.panesChanged()));
@@ -486,6 +489,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   });
 
   let wasHidden = false;
+  const hasCanvasLeaf = (): boolean => app.workspace.getLeavesOfType("canvas").length > 0;
   watchWindows(plugin, (win, on) => {
     on(win.document, "visibilitychange", () => {
       if (appHidden()) {
@@ -498,7 +502,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     });
     on(win, "beforeunload", () => flushAll());
     on(win, "pagehide", () => flushAll());
-    watchCanvasEditing(win, on, () => engine?.panesChanged());
+    watchCanvasEditing(win, on, () => engine?.panesChanged(), hasCanvasLeaf);
   });
 
   plugin.registerInterval(window.setInterval(() => void engine?.pollGit(), 1_000));
@@ -630,7 +634,10 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         path,
       ),
     bringFor,
-    touched,
+    touched: (path) => touched(path),
+    roomWrote: (path, text) => engine?.roomWrote(path, text),
+    roomAcked: (path, text, pin) => engine?.roomAcked(path, text, pin),
+    hasLocalEdit: (path, text) => engine?.hasLocalEdit(path, text) === true,
     copyIn: (files, skipped) => {
       const at = identity();
       let alive = true;

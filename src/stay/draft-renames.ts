@@ -141,7 +141,7 @@ export class DraftRenames {
     for (const [from, entry] of files) {
       if (!eligible([from, entry]) || byPath.has(from)) continue;
       if (entry.sent === undefined && !isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) continue;
-      if (!follows(draft, ports.login(), entry.sentTo, ports.policy())) continue;
+      if (!follows(draft, ports.login(), undefined, ports.policy())) continue;
       const fromDoc = ports.documentFor(from);
       if (!fromDoc || fromDoc.repo !== toDoc.repo) continue;
       const moved = await this.probeRenamedTo(from, fromDoc, asked);
@@ -155,7 +155,7 @@ export class DraftRenames {
   private isRenameCandidate(looked: Looked, byPath: ReadonlyMap<string, Draft>, to: string, draft: Draft, from: string, entry: CacheEntry): boolean {
     const { ports } = this.ctx;
     if (from === to || ports.inGroup(from) || ports.documentFor(from) === null || this.host.caseCollision(to, from)) return false;
-    if (!follows(draft, ports.login(), entry.sentTo, ports.policy())) return false;
+    if (!follows(draft, ports.login(), undefined, ports.policy())) return false;
     const known = this.knownRenames.get(from);
     if (known !== undefined && ports.documentFor(to)?.path !== known.path) return false;
     if (isRenamedFrom(draft, from, to)) return true;
@@ -214,7 +214,7 @@ export class DraftRenames {
       }
       const [from, entry] = found;
       const [fromDoc, toDoc] = [ports.documentFor(from), ports.documentFor(to)];
-      if (!fromDoc || !toDoc || !follows(draft, ports.login(), entry.sentTo, ports.policy())) continue;
+      if (!fromDoc || !toDoc || !follows(draft, ports.login(), undefined, ports.policy())) continue;
       if (this.host.caseCollision(to, from)) {
         this.host.holdCaseCollision(to, draft.blob ?? draft.branch);
         out.paths.add(from);
@@ -243,6 +243,7 @@ export class DraftRenames {
         }
         if (!byPath.has(from)) {
           if (entry.sent !== undefined) ports.agreed(from, null);
+          this.ctx.clearOwnBlobs?.(from);
           this.host.forgetEnded(from);
           this.host.holdRenamedKept(looked, from);
           this.host.settled(from);
@@ -274,6 +275,7 @@ export class DraftRenames {
         continue;
       }
       this.host.noteRenamed(from, to);
+      this.ctx.renameOwnBlobs?.(from, to);
       if (from !== to && !looked.repo.has(from)) ports.forgetDelete(from);
       state.data.committed.push(changeKey({ kind: "new", path: to }), changeKey({ kind: "renamed", path: to, from }));
       ports.agreed(from, null);
@@ -301,7 +303,7 @@ export class DraftRenames {
     const knownTarget = this.knownRenames.get(path)?.path;
     for (const [to, draft] of byPath) {
       if (to === path || looked.files.has(to)) continue;
-      if (!follows(draft, ports.login(), entry.sentTo, ports.policy())) continue;
+      if (!follows(draft, ports.login(), undefined, ports.policy())) continue;
       if (isRenamedFrom(draft, path, to)) return true;
       const toDoc = ports.documentFor(to);
       if (fromDoc && toDoc && knownTarget !== undefined && knownTarget === toDoc.path) return true;
@@ -329,7 +331,7 @@ export class DraftRenames {
       if (entry.sent === undefined && at.sha !== draft.blob) continue;
       const fromDoc = ports.documentFor(from);
       const { clean } = isCleanRenameSource(byPath, from, entry, draft);
-      if (!fromDoc || !follows(draft, ports.login(), entry.sentTo, ports.policy()) || !clean) continue;
+      if (!fromDoc || !follows(draft, ports.login(), undefined, ports.policy()) || !clean) continue;
       const probed = await this.probeAbsent(from, fromDoc, draft.branch);
       if (!this.ctx.current()) return 0;
       if (probed !== "absent" || (await this.host.leftAlone(looked, from)) !== null) continue;
@@ -342,6 +344,7 @@ export class DraftRenames {
       this.host.noteRemoved(from);
       if (!looked.repo.has(from)) ports.forgetDelete(from);
       ports.agreed(from, null);
+      this.ctx.clearOwnBlobs?.(from);
       this.host.forgetEnded(from);
       this.host.settled(from);
       paths.add(from);

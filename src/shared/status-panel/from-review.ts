@@ -142,7 +142,7 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
       ? "approve"
       : state === "draft" || state === "edited" || (state === "held" && entry.prNumber <= 0)
         ? "submit"
-        : state === "ready" || (state === "deleted" && entry.prNumber <= 0)
+        : state === "ready" || state === "deleted"
           ? "publish"
           : undefined;
   const tipPeople =
@@ -170,6 +170,7 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
     hasReview: entry.prNumber > 0,
     ...((known ? known.isDraft : entry.isDraft) ? { draft: true } : {}),
     ...(known?.autoMergeEnabled === true ? { autoPublish: true } : {}),
+    ...(known?.reviewDecision === "approved" ? { approved: true } : {}),
     ...(extra.hasChanges ? { hasChanges: true } : {}),
     ...(extra.bringIn ? { bringIn: true } : {}),
     ...(tipPeople ? { tipPeople } : {}),
@@ -219,6 +220,7 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
     hasReview: overview.prNumber > 0,
     ...((facts ? facts.isDraft : overview.isDraft) ? { draft: true } : {}),
     ...(facts?.autoMergeEnabled === true ? { autoPublish: true } : {}),
+    ...(facts?.reviewDecision === "approved" ? { approved: true } : {}),
     here: withoutViewer([...here.values()], viewer),
     ...(asksYou && merged.authorLogin ? { tipPeople: [merged.authorLogin] } : state === "in-review" ? { tipPeople: [...merged.requestedReviewers] } : state === "changes-requested" ? { tipPeople: merged.reviewers.filter((one) => one.state === "changes_requested").map((one) => one.login) } : {}),
   };

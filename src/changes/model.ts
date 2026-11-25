@@ -20,6 +20,7 @@ import { rebasedOnto, type TheirReview, type VaultStates, vaultStates } from "./
 import type { PrInfo, SaverStatus } from "../shared/review-flow";
 import { type ReviewKey, reviewKey } from "./review-key";
 import { isAnotherAuthor } from "./review-owner";
+import { isLocalOnlyNew as checkLocalOnlyNew } from "./local-new";
 
 const PRESENCE_RETRY_MS = 2_000;
 const PRESENCE_RETRY_MOST_MS = 30_000;
@@ -673,15 +674,15 @@ export class ChangesModel {
     return this.place !== null && this.place === (this.deps.place?.() ?? "") && this.current.phase === "ready" && this.draftsChecked;
   }
 
-  draftInfo(path: string): { draft: Draft | null; sentTo: string | undefined; holdsDraft: boolean } {
-    if (this.place === null || this.place !== (this.deps.place?.() ?? "")) return { draft: null, sentTo: undefined, holdsDraft: false };
+  draftInfo(path: string): { draft: Draft | null; sent: string | undefined; sentTo: string | undefined; holdsDraft: boolean } {
+    if (this.place === null || this.place !== (this.deps.place?.() ?? "")) return { draft: null, sent: undefined, sentTo: undefined, holdsDraft: false };
     const flight = this.flight;
     const doc = this.deps.documentFor(path);
     const entries = flight && doc ? flight.paths[doc.path] : undefined;
     const draft = flight && entries ? draftOf(entries, this.deps.viewerLogin?.() ?? null, flight.overviews, flight.saves) : null;
     const entry = this.deps.cache.get(path);
     const holdsDraft = draft !== null && draft.blob !== null && entry !== undefined && (entry.sha === draft.blob || (entry.sent === draft.blob && agreedOf(entry) === entry.sha));
-    return { draft, sentTo: entry?.sentTo, holdsDraft };
+    return { draft, sent: entry?.sent, sentTo: entry?.sentTo, holdsDraft };
   }
 
   theirReview(path: string): TheirReview | undefined {
@@ -711,24 +712,20 @@ export class ChangesModel {
   }
 
   isLocalOnlyNew(path: string): boolean {
-    if (this.place === null || this.place !== (this.deps.place?.() ?? "")) return false;
-    if (this.current.phase !== "ready" || this.states === null || this.repoFiles === null || this.flight === null) return false;
-    if (this.deps.documentFor(path) === null || this.deps.deletedOnMain?.(path) === true) return false;
-    const lower = path.toLowerCase();
-    for (const repoPath of this.repoFiles.keys()) if (repoPath.toLowerCase() === lower) return false;
-    for (const [overPath, over] of this.overlay) if (overPath.toLowerCase() === lower && over.sha !== null) return false;
-    for (const [repoPath, entries] of Object.entries(this.flight.paths)) {
-      if (entries.length > 0 && this.vaultPathFor(repoPath).toLowerCase() === lower) return false;
-    }
-    const cached = this.deps.cache.get(path);
-    if (cached !== undefined && (cached.base !== null || cached.sent !== undefined)) return false;
-    for (const [knownPath, file] of this.states.files) {
-      if (knownPath.toLowerCase() !== lower) continue;
-      if (file.state.kind !== "here" || file.state.change !== "new") return false;
-      const entry = this.deps.cache.get(knownPath);
-      if (entry !== undefined && (entry.base !== null || entry.sent !== undefined)) return false;
-    }
-    return true;
+    return checkLocalOnlyNew({
+      path,
+      place: this.place,
+      currentPlace: this.deps.place?.() ?? "",
+      phase: this.current.phase,
+      states: this.states,
+      repoFiles: this.repoFiles,
+      flight: this.flight,
+      overlay: this.overlay,
+      cache: this.deps.cache,
+      documentFor: (one) => this.deps.documentFor(one),
+      ...(this.deps.deletedOnMain ? { deletedOnMain: (one: string) => this.deps.deletedOnMain?.(one) === true } : {}),
+      vaultPathFor: (repoPath) => this.vaultPathFor(repoPath),
+    });
   }
 
   missingFiles(): readonly CopyInFile[] {

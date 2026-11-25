@@ -17,6 +17,8 @@ import { missingNotes } from "../changes/missing-notes";
 import { groupWrites, WRITES_PER_FILE } from "../changes/burst";
 import { Pace, WriteBudget } from "./limits";
 import { type BlockedNew, changeKey, hasOwnOrAgreedDraft, isEdit, planOutbound } from "./outbound";
+import { OwnBlobs } from "./own-blobs";
+import { RoomWrites } from "./room-writes";
 import { type StayGitMark, type StayState, TYPED_KEPT } from "./state";
 import type { StayPorts } from "./types";
 import { WAKE_PAD_MS } from "./wait";
@@ -44,6 +46,7 @@ const SAID = {
 const QUIT_GRACE_MS = 5_000;
 
 const SAVE_SOON_MS = 5_000;
+const TYPED_READ_MS = 500;
 
 type Timer = "inbound" | "outbound" | "edits" | "drafts" | "flurry";
 
@@ -59,11 +62,14 @@ export class StayConnected {
   private readonly pace: Pace;
   private readonly holds: StayHolds;
   private readonly attachments: StayAttachments;
+  private readonly roomWrites: RoomWrites;
+  private readonly ownBlobs: OwnBlobs;
   private readonly conflicts = new Map<string, string>();
   private readonly timers = new Map<Timer, { cancel: () => void; at: number }>();
   private readonly heard = new Map<string, () => void>();
   private readonly heardLater = new Set<string>();
   private saving: (() => void) | null = null;
+  private readonly typedReads = new Map<string, () => void>();
   private readonly heardShas = new Map<string, { waiting: Set<string>; read: string[] }>();
   private readonly endWatch = new Map<string, () => void>();
   private away: { count: number } | null = null;
@@ -89,7 +95,19 @@ export class StayConnected {
   });
 
   private draftInbound(current: () => boolean): DraftInbound {
-    return (this.draftIn ??= new DraftInbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, current }));
+    return (this.draftIn ??= new DraftInbound({
+      ports: this.ports,
+      state: this.state,
+      activity: this.activity,
+      holds: this.holds,
+      isRemoteRoom: (path, sha) => this.roomWrites.matches(path, sha),
+      isRemoteRoomBlob: (path, diskSha, draftBlob) => this.roomWrites.matchesPair(path, diskSha, draftBlob),
+      noteOwnBlob: (path, sha) => this.ownBlobs.recordSha(path, sha),
+      clearOwnBlobs: (path) => this.ownBlobs.clear(path),
+      renameOwnBlobs: (from, to) => this.ownBlobs.renamed(from, to),
+      consumeRebasedSent: (path, sha) => this.ownBlobs.consumeRebasedSent(path, sha),
+      current,
+    }));
   }
 
   constructor(
@@ -100,6 +118,8 @@ export class StayConnected {
   ) {
     this.pace = new Pace(budget, () => ports.now());
     this.holds = new StayHolds(state, activity, ports);
+    this.roomWrites = new RoomWrites(state, () => this.saveSoon());
+    this.ownBlobs = new OwnBlobs(state, () => this.saveSoon());
     this.attachments = new StayAttachments({
       ports,
       state,
@@ -154,13 +174,42 @@ export class StayConnected {
     this.on = true;
     this.beganAt = this.ports.now();
     this.generation++;
-    this.activity.listener = (path) => this.typing(path);
+    this.activity.listener = (path, deferRead, from) => this.typing(path, deferRead, from);
+    this.activity.remoteCheck = (path, sha) => this.roomWrites.matches(path, sha);
+    this.activity.onRename = (from, to) => {
+      this.roomWrites.renamed(from, to);
+      this.ownBlobs.renamed(from, to);
+    };
     this.attachments.restore();
     this.ports.lookAgain();
   }
 
-  private typing(path: string): void {
+  roomWrote(path: string, text: string | null): void {
+    if (!this.on && text !== null) return;
+    if (text !== null) {
+      this.typedReads.get(path)?.();
+      this.typedReads.delete(path);
+    }
+    this.roomWrites.record(path, text);
+  }
+
+  roomAcked(path: string, text: string, pin = false): void {
+    if (!this.on) return;
+    if (pin) this.ownBlobs.pinText(path, text);
+    else this.ownBlobs.recordText(path, text, this.looked?.files.get(path)?.base);
+  }
+
+  hasLocalEdit(path: string, text: string): boolean {
+    return this.roomWrites.hasLocalEdit(this.looked, path, text);
+  }
+
+  private typing(path: string, deferRead = false, from?: string): void {
     if (!this.on || this.activity.isSuspect(path)) return;
+    if (from !== undefined) {
+      this.typedReads.get(from)?.();
+      this.typedReads.delete(from);
+    }
+    if (this.ports.phaseOf(path) !== "local" && this.roomWrites.has(path)) return;
     const generation = this.generation;
     const typed = (this.state.data.typed ??= {});
     const at = this.ports.now();
@@ -168,11 +217,35 @@ export class StayConnected {
     const keys = Object.keys(typed);
     if (keys.length > TYPED_KEPT) for (const old of keys.sort((a, b) => typed[a]!.at - typed[b]!.at).slice(0, keys.length - TYPED_KEPT)) delete typed[old];
     this.saveSoon();
+    this.typedReads.get(path)?.();
+    this.typedReads.delete(path);
+    if (deferRead) {
+      this.typedReads.set(
+        path,
+        this.ports.later(() => {
+          this.typedReads.delete(path);
+          this.readTypedSha(path, at, generation);
+        }, TYPED_READ_MS),
+      );
+      return;
+    }
+    this.readTypedSha(path, at, generation);
+  }
+
+  private readTypedSha(path: string, at: number, generation: number): void {
     void this.ports.vault.read(path).then((text) => {
       if (text === null || !this.current(generation) || this.activity.isSuspect(path)) return;
+      const sha = gitBlobShaOfText(text);
+      if (this.roomWrites.matches(path, sha)) {
+        if (this.state.data.typed?.[path]?.at === at) {
+          delete this.state.data.typed[path];
+          this.saveSoon();
+        }
+        return;
+      }
       const mark = this.state.data.typed?.[path];
       if (mark === undefined || mark.at !== at) return;
-      mark.sha = gitBlobShaOfText(text);
+      mark.sha = sha;
       this.saveSoon();
     });
   }
@@ -200,6 +273,8 @@ export class StayConnected {
     this.on = false;
     this.offers.reset();
     this.activity.listener = null;
+    this.activity.remoteCheck = null;
+    this.activity.onRename = null;
     this.generation++;
     for (const entry of this.timers.values()) entry.cancel();
     this.timers.clear();
@@ -210,8 +285,11 @@ export class StayConnected {
     this.draftIn?.stop();
     this.draftIn = null;
     this.conflicts.clear();
+    this.ownBlobs.stop();
     for (const cancel of this.heard.values()) cancel();
     this.heard.clear();
+    for (const cancel of this.typedReads.values()) cancel();
+    this.typedReads.clear();
     for (const cancel of this.endWatch.values()) cancel();
     this.endWatch.clear();
     this.heardLater.clear();
@@ -272,6 +350,7 @@ export class StayConnected {
 
   async holdStopped(path: string): Promise<void> {
     if (!this.on) return;
+    this.ownBlobs.clear(path);
     const text = await this.ports.vault.read(path);
     if (text === null || !this.on) return;
     this.holds.holdStopped(path, text);
@@ -293,6 +372,7 @@ export class StayConnected {
   restored(path: string): void {
     this.draftIn?.forgetDeleted(path);
     this.holds.restored(path);
+    this.ownBlobs.clear(path);
   }
 
   returned(): void {
@@ -373,6 +453,14 @@ export class StayConnected {
     }
     const looked = this.looked;
     if (!looked || this.ports.offline()) return;
+    if (this.ports.policy() === "mine") {
+      const shas = this.heardShas.get(path);
+      if (shas) {
+        shas.read = [...shas.read, ...shas.waiting].slice(-8);
+        shas.waiting.clear();
+      }
+      return this.ports.lookAgain();
+    }
     const known = looked.drafts?.byPath.has(path) === true || looked.files.get(path)?.sent !== undefined;
     if (!known) return this.ports.lookAgain();
     const draftIn = this.draftInbound(() => this.current(generation));
@@ -407,6 +495,7 @@ export class StayConnected {
     const generation = this.generation;
     const looked = this.looked;
     if (!looked || !this.ports.signedIn() || this.ports.personBusy()) return;
+    this.roomWrites.prune(looked, (path) => this.ports.phaseOf(path));
     const { data } = this.state;
     if (data.seen === null || data.baseline === null) {
       data.baselinePending = true;
@@ -427,7 +516,11 @@ export class StayConnected {
         this.startedOutbound = true;
         const copied = await this.ports.copyIn(missing, () => this.current(generation), absent.skipped);
         if (!this.current(generation)) return;
-        for (const { path } of missing) if (!this.ports.vault.exists(path)) delete data.seen[path];
+        for (const { path } of missing) {
+          if (this.ports.vault.exists(path)) continue;
+          delete data.seen[path];
+          this.ownBlobs.clear(path);
+        }
         this.state.save();
         if (copied.created > 0) return this.ports.lookAgain();
       }
@@ -449,7 +542,7 @@ export class StayConnected {
       this.ports.notify(SAID.taken(taken.length));
       return this.ports.lookAgain();
     }
-    this.inbound ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, current: () => this.current(generation), onResolved: (path) => this.conflictResolved(path) });
+    this.inbound ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, isRemoteRoom: (path, sha) => this.roomWrites.matches(path, sha), isOwnBlob: (path, sha) => this.ownBlobs.matches(path, sha), onSettled: (path, sha) => this.ownBlobs.settled(path, sha), onRebasedSent: (path, sha) => this.ownBlobs.noteRebasedSent(path, sha), current: () => this.current(generation), onResolved: (path) => this.conflictResolved(path) });
     const draftIn = this.draftInbound(() => this.current(generation));
     let changed = 0;
     let rescan = false;
@@ -495,7 +588,7 @@ export class StayConnected {
     const looked = this.looked;
     if (!looked || !this.ports.signedIn()) return false;
     const generation = this.generation;
-    this.bringer ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, current: () => this.generation === generation && this.ports.enabled() });
+    this.bringer ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, isRemoteRoom: (path, sha) => this.roomWrites.matches(path, sha), onSettled: (path, sha) => this.ownBlobs.settled(path, sha), current: () => this.generation === generation && this.ports.enabled() });
     return this.bringer.bringIn(looked, path);
   }
 
@@ -673,9 +766,12 @@ export class StayConnected {
   private followed(looked: Looked, row: Looked["rows"][number], committed: ReadonlySet<string>, blockedNew: BlockedNew): boolean {
     const path = row.change.path;
     const draft = looked.drafts?.byPath.get(path);
-    if (isEdit(row, committed, { looked, login: this.ports.login(), blockedNew }) && this.ports.inGroup(path)) return draft?.inGroup === true;
+    if (isEdit(row, committed, { looked, login: this.ports.login(), blockedNew }) && this.ports.inGroup(path)) {
+      if (draft?.inGroup !== true) return false;
+      return follows(draft, this.ports.login(), looked.files.get(path), this.policyFor(path, draft));
+    }
     if (!draft) return true;
-    return follows(draft, this.ports.login(), looked.files.get(path)?.sentTo, this.policyFor(path, draft));
+    return follows(draft, this.ports.login(), looked.files.get(path), this.policyFor(path, draft));
   }
 
   private editRules(looked: Looked): NonNullable<Parameters<typeof planOutbound>[0]["edits"]> | null {
@@ -684,7 +780,7 @@ export class StayConnected {
     return {
       own: (row) => {
         const entry = looked.files.get(row.change.path);
-        return entry !== undefined && (agreedOf(entry) === undefined || entry.sha !== agreedOf(entry));
+        return entry !== undefined && !this.roomWrites.matches(row.change.path, entry.sha) && (agreedOf(entry) === undefined || entry.sha !== agreedOf(entry));
       },
       held: (row) => {
         const path = row.change.path;
@@ -777,6 +873,7 @@ export class StayConnected {
         allowed: (row) =>
           this.ports.phaseOf(row.change.path) === "local" &&
           !this.ports.disconnected(row.doc) &&
+          !this.roomWrites.matches(row.change.path, looked.files.get(row.change.path)?.sha) &&
           !this.draftIn?.holdingRenameSource(row.change.path) &&
           (row.change.from === undefined || !this.draftIn?.holdingRenameSource(row.change.from)) &&
           (this.retryAt.get(changeKey(row.change)) ?? 0) <= this.ports.now() &&
@@ -832,7 +929,7 @@ export class StayConnected {
       }
       if (!this.current(generation)) break;
       this.outboundUnsaved.delete(row.change.path);
-      const { result, writes, deletedAt, retryAfterMs, inVault } = await this.ports.commit(row, () => this.current(generation), edit ? { edit: true as const, ...(this.draftIn?.pending(row.change.path) ? { ended: true as const } : {}), ...(this.looked?.drafts?.byPath.get(row.change.path)?.inGroup ? { memberBranch: this.looked.drafts.byPath.get(row.change.path)!.branch } : {}), notWritten: (path) => this.activity.notWritten(path), during: (paths, run, left) => this.activity.during(paths, run, left) } : undefined);
+      const { result, writes, deletedAt, retryAfterMs, inVault } = await this.ports.commit(row, () => this.current(generation), edit ? { edit: true as const, policy: this.ports.policy(), ...(this.draftIn?.pending(row.change.path) ? { ended: true as const } : {}), ...(this.looked?.drafts?.byPath.get(row.change.path)?.inGroup ? { memberBranch: this.looked.drafts.byPath.get(row.change.path)!.branch } : {}), notWritten: (path) => this.activity.notWritten(path), during: (paths, run, left) => this.activity.during(paths, run, left) } : undefined);
       if (writes > 0) this.budget.spend(writes);
       if (!this.current(generation)) break;
       if ((result === "committed" && inVault !== false) || result === "held" || result === "conflict") delete this.state.data.typed?.[row.change.path];

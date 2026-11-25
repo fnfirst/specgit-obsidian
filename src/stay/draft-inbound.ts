@@ -1,5 +1,5 @@
 import { gitBlobShaOfText } from "../changes/blob-sha";
-import { agreedOf, type CacheEntry } from "../changes/cache";
+import { agreedOf, clearSent, type CacheEntry } from "../changes/cache";
 import type { Looked } from "../changes/model";
 import { unchangedHere } from "../changes/unchanged-here";
 import { Budget } from "../disk/diff";
@@ -7,7 +7,7 @@ import { eolOf, toLf, withEol } from "../disk/line-endings";
 import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { CasePathIndex, type DocumentRef, noteName } from "../mapping";
 import type { Activity } from "./activity";
-import { type Case, draftCase, type Draft, draftKey, type Ended, type FileFacts, follows, isClean, type LeftAlone, type StayDrafts } from "./draft-state";
+import { type Case, draftCase, type Draft, draftKey, draftWriter, type Ended, type FileFacts, follows, isClean, type LeftAlone, type StayDrafts } from "./draft-state";
 import type { BranchFile, MainFile } from "../auth/git-copy";
 import { DraftDeletes } from "./draft-deletes";
 import { TeammateOffers } from "./draft-offers";
@@ -35,6 +35,12 @@ export interface DraftContext {
   state: StayState;
   activity: Activity;
   holds?: StayHolds;
+  isRemoteRoom?(path: string, sha: string): boolean;
+  isRemoteRoomBlob?(path: string, diskSha: string, draftBlob: string): boolean;
+  noteOwnBlob?(path: string, sha: string): void;
+  clearOwnBlobs?(path: string): void;
+  renameOwnBlobs?(from: string, to: string): void;
+  consumeRebasedSent?(path: string, sha: string): boolean;
   current(): boolean;
 }
 
@@ -85,6 +91,7 @@ export class DraftInbound {
   private draftsDeferred = new Set<string>();
   private known: (sha: string) => string | undefined = () => undefined;
   private readonly awaiting = new Map<string, { sent: string; to: string | null; agreed: string }>();
+  private readonly crlfMiss = new Map<string, string>();
   private readonly deciding = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private readonly abort = new AbortController();
@@ -137,6 +144,7 @@ export class DraftInbound {
     this.offers.stop();
     this.unsaved.clear();
     this.deferredUnsaved.clear();
+    this.crlfMiss.clear();
     this.deferredRenameSources = new Set();
   }
 
@@ -271,6 +279,7 @@ export class DraftInbound {
     await this.readEnds(looked, paths, drafts, skip);
     await this.readDrafts(looked, paths, drafts, skip);
     for (const path of [...this.unlevel.keys()]) if (!paths.has(path)) this.unlevel.delete(path);
+    for (const path of [...this.crlfMiss.keys()]) if (!paths.has(path)) this.crlfMiss.delete(path);
     for (const path of [...this.deferredUnsaved]) if (!paths.has(path) && !renamed.heldFrom.has(path)) this.clearUnsaved(path);
     for (const path of [...this.unsaved.keys()]) if (!paths.has(path) && !renamed.heldFrom.has(path)) this.unsaved.delete(path);
     for (const path of paths) {
@@ -308,6 +317,14 @@ export class DraftInbound {
     }
   }
 
+  private isRemoteRoom(path: string, sha: string): boolean {
+    return this.ctx.isRemoteRoom?.(path, sha) === true;
+  }
+
+  private isRemoteRoomBlob(path: string, diskSha: string, draftBlob: string): boolean {
+    return this.ctx.isRemoteRoomBlob?.(path, diskSha, draftBlob) === true;
+  }
+
   private facts(looked: Looked, path: string): FileFacts {
     const entry = looked.files.get(path);
     const repoSha = looked.repo.get(path);
@@ -318,7 +335,7 @@ export class DraftInbound {
       ...(entry?.sent !== undefined ? { sent: entry.sent } : {}),
       ...(entry?.sentTo !== undefined ? { sentTo: entry.sentTo } : {}),
       ...(agreed !== undefined ? { agreed } : {}),
-      unchanged: entry ? unchangedHere(entry) : false,
+      unchanged: entry ? unchangedHere(entry) || this.isRemoteRoom(path, entry.sha) : false,
       deletedHere: looked.deleted.some((gone) => gone.path === path),
       published: repoSha !== undefined,
       publishedMoved: entry !== undefined && repoSha !== undefined && entry.base !== null && repoSha !== entry.base,
@@ -453,6 +470,24 @@ export class DraftInbound {
     return kind === "meet" && entry !== undefined && entry.base !== null && this.holds.isEditHeld(path, entry.sha);
   }
 
+  private agreeDraft(path: string, entry: Pick<CacheEntry, "sent" | "base"> | undefined, agreement: { sent: string; to: string | null; agreed?: string }): void {
+    if (entry?.sent !== undefined && entry.sent !== agreement.sent && entry.base !== entry.sent) {
+      this.ctx.noteOwnBlob?.(path, entry.sent);
+    }
+    this.ctx.ports.agreed(path, agreement);
+  }
+
+  private async matchesDraftBlob(path: string, same: CacheEntry, draftBlob: string): Promise<boolean> {
+    if (same.sha === draftBlob || this.isRemoteRoomBlob(path, same.sha, draftBlob) || same.same === draftBlob) return true;
+    const pair = `${same.sha}|${draftBlob}`;
+    if (this.crlfMiss.get(path) === pair) return false;
+    const text = await this.ctx.ports.vault.read(path);
+    if (!this.ctx.current() || text === null || gitBlobShaOfText(text) !== same.sha) return false;
+    if (gitBlobShaOfText(toLf(text)) === draftBlob) return true;
+    this.crlfMiss.set(path, pair);
+    return false;
+  }
+
   private async one(looked: Looked, path: string, draft: Draft | null, level: boolean): Promise<boolean> {
     const { ports } = this.ctx;
     const doc = ports.documentFor(path);
@@ -462,15 +497,37 @@ export class DraftInbound {
       return false;
     }
     const same = looked.files.get(path);
-    if (draft && draft.blob !== null && same !== undefined && same.sha === draft.blob && !(same.sent === draft.blob && agreedOf(same) === same.sha && same.sentTo === (draftKey(draft) ?? undefined)) && follows(draft, ports.login(), same.sentTo, this.policyFor(path, draft)) && (await this.leftAlone(looked, path, { allowLive: true })) === null) {
+    if (
+      draft &&
+      draft.blob !== null &&
+      same !== undefined &&
+      !(same.sent === draft.blob && agreedOf(same) === same.sha && same.sentTo === (draftKey(draft) ?? undefined)) &&
+      (follows(draft, ports.login(), same, this.policyFor(path, draft)) || this.isRemoteRoom(path, same.sha)) &&
+      (await this.leftAlone(looked, path, { allowLive: true })) === null &&
+      (await this.matchesDraftBlob(path, same, draft.blob))
+    ) {
       const to = draftKey(draft);
-      ports.agreed(path, { sent: draft.blob, to, agreed: same.sha });
+      this.agreeDraft(path, same, { sent: draft.blob, to, agreed: same.sha });
       Object.assign(same, { sent: draft.blob, agreed: same.sha, ...(to === null ? {} : { sentTo: to }) });
+      if (this.holds.isEditHeld(path, same.sha)) {
+        this.holds.clearEditHold(path);
+        this.rescan = true;
+      }
       this.settled(path);
       this.clearConflict(path);
       this.offers.drop(path);
       this.unlevel.delete(path);
       this.clearUnsaved(path);
+      return false;
+    }
+    if (!draft && level && same?.sent !== undefined && !this.endedMemo.has(path) && same.base === same.sent && looked.repo.get(path) === same.sent && this.ctx.consumeRebasedSent?.(path, same.sent) === true) {
+      ports.agreed(path, null);
+      clearSent(same);
+      this.settled(path);
+      this.clearConflict(path);
+      this.unlevel.delete(path);
+      this.clearUnsaved(path);
+      this.rescan = true;
       return false;
     }
     const memo = this.endedMemo.get(path);
@@ -585,6 +642,7 @@ export class DraftInbound {
 
   private keepClosed(looked: Looked, path: string, unnamed: boolean): boolean {
     this.ctx.ports.agreed(path, null);
+    this.ctx.clearOwnBlobs?.(path);
     if (this.holds.holdClosedElsewhere(looked, path)) this.closedNow.push({ name: noteName(path), unnamed });
     this.settled(path);
     return false;
@@ -670,7 +728,7 @@ export class DraftInbound {
     if (mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
     const wrote = await this.writeText(path, mine, there.text);
     if (!wrote.ok) return false;
-    ports.agreed(path, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(wrote.text) });
+    this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(wrote.text) });
     this.settled(path);
     this.clearConflict(path);
     return wrote.changed;
@@ -760,7 +818,7 @@ export class DraftInbound {
     if (!wrote.ok) return false;
     const nextSha = gitBlobShaOfText(wrote.text);
     const holdsDraft = toLf(wrote.text) === toLf(there.text);
-    ports.agreed(path, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: nextSha } : {}) });
+    this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: nextSha } : {}) });
     if (holdsDraft) this.holds.clearEditHold(path);
     else this.holds.advanceEditHold(path, entry.sha, nextSha);
     if (!wrote.changed) this.rescan = true;
@@ -812,6 +870,7 @@ export class DraftInbound {
     ports.rebase(path, main.sha);
     if (state.data.seen) state.data.seen[path] = main.sha;
     ports.agreed(path, null);
+    this.ctx.clearOwnBlobs?.(path);
     this.endedMemo.delete(path);
     if (kind === "end-own" && discarded) this.holds.holdEnded(path, gitBlobShaOfText(wrote.text));
     this.settled(path);
@@ -855,19 +914,21 @@ export class DraftInbound {
         const base = await this.readBase(path, doc, entry, draft);
         if (!this.ctx.current()) return;
         const merged = mergeFile(path, base === null ? null : toLf(base), toLf(mine), toLf(there.text), new Budget(400));
-        const clean = entry !== undefined && gitBlobShaOfText(mine) === entry.sha && isClean({ sha: entry.sha, ...(agreedOf(entry) !== undefined ? { agreed: agreedOf(entry)! } : {}), unchanged: unchangedHere(entry) });
+        const mineSha = gitBlobShaOfText(mine);
+        const clean = this.isRemoteRoom(path, mineSha) || (entry !== undefined && mineSha === entry.sha && isClean({ sha: entry.sha, ...(agreedOf(entry) !== undefined ? { agreed: agreedOf(entry)! } : {}), unchanged: unchangedHere(entry) }));
         let chosen: string | null;
         if (clean) chosen = there.text;
         else if (merged.kind === "clean") chosen = merged.text;
         else {
-          const other = draft.by !== null && draft.by.toLowerCase() !== ports.login().toLowerCase() ? { teammate: draft.by } : ("github" as const);
+          const writer = draftWriter(draft);
+          const other = writer !== null && writer.toLowerCase() !== ports.login().toLowerCase() ? { teammate: writer } : ("github" as const);
           chosen = await ports.chooseWhatToKeep(buildReviewRequest(path, merged.review, { other, signal: this.abort.signal }));
         }
         if (chosen === null || !this.ctx.current()) return;
         const wrote = await this.writeText(path, mine, chosen, { confirmed: true, notifyOnFail: true });
         if (!wrote.ok) return;
         const holdsDraft = toLf(wrote.text) === toLf(there.text);
-        ports.agreed(path, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: gitBlobShaOfText(wrote.text) } : {}) });
+        this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: gitBlobShaOfText(wrote.text) } : {}) });
         this.clearConflict(path);
         ports.lookAgain();
       } catch {

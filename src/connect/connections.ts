@@ -68,6 +68,11 @@ export class Connections {
     if (this.off.delete(keyOf(doc))) this.keepOff();
   }
 
+  clearChosenOn(doc: DocumentRef): void {
+    const key = keyOf(doc);
+    if (this.chosen.get(key) === true) this.chosen.delete(key);
+  }
+
   clearDisconnected(repo?: string, options: { notify?: boolean } = {}): void {
     const prefix = repo !== undefined ? `${repo}\0` : null;
     const matches = (key: string): boolean => prefix === null || key.startsWith(prefix);

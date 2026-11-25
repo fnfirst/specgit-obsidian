@@ -1,7 +1,7 @@
 import { CATCH_UP, type CatchUpPreview, isViewersBranch, TRY_AGAIN } from "../shared/review-flow";
 import type { ActionAnswer, PanelAction, PanelHost, ReviewFacts, StatusNotice, StatusReviewer } from "../shared/status-panel";
 import { comparedOf, onGitHubFiles } from "../changes/vault-state";
-import { type Built, panelModelOf } from "./panel-model";
+import { type Built, panelModelFromVault, type VaultPanelBase, vaultPanelOf } from "./panel-model";
 import { runAction, type StatusFlows, type StatusPorts } from "./panel-actions";
 import type { ChangeRow, ChangesModel, ChangesPhase } from "../changes/model";
 import type { Dialogs } from "../changes/flow-deps";
@@ -89,6 +89,27 @@ export class SinceView {
 
 const CHECKED_KEY = (place: string): string => `specgit-status-checked:${place}`;
 
+function unchangedSignature(row: ChangeRow | undefined): string {
+  if (!row?.entry) return "";
+  const { entry, review } = row;
+  const pr = review?.pr;
+  return [
+    row.change.path,
+    entry.prNumber,
+    entry.prUrl,
+    entry.isDraft ? "1" : "0",
+    entry.stage,
+    entry.openComments,
+    entry.requestedReviewers.join(","),
+    pr?.state ?? "",
+    pr?.mergeableState ?? "",
+    pr?.reviewPolicy?.reviewDecision ?? "",
+    pr?.autoMergeEnabled ? "1" : "0",
+    review?.saver?.state ?? "",
+    review?.saver?.reason ?? "",
+  ].join("\0");
+}
+
 export interface StatusView {
   state: PanelState;
   actions: PanelActions;
@@ -134,6 +155,8 @@ export class StatusController {
   private behind: { path: string; blob: string; behind: boolean } | null = null;
   private previewing = "";
   private version = 0;
+  private vaultVersion = 0;
+  private vaultBuilt: { key: unknown[]; value: VaultPanelBase } | null = null;
   private built: { key: unknown[]; value: Built } | null = null;
   private lastView: StatusView | null = null;
   private units: Built["units"] = { rows: new Map(), members: new Map(), urls: new Map() };
@@ -156,7 +179,7 @@ export class StatusController {
     this.stops.push(env.model.onLooked(() => this.look()));
     this.stops.push(env.model.subscribe(() => this.modelChanged()));
     this.stops.push(env.model.onDraftMoved((prNumber, isDraft, requestedReviewers) => this.holdDraft(prNumber, isDraft, requestedReviewers)));
-    this.stops.push(env.since.subscribe(() => this.changed()));
+    this.stops.push(env.since.subscribe(() => this.changed(false)));
   }
 
   dispose(): void {
@@ -175,7 +198,8 @@ export class StatusController {
     return () => void this.listeners.delete(listener);
   };
 
-  private changed(): void {
+  private changed(vaultWide = true): void {
+    if (vaultWide) this.vaultVersion++;
     this.version++;
     this.listeners.forEach((listener) => listener());
   }
@@ -369,7 +393,7 @@ export class StatusController {
     void this.env.flows.preview(row.doc).then((answer: CatchUpPreview | null) => {
       if (this.disposed || this.previewing !== key) return;
       this.behind = { path, blob: answer?.kind === "behind" ? answer.mainBlob : "", behind: answer?.kind === "behind" };
-      this.changed();
+      this.changed(false);
     });
   }
 
@@ -401,64 +425,98 @@ export class StatusController {
   build(view: StatusView | null): Built {
     const { model } = this.env;
     this.syncRepo();
-    if (this.holds.reconcile(this.facts)) this.version++;
+    if (this.holds.reconcile(this.facts)) {
+      this.vaultVersion++;
+      this.version++;
+    }
     const state = model.state();
+    const vault = model.vault();
+    const viewer = this.env.viewer();
+    const linked = this.env.folder();
+    const offered = this.env.offered?.().length ?? 0;
     const path = view ? (view.state.note?.path ?? null) : this.env.activePath();
+    const hold = path !== null ? model.holdOf(path) : null;
+    const vaultKey: unknown[] = [state, this.facts, this.vaultVersion, vault, offered, viewer, linked, this.editing];
+    const vaultMatches =
+      this.vaultBuilt !== null &&
+      this.vaultBuilt.key.length === vaultKey.length &&
+      this.vaultBuilt.key.every((one, at) => one === vaultKey[at]) &&
+      !(path !== null && !this.vaultBuilt.value.looseByPath.has(path) && this.vaultBuilt.value.holdById.has(path) && hold !== this.vaultBuilt.value.holdById.get(path));
+    let vaultBase: VaultPanelBase;
+    if (vaultMatches) {
+      vaultBase = this.vaultBuilt!.value;
+    } else {
+      const both = new Set<string>();
+      const views = new Map<string, readonly ("github" | "difference")[]>();
+      if (vault) {
+        for (const file of vault.files.values()) {
+          const compared = comparedOf(file.state);
+          if (compared?.kind !== "both") continue;
+          if (!compared.baseUnknown && !model.row(file.path)?.entry) both.add(file.path);
+          views.set(file.path, viewsOf(compared).flatMap((one) => (one === "github" || one === "difference" ? [one] : [])));
+        }
+      }
+      vaultBase = vaultPanelOf({
+        state,
+        viewer,
+        now: this.now(),
+        facts: this.holds.apply(this.facts),
+        flight: model.flightAnswer(),
+        rooms: model.roomsNow(),
+        vaultHas: (one) => model.vaultHas(one),
+        docFor: this.env.documentFor,
+        holdOf: (one) => model.holdOf(one),
+        told: (one) => model.toldWords(one),
+        both,
+        viewsOf: (one) => views.get(one) ?? [],
+        newer: vault ? onGitHubFiles(vault) : [],
+        heldDeletes: state.heldDeletes?.count ?? 0,
+        offered,
+        isLive: (one) => this.env.isLive(one),
+        openComments: (one) => this.env.openComments(one),
+        linked,
+        editingGroup: this.editing,
+      });
+      this.vaultBuilt = { key: vaultKey, value: vaultBase };
+    }
     const status = view?.state.status ?? null;
     const behind = path !== null && this.behind?.path === path && this.behind.behind;
     const saver = path !== null ? model.saverOf(path) : null;
     const stay = view ? view.state.stay : this.env.stayOn?.() === true;
     const paused = path !== null && this.env.isPaused?.(path) === true;
-    const hold = path !== null ? model.holdOf(path) : null;
-    const key: unknown[] = [state, this.facts, this.version, view?.state ?? null, path, behind, status, saver, model.vault(), stay, paused, hold];
-    if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) return this.built.value;
-    const both = new Set<string>();
-    const views = new Map<string, readonly ("github" | "difference")[]>();
-    const vault = model.vault();
-    if (vault) {
-      for (const file of vault.files.values()) {
-        const compared = comparedOf(file.state);
-        if (compared?.kind !== "both") continue;
-        if (!compared.baseUnknown && !model.row(file.path)?.entry) both.add(file.path);
-        views.set(file.path, viewsOf(compared).flatMap((view) => (view === "github" || view === "difference" ? [view] : [])));
-      }
-    }
+    const showChanges = path !== null && this.env.since.isOpenFor(path);
+    const unchanged = path !== null && !vaultBase.loosePaths.has(path) ? model.unchangedRow(path) : undefined;
+    const activeComments = path !== null ? this.env.openComments(path) : 0;
+    const readOnly = model.readOnly();
+    const plansUrl = this.env.plansUrl();
+    const joinKey = vaultBase.joinCandidates.length === 0 ? "" : vaultBase.joinCandidates.map(({ raw }) => (this.env.isLive(raw.id) ? "1" : "0")).join("");
     const place = this.env.place();
     if (this.checked === null || this.checkedFor !== place) {
       const stored = this.env.storage.load(CHECKED_KEY(place));
       this.checked = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === "string") : [];
       this.checkedFor = place;
     }
-    const value = panelModelOf({
+    const key: unknown[] = [vaultBase, this.version, view?.state ?? null, path, behind, status, saver, stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, this.checked, this.notice, this.reviewers, readOnly, plansUrl, joinKey];
+    if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) {
+      this.lastView = view;
+      return this.built.value;
+    }
+    const value = panelModelFromVault(vaultBase, {
       state,
-      viewer: this.env.viewer(),
-      now: this.now(),
-      facts: this.holds.apply(this.facts),
-      flight: model.flightAnswer(),
-      rooms: model.roomsNow(),
-      unchanged: (one) => model.unchangedRow(one),
-      vaultHas: (one) => model.vaultHas(one),
-      docFor: this.env.documentFor,
-      plansUrl: this.env.plansUrl(),
-      holdOf: (one) => model.holdOf(one),
-      told: (one) => model.toldWords(one),
-      both,
-      viewsOf: (one) => views.get(one) ?? [],
-      newer: vault ? onGitHubFiles(vault) : [],
-      heldDeletes: state.heldDeletes?.count ?? 0,
-      offered: this.env.offered?.().length ?? 0,
+      viewer,
+      unchanged: (one) => (one === path ? unchanged : model.unchangedRow(one)),
+      plansUrl,
+      holdOf: (one) => (one === path ? hold : model.holdOf(one)),
       isLive: (one) => this.env.isLive(one),
       ...(stay ? { stay: true } : {}),
       ...(this.env.isPaused ? { isPaused: this.env.isPaused } : {}),
       openComments: (one) => this.env.openComments(one),
-      linked: this.env.folder(),
       active: path ? { path, status, behind, people: view?.state.people ?? null, ...(saver ? { saver } : {}) } : null,
-      showChanges: path !== null && this.env.since.isOpenFor(path),
+      showChanges,
       checked: this.checked,
       notice: this.notice,
-      editingGroup: this.editing,
       reviewers: this.reviewers,
-      readOnly: model.readOnly(),
+      readOnly,
       onAction: (action) => this.act(action),
       onChecked: (ids) => this.remember(ids),
     });
@@ -519,11 +577,11 @@ export class StatusController {
       },
       setReviewers: (next) => {
         this.reviewers = next(this.reviewers);
-        this.changed();
+        this.changed(false);
       },
       setNotice: (notice) => {
         this.notice = notice;
-        this.changed();
+        this.changed(false);
       },
       done: (step, id) => this.done(step, id),
       refresh: () => env.model.refresh(),
@@ -533,7 +591,7 @@ export class StatusController {
     };
     if (action.type === "submit" || action.type === "approve" || action.type === "publish") {
       this.notice = null;
-      this.changed();
+      this.changed(false);
     }
     return runAction(action, ports);
   }

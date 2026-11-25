@@ -26,6 +26,8 @@ export interface StayData {
   editsHeld?: Record<string, string>;
   endedOwn?: Record<string, { sent: string; ended: "published" | "discarded" }>;
   typed?: Record<string, { sha: string; at: number }>;
+  roomWrote?: Record<string, string[]>;
+  ownBlobs?: Record<string, string[]>;
   heldWhy?: Record<string, StayHoldReason>;
   flurryUntil?: Record<string, number>;
   deletedAt?: Record<string, number>;
@@ -101,6 +103,10 @@ function read(stored: unknown): StayData {
     typeof typedAt === "object" && typedAt !== null && !Array.isArray(typedAt) && Object.values(typedAt).every((one) => typeof one === "object" && one !== null && typeof (one as { sha?: unknown }).sha === "string" && typeof (one as { at?: unknown }).at === "number")
       ? { typed: typedAt as Record<string, { sha: string; at: number }> }
       : {};
+  const remote = record.roomWrote;
+  const roomWrote = typeof remote === "object" && remote !== null && !Array.isArray(remote) && Object.values(remote).every(isStrings) ? { roomWrote: remote as Record<string, string[]> } : {};
+  const own = record.ownBlobs;
+  const ownBlobs = typeof own === "object" && own !== null && !Array.isArray(own) && Object.values(own).every(isStrings) ? { ownBlobs: own as Record<string, string[]> } : {};
   const why = record.heldWhy;
   const heldWhy = typeof why === "object" && why !== null && !Array.isArray(why) && Object.values(why).every((one) => typeof one === "string" && (HOLD_REASONS as readonly string[]).includes(one)) ? { heldWhy: why as NonNullable<StayData["heldWhy"]> } : {};
   const flurry = record.flurryUntil;
@@ -120,7 +126,7 @@ function read(stored: unknown): StayData {
   const renamed = record.renameTold;
   const renameTold = typeof renamed === "object" && renamed !== null && !Array.isArray(renamed) && Object.values(renamed).every((at) => typeof at === "number" && Number.isFinite(at)) ? { renameTold: renamed as Record<string, number> } : {};
   const baselinePending = record.baselinePending === true ? { baselinePending: true as const } : {};
-  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, ...baselinePending, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...heldWhy, ...flurryUntil, ...deletedAt, ...offerTold, ...caseHeld, ...attachments, ...gitMark, ...renameTold };
+  return { v: 1, baseline: isStrings(record.baseline) ? record.baseline : null, ...baselinePending, seen, guessed: isStrings(record.guessed) ? record.guessed : [], committed: isStrings(record.committed) ? record.committed : [], held: isStrings(record.held) ? record.held : [], kept: isStrings(record.kept) ? record.kept : [], burst: isStrings(record.burst) ? record.burst : [], ...heldShas, ...editsHeld, ...endedOwn, ...typed, ...roomWrote, ...ownBlobs, ...heldWhy, ...flurryUntil, ...deletedAt, ...offerTold, ...caseHeld, ...attachments, ...gitMark, ...renameTold };
 }
 
 export class StayState {
@@ -161,6 +167,8 @@ export class StayState {
   private prune(): void {
     capRecord(this.data.seen, MAX_SEEN);
     capByTimestamp(this.data.typed, TYPED_KEPT, (one) => one.at);
+    capRecord(this.data.roomWrote, TYPED_KEPT);
+    capRecord(this.data.ownBlobs, TYPED_KEPT);
     capRecord(this.data.endedOwn, ENDED_OWN_KEPT);
     capByTimestamp(this.data.deletedAt, MAX_DELETED_AT, (at) => at);
     capByTimestamp(this.data.renameTold, RENAME_TOLD_KEPT, (at) => at);

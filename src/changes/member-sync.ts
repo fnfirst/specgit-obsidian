@@ -17,6 +17,7 @@ export interface MemberHost {
   readonly deps: FlowDeps;
   readonly backs: ReadBacks;
   readonly memory: SentMemory;
+  readonly stopOnBehind?: boolean;
   send(row: ChangeRow): Promise<Sent>;
 }
 
@@ -80,7 +81,7 @@ export class MemberSync {
       const transient = transientFailure(saved, COULDNT_FINISH);
       if (transient !== null) return transient;
       return behindOf(saved, COULDNT_FINISH) ?? { ok: false, message: failure(saved, COULDNT_FINISH) };
-    }, { branch: status?.reviewBranch ?? undefined, level: async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) });
+    }, { branch: status?.reviewBranch ?? undefined, ...(this.host.stopOnBehind ? { stopOnBehind: true } : {}), level: async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) });
   }
 
   async takeBranchText(row: ChangeRow): Promise<void> {

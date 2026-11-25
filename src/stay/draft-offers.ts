@@ -1,9 +1,12 @@
 import type { Looked } from "../changes/model";
 import type { NoticeHandle } from "../notices";
-import { type Draft, follows, type StayDrafts } from "./draft-state";
+import { sameLogin } from "../shared/review-flow";
+import { type Draft, draftKey, draftWriter, type StayDrafts } from "./draft-state";
 import type { StayState } from "./state";
 import type { StayPorts } from "./types";
 import { DRAFT_SAID } from "./words";
+
+const offerKey = (draft: Pick<Draft, "branch" | "blob">): string => `${draft.branch}\0${draft.blob ?? ""}`;
 
 export interface TeammateOfferContext {
   ports: Pick<StayPorts, "policy" | "login" | "aware" | "openStatus" | "notify" | "lookAgain">;
@@ -26,8 +29,10 @@ export class TeammateOffers {
   }
 
   offer(path: string, draft: Draft | null): void {
-    if (!draft || draft.blob === null || this.toldOffer.get(path) === draft.branch) return;
-    this.toldOffer.set(path, draft.branch);
+    if (!draft || draft.blob === null) return;
+    const key = offerKey(draft);
+    if (this.toldOffer.get(path) === key) return;
+    this.toldOffer.set(path, key);
     this.initialOffered.add(path);
   }
 
@@ -44,14 +49,16 @@ export class TeammateOffers {
     for (const [path, draft] of drafts.byPath) {
       if (draft.blob === null || draft.inGroup === true) continue;
       const sentTo = looked.files.get(path)?.sentTo;
-      if (!follows(draft, ports.login(), sentTo, "mine") && follows(draft, ports.login(), sentTo, "everyone")) this.initial.set(path, draft.blob);
+      const key = draftKey(draft);
+      const followedAtStart = sameLogin(draftWriter(draft), ports.login()) || (key !== null && sentTo === key);
+      if (!followedAtStart) this.initial.set(path, draft.blob);
     }
   }
 
   private remove(path: string, keepTold = false): boolean {
+    if (!keepTold) this.toldOffer.delete(path);
     if (!this.initialOffered.delete(path)) return false;
     this.initial?.delete(path);
-    if (!keepTold) this.toldOffer.delete(path);
     return true;
   }
 
