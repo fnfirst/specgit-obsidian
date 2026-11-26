@@ -11,6 +11,10 @@ import { changeKey } from "./outbound";
 import { DRAFT_SAID } from "./words";
 
 export const RENAME_HOLD_MS = 120_000;
+export const RENAME_MISS_TTL_MS = 5 * 60_000;
+
+const fileStateOf = (entry: Pick<CacheEntry, "sha" | "sent" | "sentTo">): string => `${entry.sha}\0${entry.sent ?? ""}\0${entry.sentTo ?? ""}`;
+const targetKeyOf = (to: string, draft: Pick<Draft, "branch">): string => `${to}\0${draft.branch}`;
 
 const isPublishedBytes = (entry: Pick<CacheEntry, "base">, blob: string | null): boolean => blob !== null && blob !== EMPTY_BLOB && entry.base === blob;
 
@@ -69,6 +73,7 @@ export interface RenameHost {
 export class DraftRenames {
   private readonly since = new Map<string, number>();
   private readonly knownRenames = new Map<string, RenamedTarget>();
+  private readonly noRenames = new Map<string, { state: string; targets: Set<string>; at: number }>();
 
   constructor(
     private readonly ctx: DraftContext,
@@ -76,6 +81,7 @@ export class DraftRenames {
   ) {}
 
   dropSettled(looked: Looked, byPath: ReadonlyMap<string, Draft>): void {
+    const now = this.ctx.ports.now();
     for (const path of [...this.since.keys()]) if (!byPath.has(path) || looked.files.has(path)) this.since.delete(path);
     for (const [path, moved] of [...this.knownRenames]) {
       if (!looked.files.has(path) || byPath.has(path)) {
@@ -84,6 +90,12 @@ export class DraftRenames {
       }
       const pending = [...byPath.keys()].some((to) => !looked.files.has(to) && this.ctx.ports.documentFor(to)?.path === moved.path);
       if (!pending) this.knownRenames.delete(path);
+    }
+    for (const [path, missed] of [...this.noRenames]) {
+      const entry = looked.files.get(path);
+      if (!entry || byPath.has(path) || fileStateOf(entry) !== missed.state || now - missed.at >= RENAME_MISS_TTL_MS) {
+        this.noRenames.delete(path);
+      }
     }
   }
 
@@ -101,7 +113,10 @@ export class DraftRenames {
 
   private async probeRenamedTo(
     from: string,
+    entry: Pick<CacheEntry, "sha" | "sent" | "sentTo">,
     fromDoc: DocumentRef,
+    targetKey: string,
+    allTargets: ReadonlyArray<string>,
     asked: Map<string, RenamedTarget | null | "unknown">,
   ): Promise<RenamedTarget | null | "wait"> {
     const known = this.knownRenames.get(from);
@@ -109,6 +124,12 @@ export class DraftRenames {
     if (asked.has(from)) {
       const seen = asked.get(from);
       return seen === "unknown" ? "wait" : (seen ?? null);
+    }
+    const now = this.ctx.ports.now();
+    const state = fileStateOf(entry);
+    const missed = this.noRenames.get(from);
+    if (missed !== undefined && missed.state === state && now - missed.at < RENAME_MISS_TTL_MS && missed.targets.has(targetKey)) {
+      return null;
     }
     if (!this.ctx.ports.renamedTo) return null;
     if (!this.host.ready(from, false, true) || this.host.reads() >= READS_PER_PASS) {
@@ -123,7 +144,12 @@ export class DraftRenames {
       this.host.wait(from);
       return "wait";
     }
-    if (moved !== null) this.knownRenames.set(from, moved);
+    if (moved !== null) {
+      this.noRenames.delete(from);
+      this.knownRenames.set(from, moved);
+    } else {
+      this.noRenames.set(from, { state, targets: new Set(allTargets), at: now });
+    }
     return moved;
   }
 
@@ -131,20 +157,22 @@ export class DraftRenames {
     looked: Looked,
     byPath: ReadonlyMap<string, Draft>,
     files: ReadonlyArray<[string, CacheEntry]>,
+    to: string,
     toDoc: DocumentRef,
     draft: Draft,
+    allTargets: ReadonlyArray<string>,
     eligible: (pair: [string, CacheEntry]) => boolean,
     asked: Map<string, RenamedTarget | null | "unknown">,
   ): Promise<[string, CacheEntry] | null> {
     const { ports } = this.ctx;
-    if (!ports.renamedTo) return null;
+    if (!ports.renamedTo || !looked.drafts?.level || !follows(draft, ports.login(), undefined, ports.policy())) return null;
+    const targetKey = targetKeyOf(to, draft);
     for (const [from, entry] of files) {
       if (!eligible([from, entry]) || byPath.has(from)) continue;
       if (entry.sent === undefined && !isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) continue;
-      if (!follows(draft, ports.login(), undefined, ports.policy())) continue;
       const fromDoc = ports.documentFor(from);
       if (!fromDoc || fromDoc.repo !== toDoc.repo) continue;
-      const moved = await this.probeRenamedTo(from, fromDoc, asked);
+      const moved = await this.probeRenamedTo(from, entry, fromDoc, targetKey, allTargets, asked);
       if (!this.ctx.current()) return null;
       if (moved === "wait") continue;
       if (moved !== null && moved.path === toDoc.path) return [from, entry];
@@ -169,6 +197,11 @@ export class DraftRenames {
     const { ports, activity, state } = this.ctx;
     const out = { changed: 0, paths: new Set<string>(), heldFrom: new Set<string>() };
     let byBytes: Map<string, Array<[string, CacheEntry]>> | null = null;
+    let allTargets: ReadonlyArray<string> | null = null;
+    const unmatchedTargets = (): ReadonlyArray<string> =>
+      (allTargets ??= [...byPath]
+        .filter(([path]) => !looked.files.has(path) && !looked.repo.has(path) && !looked.deleted.some((gone) => gone.path === path) && !ports.inGroup(path))
+        .map(([path, one]) => targetKeyOf(path, one)));
     const askedRenames = new Map<string, RenamedTarget | null | "unknown">();
     for (const [to, draft] of byPath) {
       if (!this.ctx.current()) break;
@@ -203,7 +236,7 @@ export class DraftRenames {
       if (!found) {
         const toDoc = ports.documentFor(to);
         if (toDoc) {
-          const resolved = await this.findByRenamedTo(looked, byPath, files, toDoc, draft, eligible, askedRenames);
+          const resolved = await this.findByRenamedTo(looked, byPath, files, to, toDoc, draft, unmatchedTargets(), eligible, askedRenames);
           if (!this.ctx.current()) break;
           if (resolved !== null) found = resolved;
         }

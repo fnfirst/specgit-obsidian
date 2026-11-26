@@ -3,7 +3,7 @@ import { agreedOf, clearSent, type CacheEntry } from "../changes/cache";
 import type { Looked } from "../changes/model";
 import { unchangedHere } from "../changes/unchanged-here";
 import { Budget } from "../disk/diff";
-import { eolOf, toLf, withEol } from "../disk/line-endings";
+import { hasBom, stripBom, toLf, withBomAndEol } from "../disk/line-endings";
 import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { CasePathIndex, type DocumentRef, noteName } from "../mapping";
 import type { Activity } from "./activity";
@@ -325,7 +325,7 @@ export class DraftInbound {
       if (entry.sent === undefined || agreedOf(entry) !== undefined || !this.ctx.current()) continue;
       const text = await this.ctx.ports.vault.read(path);
       if (text === null || gitBlobShaOfText(text) !== entry.sha) continue;
-      if (gitBlobShaOfText(toLf(text)) === entry.sent) this.ctx.ports.agreedAs(path, entry.sha);
+      if (gitBlobShaOfText(toLf(text)) === entry.sent || (hasBom(text) && gitBlobShaOfText(stripBom(toLf(text))) === entry.sent)) this.ctx.ports.agreedAs(path, entry.sha);
     }
   }
 
@@ -495,7 +495,7 @@ export class DraftInbound {
     if (this.crlfMiss.get(path) === pair) return false;
     const text = await this.ctx.ports.vault.read(path);
     if (!this.ctx.current() || text === null || gitBlobShaOfText(text) !== same.sha) return false;
-    if (gitBlobShaOfText(toLf(text)) === draftBlob) return true;
+    if (gitBlobShaOfText(toLf(text)) === draftBlob || (hasBom(text) && gitBlobShaOfText(stripBom(toLf(text))) === draftBlob)) return true;
     this.crlfMiss.set(path, pair);
     return false;
   }
@@ -713,8 +713,8 @@ export class DraftInbound {
   ): Promise<{ ok: true; text: string; changed: boolean } | { ok: false }> {
     const { ports, activity } = this.ctx;
     const targetLf = toLf(target);
-    if (toLf(mine) === targetLf) return { ok: true, text: mine, changed: false };
-    const text = withEol(targetLf, eolOf(mine));
+    const text = withBomAndEol(targetLf, mine);
+    if (toLf(mine) === targetLf || text === mine) return { ok: true, text: mine, changed: false };
     activity.ownWrite(path);
     const written = await ports.vault.process(path, (current) => (current === mine ? text : null), options.confirmed ? { confirmed: true } : undefined);
     if (written !== "written") {
@@ -814,7 +814,7 @@ export class DraftInbound {
       this.wait(path);
       return false;
     }
-    const merged = mergeFile(path, toLf(base), toLf(mine), toLf(there.text), new Budget(400));
+    const merged = mergeFile(path, stripBom(toLf(base)), stripBom(toLf(mine)), stripBom(toLf(there.text)), new Budget(400));
     if (merged.kind === "conflict") {
       this.tellConflict(path, there.sha);
       this.settled(path);
@@ -828,7 +828,7 @@ export class DraftInbound {
     const wrote = await this.writeText(path, mine, merged.text);
     if (!wrote.ok) return false;
     const nextSha = gitBlobShaOfText(wrote.text);
-    const holdsDraft = toLf(wrote.text) === toLf(there.text);
+    const holdsDraft = stripBom(toLf(wrote.text)) === stripBom(toLf(there.text));
     this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: nextSha } : {}) });
     if (holdsDraft) this.holds.clearEditHold(path);
     else this.holds.advanceEditHold(path, entry.sha, nextSha);
@@ -868,7 +868,7 @@ export class DraftInbound {
     if (kind === "end-own") {
       const sentSha = this.endedMemo.get(path)?.sent ?? entry.sent!;
       const base = sentSha === main.sha ? main.text : (this.reads++, await ports.blobText(doc, sentSha));
-      const merged = mergeFile(path, base === null ? null : toLf(base), toLf(mine), toLf(main.text), new Budget(400));
+      const merged = mergeFile(path, base === null ? null : stripBom(toLf(base)), stripBom(toLf(mine)), stripBom(toLf(main.text)), new Budget(400));
       if (merged.kind === "conflict") {
         if (!choose) {
           this.tellConflict(path, `ended|${main.sha}`);
@@ -945,7 +945,7 @@ export class DraftInbound {
           return;
         }
         const entry = looked.files.get(path);
-        if (toLf(mine) === toLf(there.text)) {
+        if (stripBom(toLf(mine)) === stripBom(toLf(there.text))) {
           this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(mine) });
           this.clearConflict(path);
           this.ctx.onResolved?.(path);
@@ -955,7 +955,7 @@ export class DraftInbound {
         }
         const base = await this.readBase(path, doc, entry, draft);
         if (!this.ctx.current()) return;
-        const merged = mergeFile(path, base === null ? null : toLf(base), toLf(mine), toLf(there.text), new Budget(400));
+        const merged = mergeFile(path, base === null ? null : stripBom(toLf(base)), stripBom(toLf(mine)), stripBom(toLf(there.text)), new Budget(400));
         const mineSha = gitBlobShaOfText(mine);
         const clean = this.isRemoteRoom(path, mineSha) || (entry !== undefined && mineSha === entry.sha && isClean({ sha: entry.sha, ...(agreedOf(entry) !== undefined ? { agreed: agreedOf(entry)! } : {}), unchanged: unchangedHere(entry) }));
         let chosen: string | null;
@@ -969,7 +969,7 @@ export class DraftInbound {
         if (chosen === null || !this.ctx.current()) return;
         const wrote = await this.writeText(path, mine, chosen, { confirmed: true, notifyOnFail: true });
         if (!wrote.ok) return;
-        const holdsDraft = toLf(wrote.text) === toLf(there.text);
+        const holdsDraft = stripBom(toLf(wrote.text)) === stripBom(toLf(there.text));
         this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: gitBlobShaOfText(wrote.text) } : {}) });
         this.clearConflict(path);
         this.ctx.onResolved?.(path);

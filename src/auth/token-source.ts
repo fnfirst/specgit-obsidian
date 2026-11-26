@@ -7,6 +7,7 @@ import { GIT_PROVIDER, NOTE_BRANCH, normalizeServer, PLUGIN_OUTDATED_CODE, VERSI
 import { DELETED_WORDS, DOCUMENT_DELETED_CODE } from "../deleted-words";
 import { AuthError, NETWORK_MESSAGE, ROOM_ENDED_MESSAGE, SIGNED_OUT_MESSAGE } from "./errors";
 import { jsonObject, type Transport } from "./transport";
+import { GITHUB_UNAVAILABLE_CODE } from "../shared/review-flow";
 
 export interface TokenSourceOptions {
   server: string;
@@ -116,7 +117,10 @@ export class SpecgitTokenSource implements TokenSource {
     const parsed = jsonObject(response.text);
     const error = typeof parsed?.error === "object" && parsed.error !== null ? (parsed.error as Record<string, unknown>) : null;
     const reason = typeof error?.code === "string" ? error.code : typeof parsed?.code === "string" ? parsed.code : null;
-    const retryAfterMs = response.status === 429 || reason === "rate_limited" ? retryAfterFromResponse(response.headers, parsed) : undefined;
+    const retryAfterMs =
+      response.status === 429 || reason === "rate_limited" || response.status === 503 || reason === GITHUB_UNAVAILABLE_CODE
+        ? retryAfterFromResponse(response.headers, parsed)
+        : undefined;
     return {
       status: response.status,
       body: parsed,

@@ -56,3 +56,4 @@ export * from "./attachments";
 export * from "./confirm-phrase";
 export * from "./vault-upload";
 export * from "./dog-names";
+export * from "./github-status";

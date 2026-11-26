@@ -37,6 +37,11 @@
   min-height: 44px;
   padding-inline: 4px;
 }
+.sp-coarse .sp-github-status-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
 .sp-coarse .sp-more {
   opacity: 1;
   color: var(--sp-muted);

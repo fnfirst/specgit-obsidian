@@ -4,15 +4,20 @@ import { type ApiAnswer, docParams, splitRepo, type SpecgitApi } from "../api";
 import type { SpecgitBinaryFetch } from "../auth/binary-fetch";
 import { GIT_PROVIDER, NOTE_BRANCH } from "../auth/config";
 import { NETWORK_MESSAGE } from "../auth/errors";
-import { TRY_AGAIN } from "../shared/review-flow";
+import { GITHUB_UNAVAILABLE_CODE, TRY_AGAIN } from "../shared/review-flow";
 import { DOCUMENT_DELETED_CODE } from "../deleted-words";
 import type { DocumentRef } from "../mapping";
 
 export type StepResult<Body = Record<string, unknown>> =
   | { ok: true; body: Body }
-  | { ok: false; status: number; code: string | null; message: string; body: Record<string, unknown> | null; retryAfterMs?: number };
+  | { ok: false; status: number; code: string | null; message: string; body: Record<string, unknown> | null; retryAfterMs?: number; fastFail?: boolean };
 
-export type DetailsResult = Map<number, PrDetail> | null | "failed" | { limited: true; retryAfterMs?: number };
+export type DetailsResult =
+  | Map<number, PrDetail>
+  | null
+  | "failed"
+  | { limited: true; retryAfterMs?: number }
+  | { unavailable: true; retryAfterMs?: number; fastFail?: boolean };
 
 export interface ReviewStatus {
   reviewBranch: string | null;
@@ -63,7 +68,12 @@ export const reviewIsOpen = (status: ReviewStatus): boolean => {
   return state !== "merged" && state !== "closed" && (status.reviewBranch !== null || status.pr !== null);
 };
 
-export type GroupsRead = ({ kind: "groups";  overviews: Record<string, GroupOverview>; base: string; locked: boolean } | { kind: "off" } | { kind: "unknown" }) & {
+export type GroupsRead = (
+  | { kind: "groups"; overviews: Record<string, GroupOverview>; base: string; locked: boolean }
+  | { kind: "off" }
+  | { kind: "unknown" }
+  | { kind: "rate_limited"; retryAfterMs?: number }
+) & {
   paths?: InFlightMap;
   stale?: true;
   asOf?: number;
@@ -71,6 +81,8 @@ export type GroupsRead = ({ kind: "groups";  overviews: Record<string, GroupOver
   canPush?: boolean;
   publishQuota?: PublishQuota;
 };
+
+type GroupsSnapshot = Extract<GroupsRead, { kind: "groups" | "off" }>;
 
 export type PresenceRead = { kind: "docs"; docs: ReadonlyArray<{ path: string; people: readonly string[]; agents: number }> } | { kind: "off" } | { kind: "unknown" };
 
@@ -100,6 +112,7 @@ const failed = (answer: ApiAnswer, fallback: string): StepResult<never> => ({
   message: answer.message ?? fallback,
   body: answer.body,
   ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }),
+  ...(answer.fastFail ? { fastFail: true } : {}),
 });
 
 export interface Reviewer {
@@ -109,6 +122,7 @@ export interface Reviewer {
 
 export class ReviewApi {
   readonly canUploadBinary: boolean;
+  private readonly groupsCache = new Map<string, { etag: string; snapshot: GroupsSnapshot }>();
 
   constructor(
     private readonly api: SpecgitApi,
@@ -129,6 +143,13 @@ export class ReviewApi {
       const answer = await this.api.call("POST", "/api/docs/pr/details", { body: { provider: GIT_PROVIDER, owner: named.owner, repo: named.repo, numbers } });
       if (answer.status === 404 || answer.status === 405 || answer.status === 501) return null;
       if (answer.status === 429 || answer.code === "rate_limited") return { limited: true, ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }) };
+      if (answer.status === 503 || answer.code === GITHUB_UNAVAILABLE_CODE || answer.fastFail) {
+        return {
+          unavailable: true,
+          ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }),
+          ...(answer.fastFail ? { fastFail: true } : {}),
+        };
+      }
       const prs = answer.status === 200 ? answer.body?.prs : undefined;
       if (!Array.isArray(prs)) return "failed";
       return new Map(prs.flatMap((one: unknown) => (typeof one === "object" && one !== null && typeof (one as PrInfo).number === "number" ? [[(one as PrInfo).number, parseDetail(one as PrInfo)] as const] : [])));
@@ -155,8 +176,21 @@ export class ReviewApi {
   async groups(repo: string): Promise<GroupsRead> {
     const named = splitRepo(repo);
     if (!named) return { kind: "unknown" };
+    const branch = NOTE_BRANCH;
+    const cacheKey = `${named.owner}/${named.repo}\0${branch}`;
+    const cached = this.groupsCache.get(cacheKey);
     try {
-      const answer = await this.api.call("GET", `/api/repos/${GIT_PROVIDER}/${named.owner}/${named.repo}/in-flight`, { query: { branch: NOTE_BRANCH } });
+      const answer = await this.api.call("GET", `/api/repos/${GIT_PROVIDER}/${named.owner}/${named.repo}/in-flight`, {
+        query: { branch },
+        ...(cached ? { etag: cached.etag } : {}),
+      });
+      if (answer.status === 429 || answer.code === "rate_limited") {
+        return { kind: "rate_limited", ...(answer.retryAfterMs === undefined ? {} : { retryAfterMs: answer.retryAfterMs }) };
+      }
+      if ((answer.notModified === true || answer.status === 304) && cached) {
+        if (answer.etag && answer.etag !== cached.etag) this.groupsCache.set(cacheKey, { etag: answer.etag, snapshot: cached.snapshot });
+        return cached.snapshot;
+      }
       if (answer.status !== 200 || !answer.body) return { kind: "unknown" };
       const groups = answer.body.groups;
       const found = answer.body.paths;
@@ -170,11 +204,28 @@ export class ReviewApi {
       };
       const age = answer.body.ageMs;
       const asOf = typeof age === "number" && Number.isFinite(age) && age >= 0 ? { asOf: Date.now() - age } : {};
-      const rest = { ...paths, ...saves, ...known, ...asOf, ...(answer.body.stale === true ? { stale: true as const } : {}) };
-      if (groups === undefined) return { kind: "off", ...rest };
-      if (typeof groups !== "object" || groups === null) return { kind: "unknown" };
-      const overviews = Object.fromEntries(Object.entries(groups).filter(([, one]) => isOverview(one))) as Record<string, GroupOverview>;
-      return { kind: "groups", overviews, base: typeof answer.body.base === "string" ? answer.body.base : NOTE_BRANCH, locked: answer.body.groupsLocked === true, ...rest };
+      const unscanned = typeof answer.body.unscanned === "number" && Number.isFinite(answer.body.unscanned) && answer.body.unscanned > 0 ? answer.body.unscanned : 0;
+      const stale = answer.body.stale === true || unscanned > 0;
+      const rest = { ...paths, ...saves, ...known, ...asOf, ...(stale ? { stale: true as const } : {}) };
+      let snapshot: GroupsSnapshot;
+      if (groups === undefined) {
+        snapshot = { kind: "off", ...rest };
+      } else {
+        if (typeof groups !== "object" || groups === null) return { kind: "unknown" };
+        const overviews = Object.fromEntries(Object.entries(groups).filter(([, one]) => isOverview(one))) as Record<string, GroupOverview>;
+        snapshot = { kind: "groups", overviews, base: typeof answer.body.base === "string" ? answer.body.base : NOTE_BRANCH, locked: answer.body.groupsLocked === true, ...rest };
+      }
+      if (answer.etag) {
+        this.groupsCache.delete(cacheKey);
+        this.groupsCache.set(cacheKey, { etag: answer.etag, snapshot });
+        if (this.groupsCache.size > 32) {
+          const oldest = this.groupsCache.keys().next().value;
+          if (oldest !== undefined) this.groupsCache.delete(oldest);
+        }
+      } else {
+        this.groupsCache.delete(cacheKey);
+      }
+      return snapshot;
     } catch {
       return { kind: "unknown" };
     }

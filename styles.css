@@ -3133,6 +3133,41 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-offline {
   background: color-mix(in srgb, var(--sp-warning) 14%, var(--sp-surface, var(--sp-bg)));
 }
+.sp-theme-obsidian .sp-github-status {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 0.9em;
+  line-height: 1.35;
+}
+.sp-theme-obsidian .sp-github-status-info {
+  background: var(--sp-bg-raised);
+  color: var(--sp-muted);
+}
+.sp-theme-obsidian .sp-github-status-warning {
+  background: color-mix(in srgb, var(--sp-warning) 14%, var(--sp-surface, var(--sp-bg)));
+  box-shadow: inset 2px 0 0 var(--sp-warning);
+  color: var(--sp-fg);
+}
+.sp-theme-obsidian .sp-github-status-error {
+  background: color-mix(in srgb, var(--sp-danger) 14%, var(--sp-surface, var(--sp-bg)));
+  box-shadow: inset 2px 0 0 var(--sp-danger);
+  color: var(--sp-fg);
+}
+.sp-theme-obsidian .sp-github-status-text {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.sp-theme-obsidian .sp-github-status-link {
+  flex: none;
+  color: var(--sp-muted);
+  text-decoration: underline;
+  white-space: nowrap;
+}
+.sp-theme-obsidian .sp-github-status-link:hover {
+  color: var(--sp-fg);
+}
 .sp-theme-obsidian .sp-notice {
   background: var(--sp-bg-raised);
 }
@@ -3196,6 +3231,9 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   }
 }
 @container sp (max-width: 279px) {
+  .sp-theme-obsidian .sp-github-status {
+    padding-inline: 8px;
+  }
   .sp-theme-obsidian .sp-list {
     padding-inline: 8px;
   }
@@ -3259,6 +3297,11 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 .sp-theme-obsidian .sp-coarse .sp-link {
   min-height: 44px;
   padding-inline: 4px;
+}
+.sp-theme-obsidian .sp-coarse .sp-github-status-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 .sp-theme-obsidian .sp-coarse .sp-more {
   opacity: 1;
@@ -3403,4 +3446,7 @@ button.specgit-button.is-warning:hover:not(:disabled) {
 }
 .sp-theme-obsidian .sp-footer {
   background: var(--background-secondary);
+}
+.sp-theme-obsidian .sp-github-status-info {
+  background: color-mix(in srgb, var(--sp-muted) 10%, transparent);
 }

@@ -1,4 +1,5 @@
 import type { BranchFile } from "../auth/git-copy";
+import { stripBom, toLf, withBomAndEol } from "../disk/line-endings";
 import { reviewIsOpen, type ReviewStatus } from "../review/review-api";
 import { isGroupBranch } from "../shared/review-flow";
 import { draftWriter, follows } from "../stay/draft-state";
@@ -89,9 +90,20 @@ export class AutoCommitFlows {
       },
     };
     const memory = this.host.memory.writingWith(async (path, text, expected) => {
-      const written = (await hooks.during([path], () => this.host.deps.vault.process(path, (current) => (current === expected ? text : null)), (result) => (result === "written" ? { [path]: gitBlobShaOfText(text) } : null))) === "written";
+      let finalText = text;
+      const written =
+        (await hooks.during(
+          [path],
+          () =>
+            this.host.deps.vault.process(path, (current) => {
+              if (current !== expected && stripBom(current) !== expected) return null;
+              finalText = withBomAndEol(toLf(text), current);
+              return finalText;
+            }),
+          (result) => (result === "written" ? { [path]: gitBlobShaOfText(finalText) } : null),
+        )) === "written";
       if (!written) hooks.notWritten(path);
-      return written;
+      return written ? finalText : false;
     });
     return { deps, memory, conflicted: () => conflicted };
   }

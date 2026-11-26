@@ -19,6 +19,7 @@ import { showNoticeWithAction } from "../notices";
 import type { PanelTabs } from "../panel/panel";
 import { nativeHost } from "../status/host";
 import { SinceView, StatusController } from "../status/controller";
+import type { GithubStatusReader } from "../status/github-status";
 import { StatusPanelTab } from "../status/status-panel-tab";
 import type { BroughtDraft } from "./bring-in";
 import { chooseWhatToKeep, showChanges } from "../review/modals";
@@ -91,9 +92,11 @@ export interface ChangesSetup {
   bringInNewer?: () => Promise<unknown>;
   bringInDraft?: (path: string) => Promise<BroughtDraft>;
   ownLinks?: OwnLinks;
+  githubStatus?: GithubStatusReader;
 }
 
 const LOOK_AFTER_MS = 1_500;
+export const RESUME_FLOOR_MS = 30_000;
 
 const base64Of = (buffer: ArrayBuffer): string => {
   let binary = "";
@@ -402,6 +405,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     touch: Platform.isMobile,
     since,
     plansUrl: () => `${deps.server().replace(/\/+$/, "")}${GROUP_PRO_ONLY.upgradePath}`,
+    ...(deps.githubStatus ? { githubStatus: deps.githubStatus } : {}),
   });
   plugin.register(() => status.dispose());
 
@@ -467,12 +471,17 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   const watcher = new Watch({ signals, moved: () => placed().mirror.moved(), live: () => deps.live?.() === true, look: lookSoon, stay: () => deps.stayOn?.() === true });
   const unquiet = (): void => watcher.unquiet();
   plugin.register(model.onLooked((looked) => watcher.looked(watchSignature(looked))));
+  let lastResumedAt = Number.NEGATIVE_INFINITY;
   const resumed = (): void => {
     if (appHidden()) return;
     unquiet();
     lookSoon();
+    const now = Date.now();
+    if (now - lastResumedAt < RESUME_FLOOR_MS) return;
+    lastResumedAt = now;
     void model.refreshPresence();
-    status.reviewsChanged();
+    const currentState = model.state();
+    if (currentState.phase !== "rate-limited" || (currentState.rateLimitedUntil ?? 0) <= now) status.reviewsChanged();
   };
   watchWindows(plugin, (win, on) => {
     on(win.document, "visibilitychange", () => {

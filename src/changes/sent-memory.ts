@@ -1,4 +1,4 @@
-import { eolOf, toLf, withEol } from "../disk/line-endings";
+import { stripBom, toLf, withBomAndEol } from "../disk/line-endings";
 import { docKey, type DocumentRef } from "../mapping";
 import { reviewIsOpen, type ReviewApi } from "../review/review-api";
 import type { PrInfo } from "../shared/review-flow";
@@ -125,12 +125,12 @@ function returnedBy(answer: Record<string, unknown> | null | undefined): string 
 export class SentMemory {
   constructor(
     private readonly host: SentMemoryHost,
-    private readonly write: (path: string, text: string, expected: string) => Promise<boolean> = (path, text, expected) => host.deps.writeText(path, text, expected),
+    private readonly write: (path: string, text: string, expected: string) => Promise<boolean | string> = (path, text, expected) => host.deps.writeText(path, text, expected),
     private readonly sentText: Map<string, SentRecord> = new Map(),
     private readonly acrossReviews = false,
   ) {}
 
-  writingWith(write: (path: string, text: string, expected: string) => Promise<boolean>): SentMemory {
+  writingWith(write: (path: string, text: string, expected: string) => Promise<boolean | string>): SentMemory {
     return new SentMemory(this.host, write, this.sentText, true);
   }
 
@@ -154,7 +154,7 @@ export class SentMemory {
     const agreements = new Map<string, { agreed?: string; commit?: string }>();
     for (const [path, one] of held ?? []) {
       const text = texts.get(path);
-      const holdsIt = text !== undefined && (one.same === true || toLf(one.held) === toLf(text));
+      const holdsIt = text !== undefined && (one.same === true || stripBom(toLf(one.held)) === stripBom(toLf(text)));
       agreements.set(path, { ...(holdsIt ? { agreed: gitBlobShaOfText(one.held) } : {}), ...(one.commit === undefined ? {} : { commit: one.commit }) });
     }
     this.host.model.learnSentMany((await blobShasOf(sent)).map(([path, sha]) => [path, sha, review(path), agreements.get(path)] as const));
@@ -271,7 +271,7 @@ export class SentMemory {
   async accepted(path: string, text: string, body: string, base: string | null = null, answer?: Record<string, unknown> | null): Promise<boolean> {
     const held = heldBy(answer);
     const returned = returnedBy(answer);
-    const merged = returned !== null && toLf(returned) !== toLf(body) ? withEol(toLf(returned), eolOf(text)) : body;
+    const merged = returned !== null && toLf(returned) !== toLf(body) ? withBomAndEol(toLf(returned), text) : body;
     const remembered = held !== null ? ("text" in held ? held.text : null) : (returned ?? body);
     const commit = typeof answer?.commitSha === "string" && answer.commitSha !== "" ? answer.commitSha : undefined;
     const to = reviewKey(answer?.pr as { number?: unknown; group?: unknown } | null | undefined) ?? this.host.model.reviewOf(path);
@@ -293,11 +293,14 @@ export class SentMemory {
   }
 
   async writeAndRemember(path: string, mine: string, merged: string, remembered: string | null, base: string | null = null, to?: ReviewKey | null, commit?: string, same = false): Promise<boolean> {
+    let held = mine;
     if (toLf(merged) !== toLf(mine)) {
-      if (!(await this.write(path, merged, mine))) return false;
-      await this.host.deps.bringFor?.(path, merged).catch(() => undefined);
+      const wrote = await this.write(path, merged, mine);
+      if (wrote === false) return false;
+      held = typeof wrote === "string" ? wrote : merged;
+      await this.host.deps.bringFor?.(path, held).catch(() => undefined);
     }
-    if (remembered !== null) await this.remember(path, remembered, to, toLf(merged) !== toLf(mine) ? merged : mine, commit, same);
+    if (remembered !== null) await this.remember(path, remembered, to, held, commit, same);
     if (base !== null) this.host.model.rebased(path, base);
     return true;
   }

@@ -1,6 +1,6 @@
-import type { StatusChipKey, StatusGroupMenuItem, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning } from "../review-flow";
+import type { GithubStatusSnapshot, StatusChipKey, StatusGroupMenuItem, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning } from "../review-flow";
 
-export type { StatusChipKey, StatusGroupMenuItem, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning };
+export type { GithubStatusSnapshot, StatusChipKey, StatusGroupMenuItem, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning };
 
 export type Lane = "approve" | "publish" | "drafts" | "others" | "none";
 
@@ -201,6 +201,7 @@ export interface StatusPanelModel {
   checked: readonly string[];
   reviewers?: readonly StatusReviewer[];
   notice?: StatusNotice | null;
+  githubStatus?: GithubStatusSnapshot | null;
   start?: PanelStart;
   onChecked?: (ids: readonly string[]) => void;
   onAction: (action: PanelAction) => void | Promise<ActionAnswer>;
@@ -222,4 +223,5 @@ export interface PanelHost {
   touch?: boolean;
   openMenu?: (items: readonly PanelMenuItem[], anchor: HTMLElement) => void;
   confirm?: (question: ConfirmQuestion) => Promise<string>;
+  openUrl?: (url: string) => void;
 }

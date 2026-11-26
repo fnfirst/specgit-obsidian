@@ -1,7 +1,9 @@
 import { headerOf } from "../auth/transport";
+import { GITHUB_FAST_FAIL_HEADER } from "../shared/review-flow";
 
 export const MIN_RETRY_AFTER_MS = 1_000;
 export const MAX_RETRY_AFTER_MS = 15 * 60_000;
+export const FAST_FAIL_HEADER = GITHUB_FAST_FAIL_HEADER;
 
 const EPOCH_SECONDS_FLOOR = 1_000_000_000;
 const IMF_FIXDATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
@@ -82,4 +84,12 @@ export function retryAfterFromResponse(
 export function retryAfterFromError(error: unknown, maxMs: number = MAX_RETRY_AFTER_MS): number | undefined {
   const ms = typeof error === "object" && error !== null ? (error as { retryAfterMs?: unknown }).retryAfterMs : undefined;
   return typeof ms === "number" ? clampMs(ms, maxMs) : undefined;
+}
+
+export function isFastFailResponse(
+  headers: Record<string, string> | undefined,
+  body: Record<string, unknown> | null,
+): boolean {
+  if (headers && headerOf({ headers }, FAST_FAIL_HEADER)?.trim() === "1") return true;
+  return body?.fastFail === true;
 }

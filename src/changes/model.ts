@@ -52,8 +52,24 @@ interface Lookups {
   groupByPath: Map<string, ChangeRow>;
 }
 
+interface StatusRecord {
+  key: string;
+  at: number;
+  review: ReviewStatus | null;
+  light?: boolean;
+  withoutSaver?: boolean;
+}
+
+interface VerifyTarget {
+  change: LocalChange;
+  known: StatusRecord;
+  pr: PrInfo;
+  fallback: ReviewStatus | null;
+  fromStale: boolean;
+}
+
 function flightOf(groups: GroupsRead): { paths: NonNullable<GroupsRead["paths"]>; stale: boolean; overviews: ReadonlyMap<string, GroupOverview>; saves?: SavesTo; asOf?: number } | null {
-  return groups.kind !== "unknown" && groups.paths ? { paths: groups.paths, stale: groups.stale === true, overviews: new Map(groups.kind === "groups" ? Object.entries(groups.overviews) : []), ...(groups.saves ? { saves: groups.saves } : {}), ...(groups.asOf === undefined ? {} : { asOf: groups.asOf }) } : null;
+  return groups.kind !== "unknown" && groups.kind !== "rate_limited" && groups.paths ? { paths: groups.paths, stale: groups.stale === true, overviews: new Map(groups.kind === "groups" ? Object.entries(groups.overviews) : []), ...(groups.saves ? { saves: groups.saves } : {}), ...(groups.asOf === undefined ? {} : { asOf: groups.asOf }) } : null;
 }
 
 const nameOf =(path: string) => path.split("/").pop() ?? path;
@@ -129,7 +145,7 @@ export class ChangesModel {
   private readonly notBase = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private readonly overlay = new Map<string, { sha: string | null; before: string | null;  sent: string | null }>();
-  private readonly statuses = new Map<string, { key: string; at: number; review: ReviewStatus | null; light?: boolean; withoutSaver?: boolean }>();
+  private readonly statuses = new Map<string, StatusRecord>();
   private pending: PendingChange[] = [];
   private denied = false;
   catchUpOff(repo: string, hasReview: boolean): string | null {
@@ -153,6 +169,8 @@ export class ChangesModel {
   private disposed = false;
   private failedLooks = 0;
   private rateLimitedLooks = 0;
+  private groupsLimitedUntil = 0;
+  private detailsLimitedUntil = 0;
   private refreshing: Promise<void> | null = null;
   private again: { scheduled: boolean } | null = null;
   private readonly lookListeners = new Set<(looked: Looked | null) => void>();
@@ -302,12 +320,44 @@ export class ChangesModel {
     }, wait);
   }
 
+  private enterRateLimit(retryAfterMs?: number | null, patch: Partial<ChangesState> = {}, bucket?: "groups" | "details"): number {
+    const fallback = DEFAULT_RATE_LIMIT_MS[Math.min(this.rateLimitedLooks, DEFAULT_RATE_LIMIT_MS.length - 1)] ?? 60_000;
+    const wait = retryAfterMs != null ? Math.min(Math.max(retryAfterMs, MIN_RATE_LIMIT_MS), MAX_RATE_LIMIT_MS) : fallback;
+    const now = this.now();
+    const until = now + wait;
+    if (bucket === "groups") this.groupsLimitedUntil = Math.max(this.groupsLimitedUntil, until);
+    else if (bucket === "details") this.detailsLimitedUntil = Math.max(this.detailsLimitedUntil, until);
+    const effectiveUntil = Math.max(
+      until,
+      bucket === "groups" ? this.groupsLimitedUntil : bucket === "details" ? this.detailsLimitedUntil : 0,
+    );
+    const effectiveWait = Math.max(wait, effectiveUntil - now);
+    this.rateLimitedLooks += 1;
+    this.cancelLookTimer();
+    this.lookLater(effectiveWait);
+    this.set({ ...patch, phase: "rate-limited", retryAfterMs: effectiveWait, rateLimitedUntil: effectiveUntil });
+    return effectiveWait;
+  }
+
+  private async readGroups(): Promise<GroupsRead> {
+    if (!this.deps.groups) return { kind: "off" };
+    const remaining = this.groupsLimitedUntil - this.now();
+    if (remaining > 0) return { kind: "rate_limited", retryAfterMs: remaining };
+    this.groupsLimitedUntil = 0;
+    return this.deps.groups();
+  }
+
   async checkNow(about: { added?: number } = {}): Promise<void> {
     if (this.disposed || !this.deps.signedIn() || this.awareness.asleep()) return;
+    if (this.current.phase === "rate-limited" && this.now() < (this.current.rateLimitedUntil ?? 0)) return;
     const place = this.deps.place?.() ?? "";
-    const [groups, presence] = await Promise.all([this.deps.groups?.() ?? Promise.resolve<GroupsRead>({ kind: "off" }), this.awareness.read(this.askPresence())]);
+    const [groups, presence] = await Promise.all([this.readGroups(), this.awareness.read(this.askPresence())]);
     if (this.disposed || (this.deps.place?.() ?? "") !== place) return;
     this.awareness.heard(presence);
+    if (groups.kind === "rate_limited") {
+      this.enterRateLimit(groups.retryAfterMs, {}, "groups");
+      return;
+    }
     const flight = flightOf(groups);
     if (flight) {
       this.flight = flight;
@@ -546,16 +596,27 @@ export class ChangesModel {
       this.otherFiles = [];
       this.otherAttachments = new Map();
       this.rateLimitedLooks = 0;
+      this.groupsLimitedUntil = 0;
+      this.detailsLimitedUntil = 0;
       this.set({ rows: [], published: [], selection: ALL_SELECTED, phase: "loading", missing: 0, hidden: 0, leftOut: NOTHING_LEFT_OUT, line: null, aware: null, changedHere: [], progressRows: new Map(), choices: new Map(), heldDeletes: null, retryAfterMs: null, rateLimitedUntil: null });
     }
     this.place = place;
     if (!this.deps.signedIn()) {
       this.draftsChecked = false;
       this.rateLimitedLooks = 0;
+      this.groupsLimitedUntil = 0;
+      this.detailsLimitedUntil = 0;
       this.lookListeners.forEach((listener) => listener(null));
       this.states = null;
       this.repoFiles = null;
       return this.set({ phase: "signed-out", rows: [], retryAfterMs: null, rateLimitedUntil: null });
+    }
+    if (scheduled && this.current.phase === "rate-limited") {
+      const until = this.current.rateLimitedUntil ?? 0;
+      if (this.now() < until) {
+        this.lookLater(until - this.now());
+        return;
+      }
     }
     const everyFile = this.deps.listFiles();
     const listed = everyFile.filter((file) => this.deps.documentFor(file.path) !== null);
@@ -563,7 +624,7 @@ export class ChangesModel {
     const [scanned, repo, groups, presence] = await Promise.all([
       this.deps.cache.scan(listed, (path) => this.deps.readBytes(path)),
       this.deps.mirror.read(),
-      this.deps.groups?.() ?? Promise.resolve<GroupsRead>({ kind: "off" }),
+      this.readGroups(),
       this.awareness.read(this.askPresence()),
       this.deps.refreshIgnore?.(),
     ]);
@@ -571,17 +632,19 @@ export class ChangesModel {
     this.awareness.heard(presence);
     if (presence.kind === "unknown" && this.deps.presence) this.retryPresence();
     this.awareness.scanned(scanned.files);
-    if (groups.kind !== "unknown") {
+    if (groups.kind !== "unknown" && groups.kind !== "rate_limited") {
       this.denied = groups.canPush === false;
       this.quota = groups.publishQuota ?? null;
     }
-    this.flight = flightOf(groups);
-    this.draftsChecked = groups.kind !== "unknown";
-    if (this.flight && (!this.flight.stale || this.levelAt === null)) this.levelAt = this.now();
-    if (groups.kind !== "unknown") {
-      this.groupsRead = groups.kind === "groups" ? { on: true, locked: groups.locked, overviews: groups.overviews } : { on: false, locked: false, overviews: {} };
-      this.memory = settleArrivals(withSelection(this.memory, this.current.selection));
-      this.current = { ...this.current, selection: this.memory.selection };
+    if (groups.kind !== "rate_limited") {
+      this.flight = flightOf(groups);
+      this.draftsChecked = groups.kind !== "unknown";
+      if (this.flight && (!this.flight.stale || this.levelAt === null)) this.levelAt = this.now();
+      if (groups.kind !== "unknown") {
+        this.groupsRead = groups.kind === "groups" ? { on: true, locked: groups.locked, overviews: groups.overviews } : { on: false, locked: false, overviews: {} };
+        this.memory = settleArrivals(withSelection(this.memory, this.current.selection));
+        this.current = { ...this.current, selection: this.memory.selection };
+      }
     }
     if (repo.kind === "building") {
       this.lookLater(3_000);
@@ -596,12 +659,9 @@ export class ChangesModel {
     if (repo.kind === "rate_limited") {
       this.repoFiles = null;
       this.lookListeners.forEach((listener) => listener(null));
-      const fallback = DEFAULT_RATE_LIMIT_MS[Math.min(this.rateLimitedLooks, DEFAULT_RATE_LIMIT_MS.length - 1)] ?? 60_000;
-      const wait = repo.retryAfterMs !== null ? Math.min(Math.max(repo.retryAfterMs, MIN_RATE_LIMIT_MS), MAX_RATE_LIMIT_MS) : fallback;
-      this.rateLimitedLooks += 1;
-      this.cancelLookTimer();
-      this.lookLater(wait);
-      return this.set({ phase: "rate-limited", retryAfterMs: wait, rateLimitedUntil: this.now() + wait });
+      const waitHint = groups.kind === "rate_limited" ? Math.max(repo.retryAfterMs ?? 0, groups.retryAfterMs ?? 0) || null : repo.retryAfterMs;
+      this.enterRateLimit(waitHint, {}, groups.kind === "rate_limited" ? "groups" : undefined);
+      return;
     }
     if (repo.kind !== "files") {
       this.repoFiles = null;
@@ -613,7 +673,11 @@ export class ChangesModel {
       return this.set({ phase: "offline", retryAfterMs: null, rateLimitedUntil: null });
     }
     this.failedLooks = 0;
-    this.rateLimitedLooks = 0;
+    if (groups.kind === "rate_limited") {
+      this.lookListeners.forEach((listener) => listener(null));
+      this.enterRateLimit(groups.retryAfterMs, {}, "groups");
+      return;
+    }
     const hidden = [...repo.files.keys()].filter((path) => LISTED_FILE.test(path) && isHiddenPath(path)).length;
     const inVault = new Set(everyFile.map((file) => file.path.toLowerCase()));
     const others = [...repo.files.keys()].filter((path) => isLeftOutKind(path) && !inVault.has(path.toLowerCase()));
@@ -651,10 +715,16 @@ export class ChangesModel {
       return doc ? [{ path, doc, sha: repoFiles.get(path) ?? null }] : [];
     });
     this.notHereSkipped = states.missing.skipped;
-    const rows = await this.rowsFor(localChanges(states));
+    const { rows, limited } = await this.rowsFor(localChanges(states));
     if (this.movedFrom(place)) return;
     this.states = states;
     this.repoFiles = repoFiles;
+    if (limited !== null) {
+      this.lookListeners.forEach((listener) => listener(null));
+      this.enterRateLimit(limited.retryAfterMs, { rows, missing: this.notHere.length, hidden, leftOut: leftOutKinds(others) }, "details");
+      return;
+    }
+    this.rateLimitedLooks = 0;
     this.set({ phase: "ready", rows, missing: this.notHere.length, hidden, leftOut: leftOutKinds(others), retryAfterMs: null, rateLimitedUntil: null });
     if (unread > 0) {
       const again = this.unreadAsking.after({ unread: true });
@@ -718,7 +788,8 @@ export class ChangesModel {
   async draftAuthor(path: string, again = 1_500): Promise<string | null> {
     const viewer = this.deps.viewerLogin?.() ?? null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const read = await (this.deps.groups?.() ?? Promise.resolve<GroupsRead>({ kind: "off" }));
+      const read = await this.readGroups();
+      if (read.kind === "rate_limited") return null;
       if (read.kind !== "unknown" && read.paths) {
         const overviews = new Map(read.kind === "groups" ? Object.entries(read.overviews) : []);
         const by = teammateReviews(read.paths, viewer, overviews, read.saves, (file) => this.deps.vaultPath?.(file) ?? file).get(path)?.by ?? null;
@@ -799,8 +870,9 @@ export class ChangesModel {
     return known !== undefined && known.light !== true && known.key === this.keyOf(change) && this.now() - known.at < STATUS_TTL_MS;
   }
 
-  private async ask(changes: readonly LocalChange[], mode: "look" | "step" = "look"): Promise<Set<string>> {
+  private async ask(changes: readonly LocalChange[], mode: "look" | "step" = "look"): Promise<{ failedReads: Set<string>; limited: { retryAfterMs?: number } | null }> {
     const failedReads = new Set<string>();
+    let limited: { retryAfterMs?: number } | null = null;
     const place = this.deps.place?.() ?? "";
     const active = this.deps.activePath?.() ?? null;
     const numbered = this.deps.review.details
@@ -814,23 +886,34 @@ export class ChangesModel {
         })
       : [];
     const given = new Set<string>();
-    for (const at of numbered.length === 0 ? [] : [...numbered.keys()].filter((i) => i % DETAILS_PER_REQUEST === 0)) {
-      const run = numbered.slice(at, at + DETAILS_PER_REQUEST);
-      const details = await this.deps.review.details!(run[0]!.repo, run.map((one) => one.light.number));
-      if ((this.deps.place?.() ?? "") !== place || this.disposed) return failedReads;
-      if (details === null) break;
-      if (!(details instanceof Map)) {
-        if (mode === "look") for (const { change } of numbered) given.add(change.path);
-        break;
-      }
-      for (const { change, known, light } of run) {
-        const detail = details.get(light.number);
-        if (!detail) continue;
-        const pr: PrInfo = { ...detail, url: light.url || detail.url, authorLogin: light.authorLogin ?? detail.authorLogin ?? null, ...(light.group ? { group: light.group } : {}) };
-        this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr }, withoutSaver: true });
-        given.add(change.path);
+    const remaining = this.detailsLimitedUntil - this.now();
+    if (remaining > 0 && numbered.length > 0) {
+      limited = { retryAfterMs: remaining };
+      if (mode === "look") for (const { change } of numbered) given.add(change.path);
+    } else if (numbered.length > 0) {
+      this.detailsLimitedUntil = 0;
+      for (const at of [...numbered.keys()].filter((i) => i % DETAILS_PER_REQUEST === 0)) {
+        const run = numbered.slice(at, at + DETAILS_PER_REQUEST);
+        const details = await this.deps.review.details!(run[0]!.repo, run.map((one) => one.light.number));
+        if ((this.deps.place?.() ?? "") !== place || this.disposed) return { failedReads, limited };
+        if (details === null) break;
+        if (!(details instanceof Map)) {
+          if (typeof details === "object" && "limited" in details && details.limited) {
+            limited = details.retryAfterMs === undefined ? {} : { retryAfterMs: details.retryAfterMs };
+          }
+          if (mode === "look") for (const { change } of numbered) given.add(change.path);
+          break;
+        }
+        for (const { change, known, light } of run) {
+          const detail = details.get(light.number);
+          if (!detail) continue;
+          const pr: PrInfo = { ...detail, url: light.url || detail.url, authorLogin: light.authorLogin ?? detail.authorLogin ?? null, ...(light.group ? { group: light.group } : {}) };
+          this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr }, withoutSaver: true });
+          given.add(change.path);
+        }
       }
     }
+    if (limited !== null && mode === "look") return { failedReads, limited };
     changes = changes.filter((change) => !given.has(change.path));
     let next = 0;
     let halted = false;
@@ -854,7 +937,87 @@ export class ChangesModel {
       }
     };
     await Promise.all(Array.from({ length: Math.min(ASK_AT_ONCE, changes.length) }, worker));
-    return failedReads;
+    return { failedReads, limited };
+  }
+
+  private async verifyReviews(targets: readonly VerifyTarget[]): Promise<{ retryAfterMs?: number } | null> {
+    if (targets.length === 0) return null;
+    const place = this.deps.place?.() ?? "";
+    const remaining = this.detailsLimitedUntil - this.now();
+    if (remaining > 0) return { retryAfterMs: remaining };
+    this.detailsLimitedUntil = 0;
+    const applyFallback = (target: VerifyTarget): void => {
+      this.learnedAt.delete(target.change.path);
+      this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review: target.fallback, light: true });
+    };
+    const verifyViaStatus = async (list: readonly VerifyTarget[]): Promise<void> => {
+      for (const target of list) {
+        const doc = this.deps.documentFor(target.change.path);
+        if (!doc) continue;
+        const review = await this.deps.review.status(doc);
+        if ((this.deps.place?.() ?? "") !== place || this.disposed) return;
+        if (review === null) continue;
+        this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review });
+        if (!review.pr || review.pr.state === "merged" || review.pr.state === "closed") this.learnedAt.delete(target.change.path);
+      }
+    };
+    const numbered = targets.flatMap((target) => {
+      const doc = this.deps.documentFor(target.change.path);
+      return doc ? [{ target, repo: doc.repo }] : [];
+    });
+    if (!this.deps.review.details) {
+      const staleOnes: VerifyTarget[] = [];
+      for (const { target } of numbered) {
+        if (target.fromStale) staleOnes.push(target);
+        else applyFallback(target);
+      }
+      await verifyViaStatus(staleOnes.slice(0, LOOK_BUDGET));
+      return null;
+    }
+    const missing: VerifyTarget[] = [];
+    for (let at = 0; at < numbered.length; at += DETAILS_PER_REQUEST) {
+      const run = numbered.slice(at, at + DETAILS_PER_REQUEST);
+      const details = await this.deps.review.details(run[0]!.repo, run.map((one) => one.target.pr.number));
+      if ((this.deps.place?.() ?? "") !== place || this.disposed) return null;
+      if (details === null) {
+        const staleOnes: VerifyTarget[] = [];
+        for (const { target } of numbered.slice(at)) {
+          if (target.fromStale) staleOnes.push(target);
+          else applyFallback(target);
+        }
+        await verifyViaStatus(staleOnes.slice(0, LOOK_BUDGET));
+        return null;
+      }
+      if (!(details instanceof Map)) {
+        if (typeof details === "object" && "limited" in details && details.limited) {
+          return details.retryAfterMs === undefined ? {} : { retryAfterMs: details.retryAfterMs };
+        }
+        return null;
+      }
+      for (const { target } of run) {
+        const detail = details.get(target.pr.number);
+        if (!detail) {
+          if (target.fromStale) missing.push(target);
+          else applyFallback(target);
+          continue;
+        }
+        if (detail.state === "merged" || detail.state === "closed") {
+          this.learnedAt.delete(target.change.path);
+          const endedReview: ReviewStatus | null = target.fallback?.pr?.number === target.pr.number ? { reviewBranch: null, pr: detail, ...(target.known.review?.saver ? { saver: target.known.review.saver } : {}) } : target.fallback;
+          this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review: endedReview, light: true });
+          continue;
+        }
+        const mergedPr: PrInfo = { ...detail, url: target.pr.url || detail.url, authorLogin: target.pr.authorLogin ?? detail.authorLogin ?? null, ...(target.pr.group ? { group: target.pr.group } : {}) };
+        this.statuses.set(target.change.path, {
+          key: this.keyOf(target.change),
+          at: this.now(),
+          review: { reviewBranch: target.known.review?.reviewBranch ?? null, pr: mergedPr, ...(target.known.review?.saver ? { saver: target.known.review.saver } : {}) },
+          withoutSaver: true,
+        });
+      }
+    }
+    if (missing.length > 0) await verifyViaStatus(missing.slice(0, LOOK_BUDGET));
+    return null;
   }
 
   private rowOf(change: LocalChange): ChangeRow | null {
@@ -867,36 +1030,46 @@ export class ChangesModel {
     return { change, doc, review, entry, unit: entry ?? draftEntry(change, theirs), ...(theirs ? { theirs } : {}), ...(known ? {} : { unread: true }), ...(known?.light ? { light: true as const } : {}) };
   }
 
-  private applyFlight(changes: readonly LocalChange[]): LocalChange[] {
+  private applyFlight(changes: readonly LocalChange[]): { detailed: LocalChange[]; verify: VerifyTarget[] } {
     const flight = this.flight;
     const detailed: LocalChange[] = [];
-    if (!flight) return detailed;
+    const verify: VerifyTarget[] = [];
+    if (!flight) return { detailed, verify };
     const login = this.deps.viewerLogin?.() ?? null;
     const active = this.deps.activePath?.() ?? null;
     const now = this.now();
+    const prPaths = new Map<number, Set<string>>();
+    for (const [repoPath, entries] of Object.entries(flight.paths)) {
+      for (const entry of entries) {
+        if (typeof entry.prNumber === "number" && entry.prNumber > 0) {
+          let paths = prPaths.get(entry.prNumber);
+          if (!paths) {
+            paths = new Set();
+            prPaths.set(entry.prNumber, paths);
+          }
+          paths.add(repoPath);
+        }
+      }
+    }
+    const listedElsewhere = (prNumber: number, repoPath: string): boolean => {
+      const paths = prPaths.get(prNumber);
+      if (!paths) return false;
+      for (const path of paths) if (path !== repoPath) return true;
+      return false;
+    };
     for (const change of changes) {
       const known = this.statuses.get(change.path);
-      const there = flight.paths[this.deps.documentFor(change.path)?.path ?? change.path];
+      const repoPath = this.deps.documentFor(change.path)?.path ?? change.path;
+      const there = flight.paths[repoPath];
       const batch: BatchReview = reviewFromInFlight(there, login, flight.overviews, flight.saves);
       const listed = there !== undefined;
-      if (flight.stale && !listed && known && this.levelAt !== null && now - this.levelAt < DETAIL_TTL_MS) {
-        this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
-        continue;
-      }
       const light = batch.review?.pr ?? null;
       const was = known?.review?.pr ?? null;
+      const wasOpen = was !== null && was.state !== "merged" && was.state !== "closed";
       const waiting = known?.review?.saver?.state === "waiting";
       const needsActiveSaver = change.path === active && known?.withoutSaver === true;
       const learned = this.learnedAt.get(change.path);
-      if (known && learned !== undefined && now - learned < LEARN_GRACE_MS && (light?.number !== was?.number || light?.isDraft !== was?.isDraft)) continue;
-      if (known && known.light !== true && !waiting && !needsActiveSaver && !was && !light && !known.review?.reviewBranch && !batch.review && now - known.at < DETAIL_TTL_MS) {
-        this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
-        continue;
-      }
-      if (known && known.light !== true && !waiting && !needsActiveSaver && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
-        this.statuses.set(change.path, { ...known, key: this.keyOf(change), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) }, ...(known.review?.saver ? { saver: known.review.saver } : {}) } });
-        continue;
-      }
+      const withinGrace = learned !== undefined && now - learned < LEARN_GRACE_MS;
       const keepSaver = waiting ? known?.review?.saver : undefined;
       const nextReview: ReviewStatus | null = batch.review
         ? keepSaver
@@ -905,32 +1078,73 @@ export class ChangesModel {
         : keepSaver
           ? { reviewBranch: null, pr: null, saver: keepSaver }
           : null;
+      const droppedOpen = wasOpen && light === null;
+      const downgradedOpen = wasOpen && !was.isDraft && light !== null && light.number === was.number && light.isDraft;
+      if (flight.stale && known) {
+        if (droppedOpen || downgradedOpen) {
+          this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
+          const readyToVerify = !withinGrace && was.number > 0 && now - known.at >= STATUS_TTL_MS;
+          const levelExpired = this.levelAt === null || now - this.levelAt >= DETAIL_TTL_MS;
+          if (readyToVerify && (listed || levelExpired)) {
+            verify.push({ change, known, pr: was, fallback: nextReview, fromStale: true });
+          }
+          continue;
+        }
+        if (!listed && this.levelAt !== null && now - this.levelAt < DETAIL_TTL_MS) {
+          this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
+          continue;
+        }
+      }
+      if (known && withinGrace && (light?.number !== was?.number || light?.isDraft !== was?.isDraft)) continue;
+      if (!flight.stale && known && droppedOpen && !was.group && was.number > 0 && !listedElsewhere(was.number, repoPath)) {
+        this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
+        verify.push({ change, known, pr: was, fallback: nextReview, fromStale: false });
+        continue;
+      }
+      if (known && known.light !== true && !waiting && !needsActiveSaver && !was && !light && !known.review?.reviewBranch && !batch.review && now - known.at < DETAIL_TTL_MS) {
+        this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
+        continue;
+      }
+      if (known && known.light !== true && !waiting && !needsActiveSaver && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
+        this.statuses.set(change.path, { ...known, key: this.keyOf(change), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) }, ...(known.review?.saver ? { saver: known.review.saver } : {}) } });
+        continue;
+      }
       this.statuses.set(change.path, { key: this.keyOf(change), at: now, review: nextReview, light: true });
       if (batch.needsDetail || waiting || needsActiveSaver) detailed.push(change);
     }
-    return detailed;
+    return { detailed, verify };
   }
 
-  private async rowsFor(changes: LocalChange[]): Promise<ChangeRow[]> {
+  private async rowsFor(changes: LocalChange[]): Promise<{ rows: ChangeRow[]; limited: { retryAfterMs?: number } | null }> {
     const listed = new Set(changes.map((change) => change.path));
     for (const path of [...this.statuses.keys()]) if (!listed.has(path)) this.statuses.delete(path);
     for (const path of [...this.learnedAt.keys()]) if (!this.statuses.has(path)) this.learnedAt.delete(path);
     const active = this.deps.activePath?.() ?? null;
     const place = this.deps.place?.() ?? "";
-    let wanted = this.flight ? this.applyFlight(changes) : [];
-    wanted = [...wanted].sort((a, b) => Number(b.path === active) - Number(a.path === active));
-    await this.ask(wanted.slice(0, LOOK_BUDGET), "look");
+    const applied = this.flight ? this.applyFlight(changes) : { detailed: [], verify: [] };
+    let limited = await this.verifyReviews(applied.verify);
+    if ((this.deps.place?.() ?? "") !== place || this.disposed) {
+      this.statuses.clear();
+      this.learnedAt.clear();
+      return { rows: [], limited: null };
+    }
+    const wanted = [...applied.detailed].sort((a, b) => Number(b.path === active) - Number(a.path === active));
+    if (limited === null) {
+      const asked = await this.ask(wanted.slice(0, LOOK_BUDGET), "look");
+      limited = asked.limited;
+    }
     if ((this.deps.place?.() ?? "") !== place) {
       this.statuses.clear();
       this.learnedAt.clear();
     }
     const rows = changes.flatMap((change) => this.rowOf(change) ?? []);
+    if (limited !== null) return { rows, limited };
     if (wanted.length > LOOK_BUDGET) this.lookLater(FILL_IN_MS);
     else if (this.flight) {
       const wait = this.asking.after({ stale: this.flight.stale });
       if (wait !== null) this.lookLater(wait);
     } else if (!this.draftsChecked || changes.some((change) => !this.statuses.has(change.path))) this.lookLater(RETRY_MS);
-    return rows;
+    return { rows, limited: null };
   }
 
   watchUnchanged(path: string | null): void {
@@ -1004,7 +1218,7 @@ export class ChangesModel {
   async read(rows: readonly ChangeRow[]): Promise<ChangeRow[]> {
     const asks = this.ask(rows.filter((row) => !row.unchanged).map((row) => row.change).filter((change) => !this.fresh(change)), "step");
     const unchanged = new Map((await Promise.all(rows.filter((row) => row.unchanged).map((row) => this.readUnchanged(row)))).map((row) => [row.change.path, row]));
-    const failed = await asks;
+    const { failedReads: failed } = await asks;
     const fresh = rows.map((row) => (row.unchanged ? (unchanged.get(row.change.path) ?? row) : failed.has(row.change.path) ? { ...(this.rowOf(row.change) ?? row), unchecked: true } : (this.rowOf(row.change) ?? row)));
     const by = new Map(fresh.filter((row) => !row.unchanged).map((row) => [row.change.path, row]));
     this.set({ rows: this.current.rows.map((row) => by.get(row.change.path) ?? row) });
@@ -1015,8 +1229,12 @@ export class ChangesModel {
     const place = this.deps.place?.() ?? "";
     const mapFresh = (): boolean => this.flight !== null && !this.flight.stale && this.levelAt !== null && this.now() - this.levelAt < STATUS_TTL_MS;
     if (!mapFresh() && this.deps.groups) {
-      const groups = await this.deps.groups();
+      const groups = await this.readGroups();
       if ((this.deps.place?.() ?? "") !== place || this.disposed) return this.read(rows);
+      if (groups.kind === "rate_limited") {
+        this.enterRateLimit(groups.retryAfterMs, {}, "groups");
+        return rows.map((row) => ({ ...row, unchecked: true }));
+      }
       const asked = flightOf(groups);
       if (asked) {
         this.flight = asked;
@@ -1026,11 +1244,17 @@ export class ChangesModel {
     }
     if (!mapFresh()) return this.read(rows);
     const changes = rows.filter((row) => !row.unchanged).map((row) => row.change);
-    this.applyFlight(changes);
+    const { verify } = this.applyFlight(changes);
+    const limited = await this.verifyReviews(verify);
     const unchanged = new Map((await Promise.all(rows.filter((row) => row.unchanged).map((row) => this.readUnchanged(row)))).map((row) => [row.change.path, row]));
     const fresh = rows.map((row) => (row.unchanged ? (unchanged.get(row.change.path) ?? row) : (this.rowOf(row.change) ?? row)));
     const by = new Map(fresh.filter((row) => !row.unchanged).map((row) => [row.change.path, row]));
-    this.set({ rows: this.current.rows.map((row) => by.get(row.change.path) ?? row) });
+    const nextRows = this.current.rows.map((row) => by.get(row.change.path) ?? row);
+    if (limited !== null) {
+      this.enterRateLimit(limited.retryAfterMs, { rows: nextRows }, "details");
+    } else {
+      this.set({ rows: nextRows });
+    }
     return fresh;
   }
 

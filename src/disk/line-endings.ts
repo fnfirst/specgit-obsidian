@@ -10,7 +10,15 @@ export function eolOf(text: string): Eol {
   return crlf * 2 > breaks ? "crlf" : "lf";
 }
 
+const BOM = "\uFEFF";
+
+export const hasBom = (text: string): boolean => text.startsWith(BOM);
+
+export const stripBom = (text: string): string => (text.startsWith(BOM) ? text.slice(1) : text);
+
 export const withEol = (lf: string, eol: Eol): string => (eol === "crlf" ? lf.replace(/\n/g, "\r\n") : lf);
+
+export const withBomAndEol = (lf: string, sample: string): string => (hasBom(sample) ? BOM : "") + withEol(stripBom(lf), eolOf(sample));
 
 export class LineEndingMap {
   private readonly breaks: number[] = [];

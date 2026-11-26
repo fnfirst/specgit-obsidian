@@ -91,8 +91,12 @@ function docStage(pr: PrInfo) {
   };
 }
 
+export function isEmptyOpenPr(pr: PrInfo | null | undefined): boolean {
+  return Boolean(pr?.emptyDiff && pr.state === "open" && !pr.isDraft);
+}
+
 export function viewerCanApprove(pr: PrInfo | null, viewerLogin: string): boolean {
-  return pr !== null && pr.state === "open" && !pr.emptyDiff && waitsOnViewer(docStage(pr), viewerLogin);
+  return pr !== null && pr.state === "open" && !isEmptyOpenPr(pr) && waitsOnViewer(docStage(pr), viewerLogin);
 }
 
 export function fileReviewState(
@@ -104,7 +108,7 @@ export function fileReviewState(
   if (liveBranch || pr?.state === "merged") return publishedState(liveBranch ?? pr?.baseRef ?? null);
   if (!pr || pr.state === "closed") return options.pending ? PENDING : NONE;
   const doc = docStage(pr);
-  if (pr.emptyDiff) {
+  if (isEmptyOpenPr(pr)) {
     return {
       kind: doc.stage,
       label: EMPTY_REVIEW_LABEL,

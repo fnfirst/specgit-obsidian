@@ -46,14 +46,12 @@ export async function sameAsRepo(deps: SameTextDeps, path: string, doc: Document
   const kind = pathKind(path);
   const structured = kind === "board" || kind === "base";
   if (!structured && kind !== "note") return "differs";
-  if (structured && !mayRead) return "needs-read";
+  if (kind === "board" && !mayRead) return "needs-read";
   const bytes = await deps.readBytes(path);
   if (bytes === null || (await gitBlobSha(bytes)) !== sha) return "unknown";
   const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-  if (!structured) {
-    if (layoutShas(text).has(repoSha)) return "same";
-    if (!hasFrontMatter(text)) return "differs";
-  }
+  if (kind !== "board" && layoutShas(text).has(repoSha)) return "same";
+  if (!structured && !hasFrontMatter(text)) return "differs";
   if (!mayRead) return "needs-read";
   const theirs = await deps.readBlob(doc, repoSha);
   if (theirs === null) return "unknown";

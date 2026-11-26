@@ -86,7 +86,12 @@ export interface ChangesDeps {
   readBytes(path: string): Promise<ArrayBuffer>;
   cache: FileCache;
   mirror: MirrorClient;
-  review: Pick<ReviewApi, "status"> & { details?: (repo: string, numbers: readonly number[]) => Promise<Map<number, PrInfo> | null | "failed" | { limited: true; retryAfterMs?: number }> };
+  review: Pick<ReviewApi, "status"> & {
+    details?: (
+      repo: string,
+      numbers: readonly number[],
+    ) => Promise<Map<number, PrInfo> | null | "failed" | { limited: true; retryAfterMs?: number } | { unavailable: true; retryAfterMs?: number; fastFail?: boolean }>;
+  };
   groups?(): Promise<GroupsRead>;
   presence?(): Promise<PresenceRead>;
   vaultPath?(path: string): string;

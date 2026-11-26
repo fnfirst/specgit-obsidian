@@ -43,6 +43,7 @@ import { hocuspocusTransport } from "./room/transport";
 import { DEFAULT_SETTINGS, DeviceSettings, identityFrom, readSettings, sameStayPlace, type Settings, type SettingsHost, SpecgitSettingTab, type StayPlace, stayPlaceOf, withoutDeviceSettings } from "./settings";
 import { Signal } from "./signal";
 import { StatusBoard, statusText, statusTip, wordFor } from "./status";
+import { GithubStatusTracker } from "./status/github-status";
 import { customServerQuestion, STAY_PAUSED_NOTICE } from "./stay/words";
 
 const DISCONNECTED_KEY = "specgit-disconnected";
@@ -204,6 +205,10 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       }),
     );
     const api = new SpecgitApi({ server: this.config.server, version: this.manifest.version, auth, transport: obsidianTransport });
+    const githubStatus = new GithubStatusTracker({ api, signedIn: isSignedIn });
+    api.onGithubFastFail = (retryAfterMs) => githubStatus.noteFastFail(retryAfterMs);
+    api.onGithubHealthy = () => githubStatus.noteHealthy();
+    this.register(() => githubStatus.dispose());
     const events = setUpEvents(this, { api, repo: () => this.config.repo, signedIn: isSignedIn });
     this.register(this.settingsSaved.subscribe(() => events.settingsChanged()));
     const report = setUpReport(this, {
@@ -281,6 +286,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       auth.onChange((event) => {
         if (event.kind === "signed_in" && !event.over) comments.hub.refresh();
         else if (event.kind === "signed_in" || event.kind === "signed_out") comments.hub.reset();
+        if (event.kind === "signed_out") githubStatus.reset();
         events.settingsChanged();
       }),
     );
@@ -332,6 +338,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       bringInNewer: () => this.stay?.bringInNewer() ?? Promise.resolve({ brought: 0, skipped: 0 }),
       bringInDraft: (path) => this.stay?.bringInDraft(path) ?? Promise.resolve({ kind: "none" as const }),
       ownLinks,
+      githubStatus,
     });
     comments.env.offline = { is: () => changes.model.offline(), subscribe: (listener) => changes.model.subscribe(listener) };
     events.onEvent((event) => {
@@ -457,6 +464,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       tryNow: () => {
         lifecycle.online();
         rooms.retryFailed(0);
+        void githubStatus.refresh({ force: true });
         void changes.model.refresh();
       },
       dialogs,

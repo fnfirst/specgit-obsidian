@@ -1,4 +1,4 @@
-import { draftWorkItems, GROUP_BRANCH_PREFIX, GROUP_PRO_ONLY, inFlightEntries, isGroupBranch, isSomeoneElses, sameLogin, saverWaitingLine, type ChangeSetEntry, type InFlightBranch, type InFlightResponse, type PrInfo, type SaverStatus } from "../shared/review-flow";
+import { draftWorkItems, GROUP_BRANCH_PREFIX, GROUP_PRO_ONLY, inFlightEntries, isGroupBranch, isSomeoneElses, sameLogin, saverWaitingLine, type ChangeSetEntry, type GithubStatusSnapshot, type InFlightBranch, type InFlightResponse, type PrInfo, type SaverStatus } from "../shared/review-flow";
 import {
   asksYouOf,
   docItemOf,
@@ -55,6 +55,7 @@ export interface PanelInput {
   showChanges: boolean;
   checked: readonly string[];
   notice: StatusNotice | null;
+  githubStatus?: GithubStatusSnapshot | null;
   editingGroup: string | null;
   reviewers: readonly StatusReviewer[];
   readOnly: boolean;
@@ -161,6 +162,7 @@ export type ActivePanelInput = Pick<
   | "showChanges"
   | "checked"
   | "notice"
+  | "githubStatus"
   | "reviewers"
   | "readOnly"
   | "onAction"
@@ -441,6 +443,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
     checked: input.checked,
     ...(input.reviewers.length > 0 ? { reviewers: input.reviewers } : {}),
     ...(input.notice ? { notice: input.notice } : {}),
+    ...(input.githubStatus ? { githubStatus: input.githubStatus } : {}),
     ...(input.onChecked ? { onChecked: input.onChecked } : {}),
     onAction: input.onAction,
   };

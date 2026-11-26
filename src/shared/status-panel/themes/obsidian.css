@@ -45,3 +45,6 @@
 .sp-theme-obsidian .sp-footer {
   background: var(--background-secondary);
 }
+.sp-theme-obsidian .sp-github-status-info {
+  background: color-mix(in srgb, var(--sp-muted) 10%, transparent);
+}

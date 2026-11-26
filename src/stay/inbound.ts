@@ -8,7 +8,7 @@ import { Budget } from "../disk/diff";
 import { follows } from "./draft-state";
 import { changesBetween } from "../disk/merge";
 import type { Shown } from "../disk/regions";
-import { eolOf, toLf, withEol } from "../disk/line-endings";
+import { stripBom, toLf, withBomAndEol } from "../disk/line-endings";
 import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { notWritableBecause } from "../disk/writable";
 import type { ReviewPayload } from "../editor/services";
@@ -641,7 +641,7 @@ export class Inbound {
     const written = await ports.vault.process(path, (current) => {
       before = current;
       if (gitBlobShaOfText(current) !== expected) return null;
-      after = withEol(toLf(main.text), eolOf(current));
+      after = withBomAndEol(toLf(main.text), current);
       return after;
     });
     if (written !== "written") return this.refusedWrite(path, main.sha, written);
@@ -669,9 +669,9 @@ export class Inbound {
           },
           () => ports.baseText(path, matched),
         );
-    const result = mergeFile(path, base, toLf(mine), toLf(main.text), new Budget(400));
+    const result = mergeFile(path, base === null ? null : stripBom(base), stripBom(toLf(mine)), stripBom(toLf(main.text)), new Budget(400));
     if (result.kind === "conflict") return this.askPerson(path, doc, main, mine, result.review);
-    const merged = withEol(result.text, eolOf(mine));
+    const merged = withBomAndEol(result.text, mine);
     if (merged !== mine) {
       activity.ownWrite(path);
       const written = await ports.vault.process(path, (current) => (current === mine ? merged : null));
@@ -708,7 +708,7 @@ export class Inbound {
         const chosen = await ports.chooseWhatToKeep(buildReviewRequest(path, review, { other: "github", signal: this.abort.signal }));
         if (chosen === null) return void this.declined.set(path, main.sha);
         if (!this.ctx.current()) return;
-        const text = withEol(chosen, eolOf(mine));
+        const text = withBomAndEol(chosen, mine);
         activity.ownWrite(path);
         if ((await ports.vault.process(path, (current) => (current === mine ? text : null), { confirmed: true })) !== "written") {
           ports.notify(DRAFT_SAID.notApplied(noteName(path)));

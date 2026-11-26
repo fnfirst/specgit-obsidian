@@ -930,6 +930,13 @@ export class NoteEditor implements PluginValue {
     for (const editor of this.registry.editorsOf(this.path)) editor.moveTo(phase);
   }
 
+  private canRefocus(): boolean {
+    const dom = this.view.dom;
+    if (!dom.isConnected || dom.offsetParent === null) return false;
+    const leaf = dom.closest(".workspace-leaf");
+    return leaf === null || leaf.classList.contains("mod-active");
+  }
+
   private moveTo(phase: Phase, joiningEditable = false): void {
     const editable = phase === "joining" && joiningEditable;
     if (phase !== "joining") this.clearPatience();
@@ -938,11 +945,13 @@ export class NoteEditor implements PluginValue {
       const doc = this.view.dom.ownerDocument;
       const active = doc.activeElement;
       const inBody = active !== null && this.view.contentDOM.contains(active);
-      const focused = inBody || (this.view.hasFocus && (active === null || active === doc.body));
+      const canFocusNow = this.canRefocus();
+      const focused = canFocusNow && (inBody || (this.view.hasFocus && (active === null || active === doc.body)));
       if (!wasHeldJoining && phase === "joining" && !editable && !this.mayOnlyRead) this.restoreFocus = focused;
       const refocus =
         wasHeldJoining &&
         phase === "live" &&
+        canFocusNow &&
         (focused || (this.restoreFocus && (active === null || active === doc.body)));
       if (phase !== "joining") this.restoreFocus = false;
       this.phase = phase;
@@ -950,7 +959,7 @@ export class NoteEditor implements PluginValue {
       later(() => {
         if (this.destroyed) return;
         this.view.dispatch({ effects: [setJoiningEditable.of(this.joiningEditable), setPhase.of(this.phase)] });
-        if (refocus && this.phase === "live") {
+        if (refocus && this.phase === "live" && this.canRefocus()) {
           const currentDoc = this.view.dom.ownerDocument;
           const current = currentDoc.activeElement;
           if (current === null || current === currentDoc.body || this.view.contentDOM.contains(current)) {

@@ -4,7 +4,7 @@ import { sameBaseText } from "../changes/same-base";
 import { hasPathCaseCollision, isVaultTarget, type VaultPathEntry } from "../mapping";
 import { sameCanvasText } from "../shared/review-flow";
 import type { OnWindow } from "../windows";
-import { toLf } from "./line-endings";
+import { stripBom, toLf } from "./line-endings";
 
 const configDirOf = (app: App): string => (app.vault as { configDir?: string }).configDir ?? "";
 
@@ -242,7 +242,7 @@ function readViewData(view: PaneView): string | null {
 }
 
 function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
-  if (view.editor !== undefined) return view.editor.getValue() !== toLf(disk);
+  if (view.editor !== undefined) return stripBom(view.editor.getValue()) !== stripBom(toLf(disk));
   const type = view.getViewType();
   if (type === "markdown" || DISPLAY_ONLY_VIEWS.has(type)) return false;
   if (type === "canvas") {
@@ -280,14 +280,21 @@ export function guardedVault(app: App): GuardedVault {
     if (folder === "" || vault.getFolderByPath(folder)) return;
     await vault.createFolder(folder).catch(() => undefined);
   };
+  const readRaw = async (file: TFile): Promise<string | null> => {
+    if (typeof vault.readBinary === "function") {
+      const bytes = await vault.readBinary(file).catch(() => null);
+      return bytes === null ? null : new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+    }
+    return vault.read(file).catch(() => null);
+  };
   return {
     read: async (path) => {
       const file = fileAt(path);
-      return file ? vault.read(file).catch(() => null) : null;
+      return file ? readRaw(file) : null;
     },
     hasUnsavedText: async (path) => {
       const file = fileAt(path);
-      const disk = file ? await vault.read(file).catch(() => null) : null;
+      const disk = file ? await readRaw(file) : null;
       return disk !== null && heldInPane(path, disk);
     },
     process: async (path, edit, options) => {
@@ -335,7 +342,7 @@ export function guardedVault(app: App): GuardedVault {
     },
     trash: async (path, expectedSha) => {
       const file = fileAt(path);
-      const current = file ? await vault.read(file).catch(() => null) : null;
+      const current = file ? await readRaw(file) : null;
       if (!file || current === null || gitBlobShaOfText(current) !== expectedSha || heldInPane(path, current)) return false;
       try {
         await fileManager.trashFile(file);

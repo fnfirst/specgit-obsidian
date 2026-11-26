@@ -88,10 +88,11 @@ export class SpecgitGitCopy {
   }
 
   async renamedTo(doc: DocumentRef): Promise<RenamedTarget | null | "unknown"> {
-    const { body } = await this.contentOrOutage(doc, { followRename: "1" });
+    const { body } = await this.contentOrOutage(doc, { followRename: "1", renameOnly: "1" });
     if (!body) return "unknown";
     const moved = body.renamedTo;
-    if (moved === undefined || moved === null) return body.exists === true || body.exists === false ? null : "unknown";
+    if (moved === null) return null;
+    if (moved === undefined) return body.exists === true || body.exists === false ? null : "unknown";
     if (typeof moved !== "object" || Array.isArray(moved)) return "unknown";
     const { path, branch } = moved as { path?: unknown; branch?: unknown };
     return typeof path === "string" && path !== "" && typeof branch === "string" && branch !== "" ? { path, branch } : "unknown";

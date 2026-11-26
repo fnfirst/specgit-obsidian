@@ -1,5 +1,5 @@
 import type { PrInfo } from "./pr-info";
-import { CLOSE_REVIEW_LABEL, viewerCanApprove } from "./review-state";
+import { CLOSE_REVIEW_LABEL, isEmptyOpenPr, viewerCanApprove } from "./review-state";
 
 export type PrimaryKind = "submit" | "publish" | "approve" | "published" | "propose" | "resolve" | "discard";
 
@@ -13,7 +13,7 @@ export function resolvePrimary(
   if (liveBranch || pr?.state === "merged") {
     return { kind: "published", label: "Published" };
   }
-  if (pr?.emptyDiff && (pr.state === "open" || pr.state === "draft")) {
+  if (isEmptyOpenPr(pr)) {
     return { kind: "discard", label: `${CLOSE_REVIEW_LABEL}…` };
   }
   if (upstream) {

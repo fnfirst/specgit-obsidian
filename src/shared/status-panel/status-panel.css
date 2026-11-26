@@ -789,6 +789,41 @@ button.sp-pill {
 .sp-offline {
   background: color-mix(in srgb, var(--sp-warning) 14%, var(--sp-surface, var(--sp-bg)));
 }
+.sp-github-status {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 0.9em;
+  line-height: 1.35;
+}
+.sp-github-status-info {
+  background: var(--sp-bg-raised);
+  color: var(--sp-muted);
+}
+.sp-github-status-warning {
+  background: color-mix(in srgb, var(--sp-warning) 14%, var(--sp-surface, var(--sp-bg)));
+  box-shadow: inset 2px 0 0 var(--sp-warning);
+  color: var(--sp-fg);
+}
+.sp-github-status-error {
+  background: color-mix(in srgb, var(--sp-danger) 14%, var(--sp-surface, var(--sp-bg)));
+  box-shadow: inset 2px 0 0 var(--sp-danger);
+  color: var(--sp-fg);
+}
+.sp-github-status-text {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.sp-github-status-link {
+  flex: none;
+  color: var(--sp-muted);
+  text-decoration: underline;
+  white-space: nowrap;
+}
+.sp-github-status-link:hover {
+  color: var(--sp-fg);
+}
 .sp-notice {
   background: var(--sp-bg-raised);
 }
@@ -852,6 +887,9 @@ button.sp-pill {
   }
 }
 @container sp (max-width: 279px) {
+  .sp-github-status {
+    padding-inline: 8px;
+  }
   .sp-list {
     padding-inline: 8px;
   }

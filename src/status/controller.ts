@@ -15,11 +15,14 @@ import { type DocumentRef, noteName } from "../mapping";
 import type { BroughtDraft } from "../changes/bring-in";
 import { phaseOf, type NoteStatus } from "../status";
 import { DraftHold, HELD_RECHECK_MS } from "./draft-hold";
+import type { GithubStatusReader } from "./github-status";
 
 export const FACTS_PER_REQUEST = 50;
-export const FACTS_FRESH_MS = 30_000;
+export const FACTS_FRESH_MS = 120_000;
 export const FACTS_RETRY_MS = 15_000;
 export const FACTS_RETRY_MAX_MS = 120_000;
+export const RECOVERY_JITTER_MIN_MS = 500;
+export const RECOVERY_JITTER_MAX_MS = 4_000;
 export { HELD_RECHECK_MS };
 
 export interface StatusEnv {
@@ -50,7 +53,9 @@ export interface StatusEnv {
   touch?: boolean;
   since: SinceView;
   plansUrl: () => string;
+  githubStatus?: GithubStatusReader;
   now?: () => number;
+  random?: () => number;
   timers?: { set: (run: () => void, ms: number) => unknown; clear: (handle: unknown) => void };
 }
 
@@ -150,6 +155,7 @@ export class StatusController {
   private readonly holds: DraftHold;
   private seq = 0;
   private asked = "";
+  private askedSet = new Set<number>();
   private readAt = 0;
   private retry: unknown = null;
   private retryMs = FACTS_RETRY_MS;
@@ -183,9 +189,11 @@ export class StatusController {
   private disposed = false;
   private readonly stops: Array<() => void> = [];
   private readonly now: () => number;
+  private readonly random: () => number;
 
   constructor(private readonly env: StatusEnv) {
     this.now = env.now ?? Date.now;
+    this.random = env.random ?? Math.random;
     this.lastModelState = env.model.state();
     this.lastModelVault = env.model.vault();
     this.holds = new DraftHold({
@@ -202,6 +210,10 @@ export class StatusController {
     this.stops.push(env.model.subscribe(() => this.modelChanged()));
     this.stops.push(env.model.onDraftMoved((prNumber, isDraft, requestedReviewers) => this.holdDraft(prNumber, isDraft, requestedReviewers)));
     this.stops.push(env.since.subscribe(() => this.changed(false)));
+    if (env.githubStatus) {
+      this.stops.push(env.githubStatus.subscribe(() => this.changed(false)));
+      this.stops.push(env.githubStatus.onRecover(() => this.githubRecovered()));
+    }
   }
 
   dispose(): void {
@@ -260,20 +272,36 @@ export class StatusController {
     this.retry = null;
   }
 
-  private scheduleRetry(wait: number): void {
+  private scheduleRetry(wait: number, after?: () => void): void {
     this.cancelRetry();
     const run = (): void => {
       this.retry = null;
       if (this.disposed) return;
+      after?.();
       void this.read(true);
     };
     this.retry = this.setTimer(run, wait);
   }
 
+  private jitter(ms: number): number {
+    return Math.round(ms * (0.8 + this.random() * 0.4));
+  }
+
   private retryLater(): void {
-    const wait = this.retryMs;
+    const wait = this.jitter(this.retryMs);
     this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
     this.scheduleRetry(wait);
+  }
+
+  private githubRecovered(): void {
+    if (this.disposed) return;
+    this.limitedUntil = 0;
+    this.retryMs = FACTS_RETRY_MS;
+    this.fullRefreshPending = true;
+    const wait = Math.round(RECOVERY_JITTER_MIN_MS + this.random() * (RECOVERY_JITTER_MAX_MS - RECOVERY_JITTER_MIN_MS));
+    this.scheduleRetry(wait, () => {
+      if (this.env.model.state().phase === "offline") void this.env.model.refresh?.();
+    });
   }
 
   private syncRepo(): void {
@@ -282,12 +310,41 @@ export class StatusController {
     this.factsFor = repo;
     this.facts = new Map();
     this.asked = "";
+    this.askedSet = new Set();
     this.readAt = 0;
     this.limitedUntil = 0;
     this.fullRefreshPending = false;
     this.pendingRefresh.clear();
     this.cancelRetry();
     this.holds.clear();
+  }
+
+  private syncNumbers(current: readonly number[]): void {
+    this.syncRepo();
+    const nextKey = current.join(",");
+    if (nextKey === this.asked) return;
+    if (this.readAt === 0) {
+      void this.read();
+      return;
+    }
+    const added = current.filter((number) => !this.askedSet.has(number));
+    this.asked = nextKey;
+    this.askedSet = new Set(current);
+    if (added.length > 0) {
+      void this.read(false, added);
+      return;
+    }
+    if (!this.reading) {
+      const kept = new Map<number, ReviewFacts>();
+      for (const number of current) {
+        const fact = this.facts.get(number);
+        if (fact) kept.set(number, fact);
+      }
+      if (kept.size !== this.facts.size) {
+        this.facts = kept;
+        this.changed();
+      }
+    }
   }
 
   holdDraft(prNumber: number, isDraft: boolean, requestedReviewers?: readonly string[]): void {
@@ -333,7 +390,11 @@ export class StatusController {
     const { busy } = state;
     const ended = this.wasBusy && !busy;
     this.wasBusy = busy;
-    if (ended || this.numbers().join(",") !== this.asked) void this.read();
+    if (state.phase !== "rate-limited") {
+      if (ended || this.fullRefreshPending) void this.read();
+      else if (this.pendingRefresh.size > 0) void this.read(true);
+      else this.syncNumbers(this.numbers());
+    }
     this.preview();
     if (sameVault && this.watchedPath !== null && !this.vaultMetaChanged()) {
       const nextSig = unchangedSignature(this.env.model.unchangedRow(this.watchedPath));
@@ -358,16 +419,27 @@ export class StatusController {
 
   private look(): void {
     if (this.disposed) return;
-    if (this.numbers().join(",") !== this.asked || this.now() - this.readAt >= FACTS_FRESH_MS) void this.read();
+    void this.env.githubStatus?.refresh();
+    if (this.env.model.state().phase === "rate-limited") return;
+    const current = this.numbers();
+    if (this.readAt === 0 || this.fullRefreshPending || this.now() - this.readAt >= FACTS_FRESH_MS) void this.read();
+    else if (this.pendingRefresh.size > 0) void this.read(true);
+    else this.syncNumbers(current);
   }
 
   reviewsChanged(): void {
     if (this.disposed) return;
+    void this.env.githubStatus?.refresh();
     void this.read();
   }
 
   private read(retrying = false, only?: readonly number[]): Promise<void> {
     this.syncRepo();
+    if (this.env.model.state().phase === "rate-limited") {
+      if (only) for (const number of only) this.pendingRefresh.add(number);
+      else if (!retrying) this.fullRefreshPending = true;
+      return this.reading ?? Promise.resolve();
+    }
     const repo = this.env.repo();
     const remaining = this.limitedUntil - this.now();
     if (remaining > 0) {
@@ -391,9 +463,11 @@ export class StatusController {
       wanted = numbers.filter((number) => targets.has(number));
       if (wanted.length === 0) return Promise.resolve();
     } else {
-      this.asked = this.numbers().join(",");
-      this.readAt = this.now();
+      const current = this.numbers();
+      this.asked = current.join(",");
+      this.askedSet = new Set(current);
       const full = !retrying || this.fullRefreshPending;
+      if (full) this.readAt = this.now();
       this.fullRefreshPending = false;
       const pending = this.pendingRefresh;
       this.pendingRefresh = new Set();
@@ -404,7 +478,7 @@ export class StatusController {
       const next = new Map<number, ReviewFacts>();
       let complete = true;
       let refused = false;
-      let limited: { limited: true; retryAfterMs?: number } | null = null;
+      let backedOff: { retryAfterMs?: number; unavailable?: true; fastFail?: boolean } | null = null;
       let stoppedAt = wanted.length;
       for (let at = 0; at < wanted.length; at += FACTS_PER_REQUEST) {
         const answer = await this.env.review.details(repo, wanted.slice(at, at + FACTS_PER_REQUEST));
@@ -413,7 +487,7 @@ export class StatusController {
           complete = false;
           stoppedAt = at;
           if (answer === "failed") refused = true;
-          else if (answer !== null) limited = answer;
+          else if (answer !== null) backedOff = answer;
           break;
         }
         for (const [number, detail] of answer) next.set(number, factsOf(detail));
@@ -422,11 +496,16 @@ export class StatusController {
       if (complete) {
         this.retryMs = FACTS_RETRY_MS;
         this.limitedUntil = 0;
-      } else if (limited !== null || refused) {
+        if (wanted.length > 0) this.env.githubStatus?.noteHealthy();
+      } else if (backedOff !== null || refused) {
         for (const number of wanted.slice(stoppedAt)) this.pendingRefresh.add(number);
-        if (limited !== null) {
-          const wait = limited.retryAfterMs ?? this.retryMs;
-          if (limited.retryAfterMs === undefined) this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
+        if (refused || backedOff?.unavailable) {
+          if (backedOff?.fastFail) this.env.githubStatus?.noteFastFail(backedOff.retryAfterMs);
+          void this.env.githubStatus?.refresh();
+        }
+        if (backedOff !== null) {
+          const wait = backedOff.retryAfterMs ?? this.jitter(this.retryMs);
+          if (backedOff.retryAfterMs === undefined) this.retryMs = Math.min(this.retryMs * 2, FACTS_RETRY_MAX_MS);
           this.limitedUntil = this.now() + wait;
           this.scheduleRetry(wait);
         } else this.retryLater();
@@ -594,8 +673,9 @@ export class StatusController {
       this.checked = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === "string") : [];
       this.checkedFor = place;
     }
+    const githubStatus = this.env.githubStatus?.snapshot() ?? null;
     const activePeople = phaseOf(status) === "local" && (view?.state.people ?? 0) > 0 ? view!.state.people! : 0;
-    const key: unknown[] = [vaultBase, this.version, path, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, this.checked, this.notice, this.reviewers, readOnly, plansUrl, joinKey];
+    const key: unknown[] = [vaultBase, this.version, path, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, this.checked, this.notice, githubStatus, this.reviewers, readOnly, plansUrl, joinKey];
     if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) {
       this.lastView = view;
       return this.built.value;
@@ -614,6 +694,7 @@ export class StatusController {
       showChanges,
       checked: this.checked,
       notice: this.notice,
+      ...(githubStatus ? { githubStatus } : {}),
       reviewers: this.reviewers,
       readOnly,
       onAction: (action) => this.act(action),
@@ -635,7 +716,13 @@ export class StatusController {
   }
 
   get host(): PanelHost {
-    return { noun: "note", ...(this.env.openMenu ? { openMenu: this.env.openMenu } : {}), ...(this.env.ask ? { confirm: this.env.ask } : {}), ...(this.env.touch ? { touch: true } : {}) };
+    return {
+      noun: "note",
+      openUrl: this.env.note.openUrl,
+      ...(this.env.openMenu ? { openMenu: this.env.openMenu } : {}),
+      ...(this.env.ask ? { confirm: this.env.ask } : {}),
+      ...(this.env.touch ? { touch: true } : {}),
+    };
   }
 
   act(action: PanelAction): Promise<ActionAnswer> {
@@ -683,7 +770,10 @@ export class StatusController {
         this.changed(false);
       },
       done: (step, id) => this.done(step, id),
-      refresh: () => env.model.refresh(),
+      refresh: () => {
+        void env.githubStatus?.refresh();
+        return env.model.refresh();
+      },
       busy: () => env.model.state().busy,
       toast: (title, description) => env.dialogs.toast(title, description),
       notBrought: TRY_AGAIN,

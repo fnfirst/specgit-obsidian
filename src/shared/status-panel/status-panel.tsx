@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  GITHUB_STATUS_COPY,
+  GITHUB_STATUS_PAGE_URL,
   GROUP_CARD,
   STATUS_BAR,
   STATUS_CHIPS,
@@ -16,12 +18,15 @@ import {
   STATUS_TIPS,
   STATUS_TITLE,
   STATUS_VIEW_ONLY,
+  githubStatusHeadline,
+  githubStatusTone,
   statusBulkResult,
   statusDiscard,
   statusShowMore,
   statusApproveLabel,
   statusPublishLabel,
   statusSubmitLabel,
+  type GithubStatusSnapshot,
   type StatusGroupMenuItem,
 } from "../review-flow";
 import { CloseIcon } from "./icons";
@@ -32,7 +37,7 @@ import { PINNED_MENU_LABEL, PinnedCard, cardButtons, type CardButton } from "./p
 import { GroupCard, Row, groupMenuItems, groupMenuLabel, memberMenuId, rowMenuItems, rowMenuLabel } from "./rows";
 import { boxesWait, buttonsOff, cx, runningLabel, type Ctx } from "./shared";
 import { SubmitStep } from "./submit-step";
-import { TipCard, useTips, type TipContent } from "./tips";
+import { TipCard, safeTipHref, useTips, type TipContent } from "./tips";
 import type { ConfirmQuestion, Lane, PanelAction, PanelHost, PanelMenuItem, PinnedMenuItem, StatusChipKey, StatusNotice, StatusNoun, StatusPanelModel, StatusRowMenuItem } from "./types";
 
 const NOTICE_MS = 4000;
@@ -117,9 +122,39 @@ function SkeletonRows() {
   );
 }
 
-function Skeleton() {
+function GithubStatusBand({ status, host }: { status: GithubStatusSnapshot | null | undefined; host: PanelHost }) {
+  const surface = host.noun === "note" ? "obsidian" : "editor";
+  const headline = githubStatusHeadline(status, surface);
+  const tone = githubStatusTone(status);
+  if (!status || !headline || tone === "none") return null;
+  const href = safeTipHref(status.statusUrl) ?? GITHUB_STATUS_PAGE_URL;
+  return (
+    <div className={cx("sp-band", "sp-github-status", `sp-github-status-${tone}`)} role="status" aria-live="polite" data-testid="sp-github-status" data-tone={tone}>
+      <span className="sp-github-status-text">{headline}</span>
+      <a
+        className="sp-github-status-link"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={
+          host.openUrl
+            ? (event) => {
+                event.preventDefault();
+                host.openUrl?.(href);
+              }
+            : undefined
+        }
+      >
+        {GITHUB_STATUS_COPY.statusLinkLabel}
+      </a>
+    </div>
+  );
+}
+
+function Skeleton({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   return (
     <div className="sp-root" aria-busy="true" data-testid="sp-panel">
+      <GithubStatusBand status={model.githubStatus} host={host} />
       <div className="sp-list">
         <SkeletonRows />
       </div>
@@ -128,7 +163,7 @@ function Skeleton() {
 }
 
 export function StatusPanel({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
-  if (model.loading && !model.pinned) return <Skeleton />;
+  if (model.loading && !model.pinned) return <Skeleton model={model} host={host} />;
   return <Loaded model={model} host={host} />;
 }
 
@@ -525,6 +560,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
           {STATUS_OFFLINE}
         </div>
       ) : null}
+      <GithubStatusBand status={model.githubStatus} host={host} />
       {!model.offline && model.rateLimited ? (
         <div className="sp-band sp-offline" role="status" data-testid="sp-rate-limited">
           {model.rateLimited}
