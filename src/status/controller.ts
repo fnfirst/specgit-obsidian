@@ -1,4 +1,4 @@
-import { CATCH_UP, type CatchUpPreview, isViewersBranch, type SaverStatus, TRY_AGAIN } from "../shared/review-flow";
+import { CATCH_UP, type CatchUpPreview, isViewersBranch, sameLogin, type SaverStatus, TRY_AGAIN } from "../shared/review-flow";
 import type { ActionAnswer, PanelAction, PanelHost, ReviewFacts, StatusNotice, StatusReviewer } from "../shared/status-panel";
 import { comparedOf, onGitHubFiles, type VaultStates } from "../changes/vault-state";
 import { type Built, panelModelFromVault, type VaultPanelBase, vaultPanelOf } from "./panel-model";
@@ -11,7 +11,7 @@ import type { ReviewApi } from "../review/review-api";
 import { factsOf } from "../review/review-api";
 import { CATCH_UP_HERE } from "../review/words";
 import { viewsOf } from "../changes/vault-since";
-import { type DocumentRef, noteName } from "../mapping";
+import { type DocumentRef, noteName, pathKind } from "../mapping";
 import type { BroughtDraft } from "../changes/bring-in";
 import { phaseOf, type NoteStatus } from "../status";
 import { DraftHold, HELD_RECHECK_MS } from "./draft-hold";
@@ -162,6 +162,8 @@ export class StatusController {
   private limitedUntil = 0;
   private fullRefreshPending = false;
   private pendingRefresh = new Set<number>();
+  private draftSigs = new Map<number, string>();
+  private lastChoices = new Set<string>();
   private wasBusy = false;
   private reading: Promise<void> | null = null;
   private again = false;
@@ -196,6 +198,8 @@ export class StatusController {
     this.random = env.random ?? Math.random;
     this.lastModelState = env.model.state();
     this.lastModelVault = env.model.vault();
+    this.draftSigs = this.currentDraftSigs() ?? new Map<number, string>();
+    this.lastChoices = new Set(this.lastModelState.choices.keys());
     this.holds = new DraftHold({
       now: this.now,
       repo: () => env.repo(),
@@ -221,6 +225,8 @@ export class StatusController {
     this.limitedUntil = 0;
     this.fullRefreshPending = false;
     this.pendingRefresh.clear();
+    this.draftSigs.clear();
+    this.lastChoices.clear();
     this.cancelRetry();
     this.holds.clear();
     this.stops.forEach((stop) => stop());
@@ -238,39 +244,71 @@ export class StatusController {
     this.listeners.forEach((listener) => listener());
   }
 
-  private numbers(): number[] {
-    const { rows, groups } = this.env.model.state();
-    const found = new Set<number>();
-    for (const row of rows) if (row.entry && row.entry.prNumber > 0) found.add(row.entry.prNumber);
-    for (const card of groups) if (card.group && card.group.overview.prNumber > 0) found.add(card.group.overview.prNumber);
-    const paths = this.env.model.flightAnswer()?.paths;
-    if (paths) {
-      for (const key in paths) {
-        for (const one of paths[key]!) if (one.prNumber !== undefined && one.prNumber > 0) found.add(one.prNumber);
-      }
-    }
-    return [...found].sort((a, b) => a - b);
+  private shouldRead(prNumber: number): boolean {
+    return this.holds.has(prNumber) || this.facts.get(prNumber)?.isDraft === false || this.facts.get(prNumber)?.mergeableState === "dirty";
   }
 
-  private collectNumbers(): { all: number[]; ordered: number[] } {
-    const { rows, groups } = this.env.model.state();
+  private numbers(): number[] {
+    return this.collectNumbers().all;
+  }
+
+  private collectNumbers(): { all: number[]; ordered: number[]; known: Set<number> } {
+    const { rows, groups, choices } = this.env.model.state();
+    const known = new Set<number>();
     const found = new Set<number>();
     const own = new Set<number>();
-    for (const row of rows) if (row.entry && row.entry.prNumber > 0) { found.add(row.entry.prNumber); own.add(row.entry.prNumber); }
-    for (const card of groups) if (card.group && card.group.overview.prNumber > 0) { found.add(card.group.overview.prNumber); own.add(card.group.overview.prNumber); }
+    for (const row of rows) {
+      const n = row.entry?.prNumber ?? 0;
+      if (n <= 0) continue;
+      known.add(n);
+      const diverged = row.change.mainMoved || (row.change.repoSha !== null && row.change.baseUnknown);
+      if (!row.entry!.isDraft || row.entry!.stage === "conflicts" || diverged || choices.has(row.change.path) || this.shouldRead(n)) {
+        found.add(n);
+        own.add(n);
+      }
+    }
+    for (const card of groups) {
+      const overview = card.group?.overview;
+      if (!overview || overview.prNumber <= 0) continue;
+      const n = overview.prNumber;
+      known.add(n);
+      if (!overview.isDraft || this.shouldRead(n)) {
+        found.add(n);
+        own.add(n);
+      }
+    }
     const viewer = this.env.viewer();
-    const paths = this.env.model.flightAnswer()?.paths;
+    const flight = this.env.model.flightAnswer();
+    const paths = flight?.paths;
     if (paths) {
       for (const key in paths) {
         for (const one of paths[key]!) {
+          if (!one.isReviewBranch || one.changedStatus === "removed") continue;
           if (one.prNumber === undefined || one.prNumber <= 0) continue;
-          found.add(one.prNumber);
-          if (isViewersBranch(one, viewer)) own.add(one.prNumber);
+          const n = one.prNumber;
+          known.add(n);
+          if (one.prIsDraft === false || choices.has(key) || this.shouldRead(n)) {
+            found.add(n);
+            if (isViewersBranch(one, viewer)) own.add(n);
+          }
+        }
+      }
+    }
+    const flightGroups = flight?.groups;
+    if (flightGroups) {
+      for (const key in flightGroups) {
+        const overview = flightGroups[key]!;
+        if (overview.prNumber <= 0) continue;
+        const n = overview.prNumber;
+        known.add(n);
+        if (!overview.isDraft || this.shouldRead(n)) {
+          found.add(n);
+          if (sameLogin(overview.authorLogin, viewer)) own.add(n);
         }
       }
     }
     const all = [...found].sort((a, b) => a - b);
-    return { all, ordered: [...all.filter((number) => own.has(number)), ...all.filter((number) => !own.has(number))] };
+    return { all, ordered: [...all.filter((number) => own.has(number)), ...all.filter((number) => !own.has(number))], known };
   }
 
   private setTimer(run: () => void, ms: number): unknown {
@@ -330,6 +368,8 @@ export class StatusController {
     this.limitedUntil = 0;
     this.fullRefreshPending = false;
     this.pendingRefresh.clear();
+    this.draftSigs.clear();
+    this.lastChoices.clear();
     this.cancelRetry();
     this.holds.clear();
   }
@@ -395,8 +435,61 @@ export class StatusController {
     return false;
   }
 
+  private currentDraftSigs(): Map<number, string> | null {
+    const paths = this.env.model.flightAnswer?.()?.paths;
+    if (!paths) return null;
+    const grouped = new Map<number, string[]>();
+    for (const path in paths) {
+      for (const one of paths[path]!) {
+        if (one.prNumber === undefined || one.prNumber <= 0) continue;
+        const list = grouped.get(one.prNumber);
+        const item = `${path}\0${one.docBlobSha ?? ""}\0${one.lastCommitAt ?? ""}`;
+        if (list) list.push(item);
+        else grouped.set(one.prNumber, [item]);
+      }
+    }
+    const sigs = new Map<number, string>();
+    for (const [number, list] of grouped) sigs.set(number, list.sort().join("\n"));
+    return sigs;
+  }
+
+  private dirtyDraftsMoved(): number[] {
+    const moved = new Set<number>();
+    const nextSigs = this.currentDraftSigs();
+    if (nextSigs !== null) {
+      for (const [number, sig] of nextSigs) {
+        const prev = this.draftSigs.get(number);
+        if (prev !== sig && this.facts.get(number)?.mergeableState === "dirty") moved.add(number);
+      }
+      this.draftSigs = nextSigs;
+    }
+    const choices = new Set(this.env.model.state().choices.keys());
+    const flightPaths = this.env.model.flightAnswer?.()?.paths;
+    for (const path of this.lastChoices) {
+      if (choices.has(path)) continue;
+      const prNumber = this.env.model.row(path)?.entry?.prNumber ?? this.env.model.unchangedRow(path)?.entry?.prNumber;
+      if (prNumber !== undefined && prNumber > 0 && this.facts.get(prNumber)?.mergeableState === "dirty") moved.add(prNumber);
+      for (const one of flightPaths?.[path] ?? []) {
+        if (one.prNumber !== undefined && one.prNumber > 0 && this.facts.get(one.prNumber)?.mergeableState === "dirty") moved.add(one.prNumber);
+      }
+    }
+    this.lastChoices = choices;
+    return [...moved];
+  }
+
+  private dispatchDirty(dirtyMoved: readonly number[]): boolean {
+    if (this.pendingRefresh.size === 0 && dirtyMoved.length === 0) return false;
+    if (this.pendingRefresh.size === 0 && this.reading !== null) void this.read(false, dirtyMoved);
+    else {
+      for (const number of dirtyMoved) this.pendingRefresh.add(number);
+      void this.read(true);
+    }
+    return true;
+  }
+
   private modelChanged(): void {
     if (this.disposed) return;
+    this.syncRepo();
     const state = this.env.model.state();
     const vault = this.env.model.vault();
     const sameVault = state === this.lastModelState && vault === this.lastModelVault;
@@ -405,10 +498,13 @@ export class StatusController {
     const { busy } = state;
     const ended = this.wasBusy && !busy;
     this.wasBusy = busy;
-    if (state.phase !== "rate-limited") {
-      if (ended || this.fullRefreshPending) void this.read();
-      else if (this.pendingRefresh.size > 0) void this.read(true);
-      else this.syncNumbers(this.numbers());
+    const dirtyMoved = this.dirtyDraftsMoved();
+    if (state.phase === "rate-limited") {
+      for (const number of dirtyMoved) this.pendingRefresh.add(number);
+    } else if (ended || this.fullRefreshPending) {
+      void this.read();
+    } else if (!this.dispatchDirty(dirtyMoved)) {
+      this.syncNumbers(this.numbers());
     }
     this.preview();
     if (sameVault && this.watchedPath !== null && !this.vaultMetaChanged()) {
@@ -434,11 +530,15 @@ export class StatusController {
 
   private look(): void {
     if (this.disposed) return;
+    this.syncRepo();
     void this.env.githubStatus?.refresh();
-    if (this.env.model.state().phase === "rate-limited") return;
+    const dirtyMoved = this.dirtyDraftsMoved();
+    if (this.env.model.state().phase === "rate-limited") {
+      for (const number of dirtyMoved) this.pendingRefresh.add(number);
+      return;
+    }
     if (this.readAt === 0 || this.fullRefreshPending || this.now() - this.readAt >= FACTS_FRESH_MS) void this.read();
-    else if (this.pendingRefresh.size > 0) void this.read(true);
-    else this.syncNumbers(this.numbers());
+    else if (!this.dispatchDirty(dirtyMoved)) this.syncNumbers(this.numbers());
   }
 
   reviewsChanged(): void {
@@ -470,11 +570,22 @@ export class StatusController {
       return this.reading;
     }
     if (!only) this.cancelRetry();
-    const { all: current, ordered: numbers } = this.collectNumbers();
+    const { all: current, ordered: numbers, known } = this.collectNumbers();
     let wanted: number[];
     if (only) {
       const targets = new Set(only);
-      wanted = numbers.filter((number) => targets.has(number));
+      const listed = new Set<number>();
+      wanted = [];
+      for (const number of numbers) {
+        if (!targets.has(number) || listed.has(number)) continue;
+        listed.add(number);
+        wanted.push(number);
+      }
+      for (const number of only) {
+        if (!known.has(number) || listed.has(number)) continue;
+        listed.add(number);
+        wanted.push(number);
+      }
       if (wanted.length === 0) return Promise.resolve();
     } else {
       this.asked = current.join(",");
@@ -529,6 +640,9 @@ export class StatusController {
           const fresh = next.get(number) ?? this.facts.get(number);
           if (fresh) kept.set(number, fresh);
         }
+        for (const [number, fresh] of next) {
+          if (known.has(number) && !kept.has(number)) kept.set(number, fresh);
+        }
         this.facts = kept;
         this.holds.reconcile(this.facts, next, startedSeq);
         this.changed();
@@ -551,7 +665,8 @@ export class StatusController {
     const state = this.env.model.state();
     const row = path === null ? undefined : this.env.model.row(path);
     if (!path || !row || !row.entry || state.busy) return;
-    const key = `${path}|${row.entry.prNumber}|${row.change.sha}`;
+    const draftSig = this.draftSigs.get(row.entry.prNumber) ?? "";
+    const key = `${path}|${row.entry.prNumber}|${row.change.sha}|${row.change.repoSha ?? ""}|${draftSig}`;
     if (key === this.previewing) return;
     this.previewing = key;
     void this.env.flows.preview(row.doc).then((answer: CatchUpPreview | null) => {
@@ -561,8 +676,22 @@ export class StatusController {
     });
   }
 
+  private activeFile(view: StatusView | null): { path: string; liveCapable: boolean } | null {
+    if (view) {
+      if (view.state.note) return this.env.documentFor(view.state.note.path) === null ? null : { path: view.state.note.path, liveCapable: true };
+      const file = view.state.file;
+      if (file && (file.kind === "board" || file.kind === "base") && this.env.documentFor(file.path) !== null) return { path: file.path, liveCapable: false };
+      return null;
+    }
+    const path = this.env.activePath();
+    if (path === null) return null;
+    const kind = pathKind(path);
+    if (kind === "other" || this.env.documentFor(path) === null) return null;
+    return { path, liveCapable: kind === "note" };
+  }
+
   private shownPath(view: StatusView | null): string | null {
-    return view ? (view.state.note?.path ?? null) : this.env.activePath();
+    return this.activeFile(view)?.path ?? null;
   }
 
   private isLocalOnlyNew(path: string): boolean {
@@ -617,13 +746,25 @@ export class StatusController {
     const viewer = this.env.viewer();
     const linked = this.env.folder();
     const offered = this.env.offered?.().length ?? 0;
-    const path = view ? (view.state.note?.path ?? null) : this.env.activePath();
+    const active = this.activeFile(view);
+    const path = active?.path ?? null;
+    const liveCapable = active?.liveCapable ?? true;
     const hold = path !== null ? model.holdOf(path) : null;
     const vaultKey: unknown[] = [state, this.facts, this.vaultVersion, vault, offered, viewer, linked, this.editing];
+    let learnedExpired = false;
+    if (this.vaultBuilt !== null) {
+      for (const one of this.vaultBuilt.value.learnedProtected) {
+        if (model.isLearned?.(one) !== true) {
+          learnedExpired = true;
+          break;
+        }
+      }
+    }
     const vaultMatches =
       this.vaultBuilt !== null &&
       this.vaultBuilt.key.length === vaultKey.length &&
       this.vaultBuilt.key.every((one, at) => one === vaultKey[at]) &&
+      !learnedExpired &&
       !(path !== null && !this.vaultBuilt.value.looseByPath.has(path) && this.vaultBuilt.value.holdById.has(path) && hold !== this.vaultBuilt.value.holdById.get(path));
     let vaultBase: VaultPanelBase;
     if (vaultMatches) {
@@ -661,14 +802,16 @@ export class StatusController {
         heldDeletes: state.heldDeletes?.count ?? 0,
         offered,
         isLive: (one) => this.env.isLive(one),
+        isLearned: (one) => model.isLearned?.(one) === true,
         openComments: (one) => this.env.openComments(one),
+        mtimeOf: (one) => model.mtimeOf?.(one),
         linked,
         editingGroup: this.editing,
       });
       this.vaultToldById = toldById;
       this.vaultBuilt = { key: vaultKey, value: vaultBase };
     }
-    const status = view?.state.status ?? null;
+    const status = liveCapable ? (view?.state.status ?? null) : null;
     const behind = path !== null && this.behind?.path === path && this.behind.behind;
     const saver = path !== null ? model.saverOf(path) : null;
     const stay = view ? view.state.stay : this.env.stayOn?.() === true;
@@ -687,8 +830,9 @@ export class StatusController {
       this.checkedFor = place;
     }
     const githubStatus = this.env.githubStatus?.snapshot() ?? null;
-    const activePeople = phaseOf(status) === "local" && (view?.state.people ?? 0) > 0 ? view!.state.people! : 0;
-    const key: unknown[] = [vaultBase, this.version, path, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, this.checked, this.notice, githubStatus, this.reviewers, readOnly, plansUrl, joinKey];
+    const activePeople = liveCapable && phaseOf(status) === "local" && (view?.state.people ?? 0) > 0 ? view!.state.people! : 0;
+    const activeLearned = path !== null && model.isLearned?.(path) === true;
+    const key: unknown[] = [vaultBase, this.version, path, liveCapable, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, activeLearned, this.checked, this.notice, githubStatus, this.reviewers, readOnly, plansUrl, joinKey];
     if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) {
       this.lastView = view;
       return this.built.value;
@@ -703,7 +847,7 @@ export class StatusController {
       ...(stay ? { stay: true } : {}),
       ...(this.env.isPaused ? { isPaused: this.env.isPaused } : {}),
       openComments: (one) => this.env.openComments(one),
-      active: path ? { path, status, behind, people: view?.state.people ?? null, ...(saver ? { saver } : {}) } : null,
+      active: path ? { path, status, behind, people: liveCapable ? (view?.state.people ?? null) : null, liveCapable, ...(saver ? { saver } : {}) } : null,
       showChanges,
       checked: this.checked,
       notice: this.notice,
@@ -744,8 +888,9 @@ export class StatusController {
     const ports: StatusPorts = {
       flows: env.flows,
       units: () => this.units,
-      active: () => view?.state.note?.path ?? env.activePath(),
+      active: () => this.activeFile(view)?.path ?? null,
       choice: (path) => env.model.state().choices.get(path),
+      ...(env.stayOn ? { stayOn: env.stayOn } : {}),
       inVault: env.inVault,
       openNote: env.note.open,
       openInSpecgit: env.note.openInSpecgit,

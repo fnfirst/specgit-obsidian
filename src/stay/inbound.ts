@@ -137,13 +137,13 @@ export class Inbound {
     this.deferredUnsaved.delete(path);
   }
 
-  caughtUp(path: string, repoSha?: string): void {
+  caughtUp(path: string, repoSha?: string, notify = true): void {
     this.declined.delete(path);
     if (repoSha !== undefined) {
       delete this.ctx.state.data.endedOwn?.[path];
       this.settled(path, repoSha);
     } else this.clearPending(path);
-    this.ctx.onResolved?.(path);
+    if (notify) this.ctx.onResolved?.(path);
   }
 
   unsavedPaths(): string[] {
@@ -153,6 +153,10 @@ export class Inbound {
   stop(): void {
     this.abort.abort();
     this.deferredUnsaved.clear();
+    for (const path of [...this.choices]) this.dropChoice(path);
+    this.cues.clear();
+    this.announced.clear();
+    this.reviewTold.clear();
   }
 
   async run(looked: Looked, silent = false): Promise<InboundPass> {
@@ -345,6 +349,13 @@ export class Inbound {
     else ports.notify(message);
   }
 
+  private isCleanDraftForMain(looked: Looked, path: string): boolean {
+    const row = looked.rows.find((one) => one.change.path === path);
+    if (!row || row.light || row.review?.pr?.mergeableState !== "clean") return false;
+    const repoSha = looked.repo.get(path);
+    return repoSha === undefined || row.change.repoSha === repoSha;
+  }
+
   private noteCues(looked: Looked, added: Array<[string, string]>): void {
     const seen = this.ctx.state.data.seen!;
     const now = this.ctx.ports.now();
@@ -352,7 +363,16 @@ export class Inbound {
     for (const [path, sha] of added) {
       if (this.isPaused(path)) continue;
       const entry = looked.files.get(path);
-      if (!entry || entry.sha === sha || entry.sha === seen[path] || this.isUnchanged(path, entry)) continue;
+      if (!entry || entry.sha === sha || entry.sha === seen[path]) continue;
+      const doc = this.ctx.ports.documentFor(path);
+      if (doc && this.followsDraft(looked, path, doc, entry) && this.isCleanDraftForMain(looked, path)) {
+        this.waiting.delete(path);
+        this.announced.delete(path);
+        this.reviewTold.delete(path);
+        this.declined.delete(path);
+        continue;
+      }
+      if (this.isUnchanged(path, entry)) continue;
       here.add(path);
       if (this.cues.get(path)?.sha !== sha) this.cues.set(path, { sha, since: now, told: false });
     }
@@ -458,17 +478,33 @@ export class Inbound {
     return moves;
   }
 
+  private async openReview(path: string, doc: DocumentRef): ReturnType<StayPorts["reviewOf"]> {
+    const drafts = this.looked?.drafts;
+    return drafts?.level && !this.ctx.ports.inGroup(path) ? (drafts.byPath.has(path) ? "open" : "none") : this.readReview(doc);
+  }
+
   private async free(path: string, doc: DocumentRef, sha: string): Promise<boolean> {
     const { ports } = this.ctx;
     const why = await notWritableBecause({ phaseOf: (one) => ports.phaseOf(one), hasUnsavedText: (one) => ports.vault.hasUnsavedText(one) }, path);
     if (why !== null) {
+      if (this.opening.has(path) && why === "live" && ports.phaseOf(path) === "live") {
+        if (await ports.vault.hasUnsavedText(path)) {
+          this.settleReason.set(path, "blocked");
+          this.deferredUnsaved.add(path);
+          return this.notFree(path, sha);
+        }
+        if ((await this.openReview(path, doc)) === "open") {
+          this.settleReason.set(path, "review");
+          this.ctx.ports.settleReview(path);
+          return false;
+        }
+      }
       if (this.opening.has(path)) this.settleReason.set(path, "blocked");
       if (why === "typing") this.deferredUnsaved.add(path);
       return this.notFree(path, sha);
     }
     this.deferredUnsaved.delete(path);
-    const drafts = this.looked?.drafts;
-    const review = drafts?.level && !ports.inGroup(path) ? (drafts.byPath.has(path) ? "open" : "none") : await this.readReview(doc);
+    const review = await this.openReview(path, doc);
     if (review === "none") return true;
     if (review === "open") {
       if (this.opening.has(path)) {
@@ -574,7 +610,7 @@ export class Inbound {
       this.rebaseOwn(looked, path, doc, entry, sha);
       return this.settled(path, sha);
     }
-    if (entry && this.followsDraft(looked, path, doc, entry)) {
+    if (entry && !this.opening.has(path) && this.followsDraft(looked, path, doc, entry)) {
       return this.settled(path, sha);
     }
     if (!(await this.free(path, doc, sha))) return;
@@ -600,7 +636,8 @@ export class Inbound {
   private followsDraft(looked: Looked, path: string, doc: DocumentRef, entry: Pick<CacheEntry, "sent" | "sentTo">): boolean {
     const { ports } = this.ctx;
     const draft = looked.drafts?.byPath.get(path);
-    if (!draft || ports.phaseOf(path) !== "local" || ports.disconnected(doc) || ports.inGroup(path)) return false;
+    const phase = ports.phaseOf(path);
+    if (!draft || (phase !== "local" && !(phase === "live" && this.isCleanDraftForMain(looked, path))) || ports.disconnected(doc) || ports.inGroup(path)) return false;
     return follows(draft, ports.login(), entry, ports.policy());
   }
 

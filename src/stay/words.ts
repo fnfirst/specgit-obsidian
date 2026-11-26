@@ -78,3 +78,15 @@ export const STAY_DRAFTS_WORDS = {
 export const STAY_PAUSED_NOTICE = "Stay connected is paused here because this vault's repository changed on another device.";
 
 export const customServerQuestion = (host: string): string => `Sign in to ${host} instead of specgit.com?`;
+
+const manyAtOnce = (count: number): string =>
+  count === 1 ? "1 file changed along with many others at once, so it wasn't saved. It's in the Status tab." : `${count} files changed at once, so they weren't saved one by one. They're in the Status tab.`;
+
+export const STAY_SAID = {
+  burst: (count: number) => manyAtOnce(count),
+  flurry: (count: number) => manyAtOnce(count),
+  atStart: (count: number) => `${count} new or renamed ${count === 1 ? "file was" : "files were"} here when Obsidian opened. ${count === 1 ? "It's" : "They're"} in the Status tab.`,
+  taken: (count: number) => `${count === 1 ? "A note was" : `${count} notes were`} removed by another app or a sync. Nothing is deleted from GitHub.`,
+  editsClosed: (count: number) => `${count === 1 ? "1 note" : `${count} notes`} changed while Obsidian was closed. ${count === 1 ? "It's" : "They're"} in the Status tab, not saved yet.`,
+  gaveUp: (count: number) => `specgit couldn't save ${count === 1 ? "a file" : `${count} files`} automatically. ${count === 1 ? "It's" : "They're"} in the Status tab.`,
+} as const;

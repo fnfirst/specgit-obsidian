@@ -2,7 +2,7 @@ import { CHANGE_GRACE_MS } from "../shared/review-flow";
 import type { ReviewFacts } from "../shared/status-panel";
 
 export const HELD_RECHECK_MS = [2_500, 6_000] as const;
-const FOLLOW_UP_RECHECK_MS = [6_000, 12_000] as const;
+export const FOLLOW_UP_RECHECK_MS = [6_000, 12_000, 20_000, 30_000] as const;
 
 interface HeldMove {
   isDraft: boolean;
@@ -60,6 +60,10 @@ export class DraftHold {
   clear(): void {
     this.cancelTimers();
     this.moves.clear();
+  }
+
+  has(prNumber: number): boolean {
+    return this.moves.has(prNumber);
   }
 
   private cancelRechecks(): void {
@@ -186,8 +190,16 @@ export class DraftHold {
     if (this.moves.size === 0) return facts;
     const shown = new Map(facts);
     for (const [number, move] of this.moves) {
-      const known = shown.get(number);
-      if (!known) continue;
+      const known = shown.get(number) ?? {
+        isDraft: move.isDraft,
+        state: "open" as const,
+        mergeableState: null,
+        behind: false,
+        reviewDecision: null,
+        requestedReviewers: [],
+        authorLogin: null,
+        reviewers: [],
+      };
       const asked = !move.isDraft && move.requestedReviewers && move.requestedReviewers.length > 0 ? move.requestedReviewers : undefined;
       const seen = asked
         ? new Set([

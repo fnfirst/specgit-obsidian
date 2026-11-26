@@ -134,14 +134,23 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     this.connections = connections;
     const disk = diskPath(this.app);
     let clearFreshSent = (_path: string): void => undefined;
+    let pendingOffPersist = false;
+    const flushFreshUntitledPersist = deferDuringUntitled(this, () => {
+      if (pendingOffPersist) {
+        pendingOffPersist = false;
+        connections.persistOff();
+      }
+      disk.bases.flushForgets();
+    });
     this.register(
       onFreshUntitledCreate(this, (path) => {
         const doc = documentFor(this.config, path);
-        if (doc) connections.forget(doc);
-        if (disk.bases.has(path)) disk.bases.forget(path);
+        if (doc && connections.forget(doc, { deferSave: true })) pendingOffPersist = true;
+        disk.bases.forgetDeferred(path);
+        clearFreshSent(path);
         ownLinks.forget(path);
         if (cameIn.get(path) !== undefined) cameIn.set(path, null);
-        clearFreshSent(path);
+        flushFreshUntitledPersist();
       }),
     );
     const gitBases = new GitBases({
@@ -339,6 +348,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       deleted: (path, at) => this.stay?.deletedOnGithub(path, at),
       deletedAt: (path) => this.stay?.deletedAt(path) ?? null,
       restored: (path) => this.stay?.restored(path),
+      conflictResolved: (path) => this.stay?.conflictResolved(path),
       heldWhy: (path) => this.stay?.heldWhy(path) ?? null,
       join: (path) => void joinNote(path),
       addToMyNote: (path) => this.stay?.addToMyNote(path),
@@ -442,6 +452,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     mainMoved = (path) => changes.model.row(path)?.change.mainMoved === true;
     draftBy = (path) => changes.model.draftAuthor(path);
     liveJoined = (path) => {
+      disk.bases.flushForget(path);
       forgetFreshUntitled(this, path);
       changes.liveFiles.joined(path);
     };
@@ -450,12 +461,25 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       connections.onChoice(() => {
         forgetFreshUntitledIf(this, (path) => {
           const doc = documentFor(this.config, path);
-          return doc !== null && connections.wants(doc);
+          const optedIn = doc !== null && connections.wants(doc);
+          if (optedIn) disk.bases.flushForget(path);
+          return optedIn;
         });
         changes.model.redraw();
       }),
     );
-    setUpNoteBar(this, { model: changes.model, isLive: (path) => board.phaseOf(path) === "live", onStatus: (listener) => board.subscribe(listener), join: (path) => void joinNote(path), addToMyNote: (path) => this.stay?.addToMyNote(path) });
+    setUpNoteBar(this, {
+      model: changes.model,
+      isLive: (path) => board.phaseOf(path) === "live",
+      onStatus: (listener) => board.subscribe(listener),
+      join: (path) => void joinNote(path),
+      addToMyNote: (path) => this.stay?.addToMyNote(path),
+      stayOn: () => this.config.stayConnected,
+      settleFromMain: (path) => {
+        const row = changes.model.row(path) ?? changes.model.unchangedRow(path);
+        if (row) void changes.flows.settleFromMain(row);
+      },
+    });
     this.register(changes.model.subscribe(() => setAwareNotices(changes.model.state().aware !== null)));
     checkConnected = async () => {
       await changes.model.refresh();
@@ -464,6 +488,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     const joinNote = async (path: string): Promise<void> => {
       const doc = documentFor(this.config, path);
       if (!doc || !auth.isSignedIn()) return;
+      disk.bases.flushForget(path);
       forgetFreshUntitled(this, path);
       await ensureOpen(this, path);
       connections.choose(doc, true);

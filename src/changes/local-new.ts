@@ -1,5 +1,6 @@
 import type { Plugin, TAbstractFile } from "obsidian";
 import type { GroupsRead } from "../review/review-api";
+import { watchWindows } from "../windows";
 import type { VaultStates } from "./vault-state";
 
 export interface LocalNewInput {
@@ -26,6 +27,7 @@ export interface LocalNewModel {
 interface FreshEntry {
   path: string;
   place: string | null;
+  opened?: boolean;
 }
 
 interface PluginLocalTracker {
@@ -35,17 +37,60 @@ interface PluginLocalTracker {
   createListeners: Set<(path: string) => void>;
   boundModel: boolean;
   lastUntitledCreateAt: number;
+  titleFocusStartedAt: number;
+  titleDismissed: boolean;
+  activePath: () => string | null;
 }
 
 const UNTITLED_NOTE = /(?:^|\/)Untitled(?: \d+)?\.md$/i;
 const MAX_FRESH_LOCAL = 200;
-export const UNTITLED_QUIET_MS = 350;
+export const UNTITLED_QUIET_MS = 600;
+export const UNTITLED_TITLE_MAX_MS = 2_500;
+const UNTITLED_TITLE_POLL_MS = 120;
 
 const repoLowerCache = new WeakMap<ReadonlyMap<string, string>, ReadonlySet<string>>();
 const flightLowerCache = new WeakMap<object, { place: string; set: ReadonlySet<string> }>();
 const stateLowerCache = new WeakMap<VaultStates, ReadonlyMap<string, readonly string[]>>();
 const trackersByPlugin = new WeakMap<Plugin, PluginLocalTracker>();
 const activeTrackers = new Set<PluginLocalTracker>();
+const quietEndListeners = new Set<() => void>();
+
+function isInlineTitleElement(target: unknown): boolean {
+  if (!target || typeof target !== "object") return false;
+  const el = target as { classList?: { contains?: (name: string) => boolean }; closest?: (selector: string) => unknown };
+  if (typeof el.classList?.contains === "function" && el.classList.contains("inline-title")) return true;
+  return typeof el.closest === "function" && el.closest(".inline-title") !== null;
+}
+
+function currentDoc(): Document | null {
+  if (typeof activeDocument !== "undefined") return activeDocument;
+  if (typeof window !== "undefined") return window.document;
+  return null;
+}
+
+function focusedInlineTitle(): Element | null {
+  const active = currentDoc()?.activeElement ?? null;
+  return isInlineTitleElement(active) ? active : null;
+}
+
+function notifyQuietEnd(): void {
+  for (const listener of [...quietEndListeners]) listener();
+}
+
+function isFreshUntitledTitleFocused(tracker: PluginLocalTracker, now: number): boolean {
+  if (tracker.titleDismissed || focusedInlineTitle() === null) return false;
+  const active = tracker.activePath();
+  if (active !== null) return isUntitledNotePath(active) && tracker.fresh.has(active.toLowerCase());
+  for (const entry of tracker.fresh.values()) {
+    if (isUntitledNotePath(entry.path) && (tracker.lastUntitledCreateAt === 0 || now - tracker.lastUntitledCreateAt < UNTITLED_TITLE_MAX_MS)) return true;
+  }
+  return false;
+}
+
+export function onUntitledQuietEnd(listener: () => void): () => void {
+  quietEndListeners.add(listener);
+  return () => void quietEndListeners.delete(listener);
+}
 
 export function isUntitledNotePath(path: string): boolean {
   return UNTITLED_NOTE.test(path);
@@ -79,6 +124,7 @@ function trackedFreshEntry(lower: string, currentPlace: string): FreshEntry | nu
 
 export function trackFreshLocalNotes(plugin: Plugin): void {
   if (trackersByPlugin.has(plugin)) return;
+  const workspace = plugin.app?.workspace;
   const tracker: PluginLocalTracker = {
     fresh: new Map(),
     model: null,
@@ -86,24 +132,79 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     createListeners: new Set(),
     boundModel: false,
     lastUntitledCreateAt: 0,
+    titleFocusStartedAt: 0,
+    titleDismissed: false,
+    activePath: () => (workspace && typeof workspace.getActiveFile === "function" ? (workspace.getActiveFile()?.path ?? null) : null),
   };
   trackersByPlugin.set(plugin, tracker);
   activeTrackers.add(tracker);
   let disposed = false;
+  const onFocusIn = (event: Event): void => {
+    if (!disposed && isInlineTitleElement(event.target)) tracker.titleDismissed = false;
+  };
+  const endTitleQuiet = (): void => {
+    if (disposed) return;
+    const hadQuiet = tracker.titleFocusStartedAt > 0 || tracker.lastUntitledCreateAt > 0;
+    tracker.titleFocusStartedAt = 0;
+    tracker.titleDismissed = true;
+    tracker.lastUntitledCreateAt = 0;
+    if (hadQuiet) notifyQuietEnd();
+  };
+  const onFocusOut = (event: Event): void => {
+    if (disposed || !isInlineTitleElement(event.target)) return;
+    if (isInlineTitleElement((event as FocusEvent).relatedTarget)) return;
+    endTitleQuiet();
+  };
+  const onKeyDown = (event: Event): void => {
+    if (disposed || (event as KeyboardEvent).key !== "Enter" || !isInlineTitleElement(event.target)) return;
+    endTitleQuiet();
+  };
+  const canWatchWindows =
+    typeof window !== "undefined" &&
+    workspace !== undefined &&
+    typeof workspace.iterateAllLeaves === "function" &&
+    typeof workspace.on === "function" &&
+    typeof workspace.offref === "function" &&
+    typeof plugin.register === "function";
+  let stopDom: (() => void) | null = null;
+  if (canWatchWindows) {
+    stopDom = watchWindows(plugin, (win, on) => {
+      if (!win.document || typeof win.document.addEventListener !== "function") return;
+      on(win.document, "focusin", onFocusIn, { capture: true });
+      on(win.document, "focusout", onFocusOut);
+      on(win.document, "keydown", onKeyDown);
+    });
+  } else {
+    const maybeDoc = currentDoc();
+    const dom = maybeDoc && typeof maybeDoc.addEventListener === "function" ? maybeDoc : null;
+    if (dom) {
+      dom.addEventListener("focusin", onFocusIn, true);
+      dom.addEventListener("focusout", onFocusOut);
+      dom.addEventListener("keydown", onKeyDown);
+      stopDom = () => {
+        dom.removeEventListener("focusin", onFocusIn, true);
+        dom.removeEventListener("focusout", onFocusOut);
+        dom.removeEventListener("keydown", onKeyDown);
+      };
+    }
+  }
   if (typeof plugin.register === "function") {
     plugin.register(() => {
       disposed = true;
+      stopDom?.();
+      stopDom = null;
       activeTrackers.delete(tracker);
       tracker.fresh.clear();
       tracker.listeners.clear();
       tracker.createListeners.clear();
       tracker.model = null;
       tracker.lastUntitledCreateAt = 0;
+      tracker.titleFocusStartedAt = 0;
+      tracker.titleDismissed = false;
     });
   }
   const vault = plugin.app?.vault;
   if (!vault || typeof vault.on !== "function") return;
-  const workspace = plugin.app?.workspace;
   let ready = !(workspace && typeof workspace.onLayoutReady === "function");
   const keep = (ref: ReturnType<typeof vault.on>): void => {
     if (typeof plugin.registerEvent === "function") plugin.registerEvent(ref);
@@ -112,6 +213,8 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     vault.on("create", (file) => {
       if (disposed || !ready || !isEmptyUntitledFile(file)) return;
       tracker.lastUntitledCreateAt = Date.now();
+      tracker.titleFocusStartedAt = 0;
+      tracker.titleDismissed = false;
       recordFresh(tracker, file.path);
       for (const listener of tracker.createListeners) listener(file.path);
     }),
@@ -122,16 +225,34 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       const oldLower = oldPath.toLowerCase();
       const recorded = tracker.fresh.get(oldLower);
       if (recorded === undefined) return;
+      tracker.titleFocusStartedAt = 0;
+      tracker.titleDismissed = true;
       tracker.lastUntitledCreateAt = Date.now();
       tracker.fresh.delete(oldLower);
-      tracker.fresh.set(file.path.toLowerCase(), { path: file.path, place: recorded.place });
+      tracker.fresh.set(file.path.toLowerCase(), { path: file.path, place: recorded.place, opened: true });
     }),
   );
   keep(
     vault.on("delete", (file) => {
-      if (!disposed && file && typeof file.path === "string") tracker.fresh.delete(file.path.toLowerCase());
+      if (!disposed && file && typeof file.path === "string") {
+        if (tracker.fresh.delete(file.path.toLowerCase()) && tracker.fresh.size === 0) {
+          tracker.titleFocusStartedAt = 0;
+        }
+      }
     }),
   );
+  if (workspace && typeof workspace.on === "function") {
+    const noteFreshOpen = (path: string | null): void => {
+      if (disposed || path === null || !isUntitledNotePath(path)) return;
+      const entry = tracker.fresh.get(path.toLowerCase());
+      if (entry === undefined || entry.opened) return;
+      entry.opened = true;
+      tracker.lastUntitledCreateAt = Math.max(tracker.lastUntitledCreateAt, Date.now());
+      tracker.titleDismissed = false;
+    };
+    keep(workspace.on("file-open", (file) => noteFreshOpen(file?.path ?? tracker.activePath())));
+    keep(workspace.on("active-leaf-change", () => noteFreshOpen(tracker.activePath())));
+  }
   if (workspace && typeof workspace.onLayoutReady === "function") {
     workspace.onLayoutReady(() => {
       if (!disposed) ready = true;
@@ -213,9 +334,19 @@ export function isPluginLocalOnlyNew(plugin: Plugin, path: string): boolean {
 
 export function untitledCreateRemainingMs(plugin?: Plugin, now = Date.now()): number {
   const remainingOf = (tracker: PluginLocalTracker): number => {
-    if (tracker.lastUntitledCreateAt === 0 || now < tracker.lastUntitledCreateAt) return 0;
-    const elapsed = now - tracker.lastUntitledCreateAt;
-    return elapsed >= UNTITLED_QUIET_MS ? 0 : UNTITLED_QUIET_MS - elapsed;
+    let wait = 0;
+    if (tracker.lastUntitledCreateAt > 0 && now >= tracker.lastUntitledCreateAt) {
+      const elapsed = now - tracker.lastUntitledCreateAt;
+      if (elapsed < UNTITLED_QUIET_MS) wait = UNTITLED_QUIET_MS - elapsed;
+    }
+    if (isFreshUntitledTitleFocused(tracker, now)) {
+      if (tracker.titleFocusStartedAt === 0 || now < tracker.titleFocusStartedAt) tracker.titleFocusStartedAt = now;
+      const titleLeft = UNTITLED_TITLE_MAX_MS - (now - tracker.titleFocusStartedAt);
+      if (titleLeft > 0) wait = Math.max(wait, Math.min(UNTITLED_TITLE_POLL_MS, titleLeft));
+    } else {
+      tracker.titleFocusStartedAt = 0;
+    }
+    return wait;
   };
   if (plugin) {
     const tracker = trackersByPlugin.get(plugin);
@@ -244,9 +375,17 @@ export function coalesceDuringUntitled(plugin: Plugin, run: () => void, mode: "r
     }
     run();
   };
+  const stopQuiet = onUntitledQuietEnd(() => {
+    if (disposed || scheduled?.kind !== "timeout") return;
+    if (untitledCreateRemainingMs(plugin) > 0) return;
+    window.clearTimeout(scheduled.id);
+    scheduled = null;
+    run();
+  });
   if (typeof plugin.register === "function") {
     plugin.register(() => {
       disposed = true;
+      stopQuiet();
       if (scheduled === null) return;
       if (scheduled.kind === "raf") window.cancelAnimationFrame(scheduled.id);
       else if (scheduled.kind === "timeout") window.clearTimeout(scheduled.id);
@@ -288,6 +427,12 @@ export function createUntitledDeferrer(plugin: Plugin, run: () => void): { trigg
     }
     run();
   };
+  const stopQuiet = onUntitledQuietEnd(() => {
+    if (!alive || timer === null) return;
+    if (untitledCreateRemainingMs(plugin) > 0) return;
+    clear();
+    run();
+  });
   return {
     trigger: (): void => {
       if (!alive) return;
@@ -301,6 +446,7 @@ export function createUntitledDeferrer(plugin: Plugin, run: () => void): { trigg
     },
     dispose: (): void => {
       alive = false;
+      stopQuiet();
       clear();
     },
   };

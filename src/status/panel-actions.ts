@@ -42,6 +42,7 @@ export interface StatusPorts {
   units: () => Units;
   active: () => string | null;
   choice: (path: string) => NoteChoice | undefined;
+  stayOn?: () => boolean;
   inVault: (path: string) => boolean;
   openNote: (path: string) => void;
   openInSpecgit: (path: string) => void;
@@ -120,7 +121,7 @@ async function chooseForGroup(ports: StatusPorts, card: ChangeRow): Promise<void
 const CHOOSE_MATCHED = "This note already matches GitHub. Nothing to resolve.";
 
 async function chooseForNote(ports: StatusPorts, path: string, row: ChangeRow | undefined): Promise<void> {
-  const choice = ports.choice(path);
+  const choice = ports.stayOn?.() === false ? undefined : ports.choice(path);
   if (choice) return choice.run();
   if (row) return void (await ports.flows.settleFromMain(row));
   await ports.refresh();

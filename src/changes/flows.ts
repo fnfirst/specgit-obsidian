@@ -308,7 +308,7 @@ export class ChangesFlows {
       branch,
       ...(merging && prior?.branch !== undefined ? { held: prior.branch } : {}),
       ...(options.stopOnBehind ? { stopOnBehind: true } : {}),
-      level: options.toReview ? async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) : "level",
+      level: options.toReview && deps.phaseOf(change.path) !== "live" ? async (mine) => levelWith(deps, row, mine, await deps.gitFile(doc)) : "level",
     });
   }
 

@@ -6,7 +6,7 @@ import type { Draft } from "../stay/draft-state";
 export const reviewAuthor = (entry: InFlightBranch): string | null => openerOf(entry);
 
 const openedBy = (entries: readonly InFlightBranch[], login: string | null): InFlightBranch | null =>
-  entries.find((entry) => entry.isReviewBranch && !isGroupBranch(entry.branch) && entry.prNumber !== undefined && entry.prAuthorLogin != null && sameLogin(entry.prAuthorLogin, login)) ?? null;
+  entries.find((entry) => entry.changedStatus !== "removed" && entry.isReviewBranch && !isGroupBranch(entry.branch) && entry.prNumber !== undefined && entry.prAuthorLogin != null && sameLogin(entry.prAuthorLogin, login)) ?? null;
 
 const prOf = (entry: InFlightBranch): PrInfo | null =>
   entry.prNumber === undefined ? null : { number: entry.prNumber, url: entry.prUrl ?? "", state: entry.prIsDraft === false ? "open" : "draft", isDraft: entry.prIsDraft !== false, authorLogin: reviewAuthor(entry) };
@@ -37,6 +37,7 @@ export function isOwnDraft(entries: readonly InFlightBranch[] | undefined, branc
 
 function teammateEntry(entries: readonly InFlightBranch[], login: string): InFlightBranch | null {
   for (const entry of entries) {
+    if (entry.changedStatus === "removed") continue;
     const by = reviewAuthor(entry);
     if (!entry.isReviewBranch || isGroupBranch(entry.branch) || by === null || !isSomeoneElses({ authorLogin: by }, login)) continue;
     return entry;

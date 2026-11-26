@@ -1,7 +1,7 @@
 import { GROUP_BRANCH_PREFIX, isGroupBranch, type GroupOverview } from "./groups";
 import { openedBy, type InFlightBranch, type InFlightMap, type InFlightResponse } from "./in-flight";
 
-export const CHANGE_GRACE_MS = 20_000;
+export const CHANGE_GRACE_MS = 45_000;
 
 export type InFlightChange =
   | { kind: "grouped"; id: string; name: string; prNumber: number; prUrl: string; paths: readonly string[]; viewer: string | null; at: string }

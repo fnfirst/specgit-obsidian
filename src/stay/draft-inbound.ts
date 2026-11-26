@@ -146,6 +146,8 @@ export class DraftInbound {
   stop(): void {
     this.abort.abort();
     this.offers.stop();
+    for (const path of [...this.noticed]) this.clearConflict(path);
+    this.toldConflict.clear();
     this.unsaved.clear();
     this.deferredUnsaved.clear();
     this.crlfMiss.clear();
@@ -518,6 +520,7 @@ export class DraftInbound {
       }
       this.settled(path);
       this.clearConflict(path);
+      this.ctx.onResolved?.(path);
       this.offers.drop(path);
       this.unlevel.delete(path);
       this.clearUnsaved(path);
@@ -754,6 +757,7 @@ export class DraftInbound {
     this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(wrote.text) });
     this.settled(path);
     this.clearConflict(path);
+    this.ctx.onResolved?.(path);
     return wrote.changed;
   }
 
@@ -835,6 +839,7 @@ export class DraftInbound {
     if (!wrote.changed) this.rescan = true;
     this.settled(path);
     this.clearConflict(path);
+    if (holdsDraft) this.ctx.onResolved?.(path);
     await this.attachments(path, doc, draft);
     return wrote.changed;
   }
@@ -921,7 +926,9 @@ export class DraftInbound {
       try {
         if (!this.ctx.current() || this.abort.signal.aborted) return;
         if (ports.phaseOf(path) !== "local") {
-          ports.notify(CHOOSE_BLOCKED);
+          const mainMoved = looked.repo.has(path) && looked.files.get(path)?.base !== looked.repo.get(path);
+          if (draft && ports.phaseOf(path) === "live" && mainMoved && !(await ports.vault.hasUnsavedText(path))) ports.settleReview(path);
+          else ports.notify(CHOOSE_BLOCKED);
           return;
         }
         if (!draft) {

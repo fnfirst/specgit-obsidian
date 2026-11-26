@@ -11,6 +11,8 @@ export interface NoteBarSetup {
   onStatus: (listener: () => void) => () => void;
   join: (path: string) => void;
   addToMyNote: (path: string) => void;
+  stayOn?: () => boolean;
+  settleFromMain?: (path: string) => void;
 }
 
 export function setUpNoteBar(plugin: Plugin, deps: NoteBarSetup): void {
@@ -32,7 +34,18 @@ export function setUpNoteBar(plugin: Plugin, deps: NoteBarSetup): void {
       const path = view.file.path;
       const freshUntitled = isFreshUntitled(plugin, path);
       const row = freshUntitled ? undefined : (aware?.live.find((one) => one.path === path) ?? aware?.progress.find((one) => one.path === path));
-      const choice = freshUntitled || !choices.has(path) ? undefined : { ...choices.get(path)!, run: () => deps.model.state().choices.get(path)?.run() };
+      const rawChoice = freshUntitled ? undefined : choices.get(path);
+      const choice =
+        rawChoice === undefined
+          ? undefined
+          : {
+              ...rawChoice,
+              run: () => {
+                const active = deps.stayOn?.() === false ? undefined : deps.model.state().choices.get(path);
+                if (active) active.run();
+                else deps.settleFromMain?.(path);
+              },
+            };
       const lines = barLines(row, deps.isLive(path), { join: () => deps.join(path), add: () => deps.addToMyNote(path) }, panelShown, choice);
       if (lines.length > 0) anyBar = true;
       if (lines.length === 0 && (cm.state.field(noteBar, false)?.length ?? 0) === 0) return;

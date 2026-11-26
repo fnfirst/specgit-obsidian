@@ -37,6 +37,7 @@ import { ChangesFlows } from "./flows";
 import { FILES_PER_BATCH } from "./copy-in";
 import { collectAttachments } from "./collect-attachments";
 import { attachmentRenamed, RENAME_LOOKS_AFTER_MS } from "./attachment-rename";
+import { deferDuringUntitled, isFreshUntitled } from "./local-new";
 import { LiveFiles } from "./live-files";
 import { type Attachment, AttachmentMemory } from "./attachment-memory";
 import { MirrorClient } from "./mirror";
@@ -81,6 +82,7 @@ export interface ChangesSetup {
   deleted?: (path: string, at: number) => void;
   deletedAt?: (path: string) => number | null;
   restored?: (path: string) => void;
+  conflictResolved?: (path: string) => void;
   touchNote?: (path: string) => void;
   bringFor?: (path: string, text: string) => Promise<void>;
   attachmentProblems?: (path: string, problems: ReadonlyArray<{ name: string; why: string }>) => void;
@@ -357,6 +359,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     ...(deps.deleted ? { deleted: deps.deleted } : {}),
     ...(deps.deletedAt ? { deletedAt: deps.deletedAt } : {}),
     ...(deps.restored ? { restored: deps.restored } : {}),
+    ...(deps.conflictResolved ? { conflictResolved: deps.conflictResolved } : {}),
   });
   const actions = {
     openNote: (path: string, event?: MouseEvent | KeyboardEvent) => openNote(app, path, event),
@@ -419,7 +422,21 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     unquiet();
     lookSoon();
   };
-  plugin.registerEvent(app.vault.on("create", watch));
+  const scheduleWatch = deferDuringUntitled(plugin, () => {
+    unquiet();
+    lookSoon();
+  });
+  plugin.registerEvent(
+    app.vault.on("create", (file) => {
+      if (!LISTED_FILE.test(file.path) && file.path !== ".gitignore") return;
+      if (isFreshUntitled(plugin, file.path)) {
+        scheduleWatch();
+        return;
+      }
+      unquiet();
+      lookSoon();
+    }),
+  );
   const liveFiles = new LiveFiles({
     isLive: (path) => deps.isLive(path),
     later: (run, ms) => {

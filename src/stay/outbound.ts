@@ -51,6 +51,7 @@ export interface OutboundInput {
   suspect(path: string): boolean;
   allowed(row: ChangeRow): boolean;
   settling?: boolean;
+  newWait?(row: ChangeRow): number;
   edits?: {
     own(row: ChangeRow): boolean;
     held(row: ChangeRow): boolean;
@@ -83,11 +84,14 @@ export function planOutbound(input: OutboundInput): OutboundPlan {
     login: input.login ?? "",
     blockedNew: { baseline: input.baseline, held: input.held, kept: input.kept },
   };
-  const created = input.rows.filter((row) => {
+  const createdAll = input.rows.filter((row) => {
     const { kind } = row.change;
     if ((kind !== "new" && kind !== "renamed") || isEdit(row, input.committed, editCtx)) return false;
     return !isBlockedNew(row.change, editCtx.blockedNew) && input.allowed(row) && input.settling !== true;
   });
+  const createdWaits = input.newWait ? createdAll.map((row) => input.newWait!(row)) : createdAll.map(() => 0);
+  const created = createdAll.filter((_, at) => createdWaits[at] === 0);
+  const createdLater = createdWaits.filter((wait) => wait > 0);
   const isReleased = (row: ChangeRow): boolean => input.released?.has(row.change.path) === true;
   const wantedAll = edits ? input.rows.filter((row) => isEdit(row, input.committed, editCtx) && edits.own(row) && !edits.held(row) && input.allowed(row)) : [];
   const editsAtStart = input.editsAtStart ?? input.atStart;
@@ -95,7 +99,7 @@ export function planOutbound(input: OutboundInput): OutboundPlan {
   const wanted = wantedAll.filter((row) => !heldAtStart.includes(row));
   const waits = edits ? wanted.map((row) => edits.wait(row)) : [];
   const ready = wanted.filter((_, at) => waits[at] === 0);
-  const later = waits.filter((wait) => wait > 0);
+  const later = [...createdLater, ...waits.filter((wait) => wait > 0)];
   const wait = later.length > 0 ? Math.min(...later) : null;
   const flagged = (row: ChangeRow, edit: boolean, start = false): OutboundPlan["hold"][number] => ({ key: changeKey(row.change), path: row.change.path, ...(edit ? { edit: true as const } : {}), ...(start ? { atStart: true as const } : {}) });
   const byList = (pairs: Array<{ row: ChangeRow; edit: boolean }>): Array<{ row: ChangeRow; edit: boolean }> => pairs.sort((a, b) => input.rows.indexOf(a.row) - input.rows.indexOf(b.row));

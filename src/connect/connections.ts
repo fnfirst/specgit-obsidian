@@ -63,9 +63,16 @@ export class Connections {
     if (to && (!choice || to.repo === from.repo)) this.chosen.set(keyOf(to), choice);
   }
 
-  forget(doc: DocumentRef): void {
-    this.chosen.delete(keyOf(doc));
-    if (this.off.delete(keyOf(doc))) this.keepOff();
+  forget(doc: DocumentRef, options?: { deferSave?: boolean }): boolean {
+    const key = keyOf(doc);
+    this.chosen.delete(key);
+    if (!this.off.delete(key)) return false;
+    if (options?.deferSave !== true) this.keepOff();
+    return true;
+  }
+
+  persistOff(): void {
+    this.keepOff();
   }
 
   clearChosenOn(doc: DocumentRef): void {

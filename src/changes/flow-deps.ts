@@ -82,6 +82,7 @@ export interface FlowDeps {
   deleted?(path: string, at: number): void;
   deletedAt?(path: string): number | null;
   restored?(path: string): void;
+  conflictResolved?(path: string): void;
   publishedBranch: string;
   budget?: () => Budget;
 }

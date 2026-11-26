@@ -1,4 +1,4 @@
-import { ALL_SELECTED, applyPending, AskAgain, type ChangeSetEntry, type GroupOverview, type InFlightChange, type InFlightResponse, isSelected, type PendingChange, type PublishQuota, stillPending, expectArrival, forgetJoined, freshSelectionMemory, keepSelection, reviewSections, reviewStage, selectableUnits, selectAllKeys, selectionUnits, settleArrivals, type SavesTo, type SelectionMemory, withSelection, selectKeys, selectOnlyKey, type StatusGroup, statusUnits, unitKey } from "../shared/review-flow";
+import { ALL_SELECTED, applyPending, AskAgain, CHANGE_GRACE_MS, type ChangeSetEntry, type GroupOverview, type InFlightChange, type InFlightResponse, isSelected, type PendingChange, type PublishQuota, stillPending, expectArrival, forgetJoined, freshSelectionMemory, keepSelection, reviewSections, reviewStage, selectableUnits, selectAllKeys, selectionUnits, settleArrivals, type SavesTo, type SelectionMemory, withSelection, selectKeys, selectOnlyKey, type StatusGroup, statusUnits, unitKey } from "../shared/review-flow";
 import { isHiddenPath, LISTED_FILE } from "../mapping";
 import type { GroupsRead, PresenceRead, ReviewStatus } from "../review/review-api";
 import { Awareness, awareLayout, type AwareLine, type HeldDeletes, type NoteChoice, withChoice } from "./awareness";
@@ -32,7 +32,7 @@ const DETAILS_PER_REQUEST = 50;
 export const LOOK_BUDGET = 40;
 export const STATUS_TTL_MS = 30_000;
 export const DETAIL_TTL_MS = 10 * 60_000;
-const LEARN_GRACE_MS = 30_000;
+export const LEARN_GRACE_MS = CHANGE_GRACE_MS;
 const FILL_IN_MS = 1_000;
 export const RETRY_AFTER_FAILED_MS: readonly number[] = [2_000, 4_000, 8_000, 15_000, 30_000];
 const MIN_RATE_LIMIT_MS = 5_000;
@@ -60,6 +60,8 @@ interface StatusRecord {
   review: ReviewStatus | null;
   light?: boolean;
   withoutSaver?: boolean;
+  draftSig?: string;
+  mainSha?: string;
 }
 
 interface VerifyTarget {
@@ -437,7 +439,8 @@ export class ChangesModel {
       }
       return;
     }
-    this.statuses.set(path, { key: this.keyOf(row.change), at: this.now(), review });
+    const draftSig = this.draftSigOf(path, review.reviewBranch);
+    this.statuses.set(path, { key: this.keyOf(row.change), at: this.now(), review, mainSha: row.change.repoSha ?? "", ...(draftSig === undefined ? {} : { draftSig }) });
     this.learnedAt.set(path, this.now());
     this.learned.add(path);
     const next = this.rowOf(row.change);
@@ -870,9 +873,32 @@ export class ChangesModel {
     return `${change.kind}|${change.sha}|${change.repoSha ?? ""}`;
   }
 
+  private draftSigOf(path: string, branch: string | null | undefined): string | undefined {
+    if (!this.flight || !branch) return undefined;
+    const repoPath = this.deps.documentFor(path)?.path ?? path;
+    const entry = this.flight.paths[repoPath]?.find((one) => one.branch === branch);
+    return entry ? `${entry.docBlobSha ?? ""}\0${entry.lastCommitAt ?? ""}` : undefined;
+  }
+
   private fresh(change: LocalChange): boolean {
     const known = this.statuses.get(change.path);
     return known !== undefined && known.light !== true && known.key === this.keyOf(change) && this.now() - known.at < STATUS_TTL_MS;
+  }
+
+  isLearned(path: string): boolean {
+    const now = this.now();
+    const at = this.learnedAt.get(path);
+    if (at !== undefined && now - at < LEARN_GRACE_MS) return true;
+    return this.watched?.path === path && this.watched.learnedAt !== null && now - this.watched.learnedAt < LEARN_GRACE_MS;
+  }
+
+  private isStaleDraftDowngrade(path: string, incoming: PrInfo | null | undefined): boolean {
+    const learned = this.learnedAt.get(path);
+    if (learned === undefined || this.now() - learned >= LEARN_GRACE_MS) return false;
+    const current = this.statuses.get(path)?.review?.pr ?? null;
+    if (!current || current.state === "merged" || current.state === "closed" || current.isDraft || current.state === "draft") return false;
+    if (!incoming || incoming.state === "merged" || incoming.state === "closed") return false;
+    return incoming.number === current.number && (incoming.isDraft || incoming.state === "draft");
   }
 
   private async ask(changes: readonly LocalChange[], mode: "look" | "step" = "look"): Promise<{ failedReads: Set<string>; limited: { retryAfterMs?: number } | null }> {
@@ -913,7 +939,14 @@ export class ChangesModel {
           const detail = details.get(light.number);
           if (!detail) continue;
           const pr: PrInfo = { ...detail, url: light.url || detail.url, authorLogin: light.authorLogin ?? detail.authorLogin ?? null, ...(light.group ? { group: light.group } : {}) };
-          this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr }, withoutSaver: true });
+          if (this.isStaleDraftDowngrade(change.path, pr)) {
+            const current = this.statuses.get(change.path);
+            if (current) this.statuses.set(change.path, { ...current, key: this.keyOf(change) });
+            given.add(change.path);
+            continue;
+          }
+          const draftSig = this.draftSigOf(change.path, known.review?.reviewBranch);
+          this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review: { reviewBranch: known.review?.reviewBranch ?? null, pr }, withoutSaver: true, mainSha: change.repoSha ?? "", ...(draftSig === undefined ? {} : { draftSig }) });
           given.add(change.path);
         }
       }
@@ -938,7 +971,19 @@ export class ChangesModel {
           if (mode === "step") halted = true;
           continue;
         }
-        this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review });
+        if (this.isStaleDraftDowngrade(change.path, review.pr)) {
+          const current = this.statuses.get(change.path);
+          if (current) {
+            this.statuses.set(change.path, {
+              ...current,
+              key: this.keyOf(change),
+              review: current.review ? { ...current.review, ...(review.saver ? { saver: review.saver } : {}) } : current.review,
+            });
+          }
+          continue;
+        }
+        const draftSig = this.draftSigOf(change.path, review.reviewBranch);
+        this.statuses.set(change.path, { key: this.keyOf(change), at: this.now(), review, mainSha: change.repoSha ?? "", ...(draftSig === undefined ? {} : { draftSig }) });
       }
     };
     await Promise.all(Array.from({ length: Math.min(ASK_AT_ONCE, changes.length) }, worker));
@@ -983,8 +1028,10 @@ export class ChangesModel {
         if ((this.deps.place?.() ?? "") !== place || this.disposed) return;
         if (review === null || superseded(target.change.path)) continue;
         const pr = review.pr && review.pr.number === target.pr.number && target.pr.group && !review.pr.group ? { ...review.pr, group: target.pr.group } : review.pr;
+        if (this.isStaleDraftDowngrade(target.change.path, pr)) continue;
         const nextReview = pr === review.pr ? review : { ...review, pr };
-        this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review: nextReview });
+        const draftSig = this.draftSigOf(target.change.path, nextReview.reviewBranch);
+        this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review: nextReview, mainSha: target.change.repoSha ?? "", ...(draftSig === undefined ? {} : { draftSig }) });
         this.syncGroupDraft(pr);
         if (!pr || pr.state === "merged" || pr.state === "closed") this.learnedAt.delete(target.change.path);
       }
@@ -1038,11 +1085,15 @@ export class ChangesModel {
           continue;
         }
         const mergedPr: PrInfo = { ...detail, url: target.pr.url || detail.url, authorLogin: target.pr.authorLogin ?? detail.authorLogin ?? null, ...(target.pr.group ? { group: target.pr.group } : {}) };
+        if (this.isStaleDraftDowngrade(target.change.path, mergedPr)) continue;
+        const draftSig = this.draftSigOf(target.change.path, target.known.review?.reviewBranch);
         this.statuses.set(target.change.path, {
           key: this.keyOf(target.change),
           at: this.now(),
           review: { reviewBranch: target.known.review?.reviewBranch ?? null, pr: mergedPr, ...(target.known.review?.saver ? { saver: target.known.review.saver } : {}) },
           withoutSaver: true,
+          mainSha: target.change.repoSha ?? "",
+          ...(draftSig === undefined ? {} : { draftSig }),
         });
         this.syncGroupDraft(mergedPr);
       }
@@ -1137,12 +1188,20 @@ export class ChangesModel {
         this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
         continue;
       }
-      if (known && known.light !== true && !waiting && !needsActiveSaver && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
-        this.statuses.set(change.path, { ...known, key: this.keyOf(change), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) }, ...(known.review?.saver ? { saver: known.review.saver } : {}) } });
+      const draftSig = this.draftSigOf(change.path, batch.review?.reviewBranch ?? known?.review?.reviewBranch);
+      const mainSha = change.repoSha ?? "";
+      const mainChanged = known !== undefined && known.light !== true && known.mainSha !== undefined && known.mainSha !== mainSha && was !== null;
+      const dirtyMoved = was?.mergeableState === "dirty" && draftSig !== undefined && known?.draftSig !== draftSig;
+      const liveMainDiverged = this.deps.isLive?.(change.path) === true && (change.mainMoved || (change.repoSha !== null && change.baseUnknown));
+      const choiceMoved = (this.current.choices.has(change.path) || liveMainDiverged) && light !== null && draftSig !== undefined && known?.draftSig !== draftSig;
+      const expiredDirty = was?.mergeableState === "dirty" && known !== undefined && known.light !== true && now - known.at >= DETAIL_TTL_MS;
+      if (known && known.light !== true && !waiting && !needsActiveSaver && !dirtyMoved && !choiceMoved && !mainChanged && was && light && was.number === light.number && was.isDraft === light.isDraft && now - known.at < DETAIL_TTL_MS) {
+        const keepSig = draftSig ?? known.draftSig;
+        this.statuses.set(change.path, { ...known, key: this.keyOf(change), ...(keepSig === undefined ? {} : { draftSig: keepSig }), review: { reviewBranch: batch.review!.reviewBranch ?? known.review?.reviewBranch ?? null, pr: { ...was, ...(light.group ? { group: light.group, mergeableState: light.mergeableState } : {}) }, ...(known.review?.saver ? { saver: known.review.saver } : {}) } });
         continue;
       }
-      this.statuses.set(change.path, { key: this.keyOf(change), at: now, review: nextReview, light: true });
-      if (batch.needsDetail || waiting || needsActiveSaver) detailed.push(change);
+      this.statuses.set(change.path, { key: this.keyOf(change), at: now, review: nextReview, light: true, ...(draftSig === undefined ? {} : { draftSig }) });
+      if (batch.needsDetail || waiting || needsActiveSaver || dirtyMoved || choiceMoved || expiredDirty) detailed.push(change);
     }
     return { detailed, verify };
   }
@@ -1239,9 +1298,25 @@ export class ChangesModel {
     const place = this.deps.place?.() ?? "";
     const review = await this.deps.review.status(row.doc);
     if (review !== null && watched && this.watched === watched && !this.disposed && (this.deps.place?.() ?? "") === place) {
-      watched.review = review;
-      watched.read = true;
-      watched.version++;
+      const current = watched.review?.pr ?? null;
+      const staleDowngrade =
+        watched.learnedAt !== null &&
+        this.now() - watched.learnedAt < LEARN_GRACE_MS &&
+        current !== null &&
+        current.state !== "merged" &&
+        current.state !== "closed" &&
+        !current.isDraft &&
+        current.state !== "draft" &&
+        review.pr !== null &&
+        review.pr.state !== "merged" &&
+        review.pr.state !== "closed" &&
+        review.pr.number === current.number &&
+        (review.pr.isDraft || review.pr.state === "draft");
+      if (!staleDowngrade) {
+        watched.review = review;
+        watched.read = true;
+        watched.version++;
+      }
     }
     const now = review ?? row.review;
     return this.unchangedRow(row.change.path) ?? { ...row, review: now, entry: entryFor(row.change, now, this.deps.openComments?.(row.change.path) ?? 0) };
@@ -1393,6 +1468,10 @@ export class ChangesModel {
 
   vaultHas(path: string): boolean {
     return this.awareness.hasFile(path);
+  }
+
+  mtimeOf(path: string): number | undefined {
+    return this.deps.cache.get(path)?.mtime;
   }
 
   flightAnswer(): InFlightResponse | null {

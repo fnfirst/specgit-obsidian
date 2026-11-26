@@ -21,7 +21,7 @@ import {
   type PrMergeableState,
   type PrReviewDecision,
 } from "../review-flow";
-import type { CheckKind, StatusDoc, StatusGroup, StatusItem, StatusPerson, StatusPillState, StatusReviewer } from "./types";
+import type { CheckKind, Lane, StatusDoc, StatusGroup, StatusItem, StatusPerson, StatusPillState, StatusReviewer } from "./types";
 
 export interface ReviewFacts {
   isDraft: boolean;
@@ -115,6 +115,7 @@ export interface DocExtra {
   bringIn?: boolean;
   reason?: string;
   folder?: string;
+  changed?: number;
 }
 
 export interface DocItemInput {
@@ -154,18 +155,24 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
         : state === "changes-requested"
           ? (known?.reviewers ?? []).filter((one) => one.state === "changes_requested").map((one) => one.login)
           : undefined;
+  const ownedByViewer = viewer !== "" && enriched.authorLogin !== null && sameLogin(enriched.authorLogin, viewer);
+  const lane: Lane | undefined =
+    known === null && ownedByViewer && !teammate && !asksYou && state === "in-review" && entry.prNumber > 0 && !entry.isDraft && entry.requestedReviewers.length === 0 ? "publish" : undefined;
   const lastCommitAt = branch?.lastCommitAt;
+  const changed = lastCommitAt ? Date.parse(lastCommitAt) : extra.changed;
   return {
     kind: "doc",
     id: entry.path,
     name: titleOf(entry.path),
     ...(extra.renamedFrom ? { renamedFrom: extra.renamedFrom } : {}),
     state,
-    ...(lastCommitAt ? { when: timeAgo(lastCommitAt, now), changed: Date.parse(lastCommitAt) } : {}),
+    ...(lastCommitAt ? { when: timeAgo(lastCommitAt, now) } : {}),
+    ...(changed !== undefined && changed > 0 ? { changed } : {}),
     people: asYous(people, viewer),
     asksYou,
     here: withoutViewer(here, viewer),
     teammate,
+    ...(lane ? { lane } : {}),
     ...(check ? { check } : {}),
     ...(state === "out-of-date" ? { button: "catch-up" as const } : state === "changed-in-both" ? { button: "choose" as const } : {}),
     hasReview: entry.prNumber > 0,
@@ -215,6 +222,8 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
   const here = new Map<string, StatusPerson>();
   for (const path of overview.paths) for (const one of rooms?.get(path) ?? []) if (!here.has(one.login.toLowerCase())) here.set(one.login.toLowerCase(), one);
   const check: CheckKind | undefined = teammate ? undefined : asksYou ? "approve" : state === "draft" ? "submit" : state === "ready" ? "publish" : undefined;
+  const ownedByViewer = viewer !== "" && owners.some((login) => sameLogin(login, viewer));
+  const lane: Lane | undefined = awaitingFacts && ownedByViewer && !teammate && !asksYou && state === "in-review" ? "publish" : undefined;
   const words = heldWords(overview);
   return {
     kind: "group",
@@ -229,6 +238,7 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
     people: asYous(people, viewer),
     asksYou,
     ...(teammate ? { teammate: true } : {}),
+    ...(lane ? { lane } : {}),
     ...(check ? { check } : {}),
     ...(editing ? { editing: true } : {}),
     hasReview: overview.prNumber > 0,

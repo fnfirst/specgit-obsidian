@@ -84,6 +84,7 @@ export interface StayHandle {
   deletedOnGithub(path: string, at: number): void;
   deletedAt(path: string): number | null;
   restored(path: string): void;
+  conflictResolved(path: string): void;
   heldWhy(path: string): string | null;
   attachmentProblems(path: string, problems: ReadonlyArray<{ name: string; why: string }>): void;
   touched(path: string): void;
@@ -408,7 +409,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     seeChanges: (shown) => showChanges(app, shown, { kind: "from-github" }),
     openStatus: () => void deps.openStatus?.(),
     settleReview: (path) => {
-      const row = deps.model.row(path);
+      const row = deps.model.row(path) ?? deps.model.unchangedRow(path);
       if (row) void deps.flows.settleFromMain(row);
     },
     personBusy: () => deps.model.state().busy,
@@ -482,7 +483,13 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   const isTrackedFile = (file: { path: string; children?: unknown }): boolean => !("children" in file) && isTrackedPath(file.path);
   app.workspace.onLayoutReady(() => {
     plugin.registerEvent(app.vault.on("create", (file) => (isTrackedFile(file) ? touched(file.path, true) : undefined)));
-    plugin.registerEvent(app.vault.on("modify", (file) => (isTrackedFile(file) ? touched(file.path) : undefined)));
+    plugin.registerEvent(
+      app.vault.on("modify", (file) => {
+        if (!isTrackedFile(file)) return;
+        touched(file.path);
+        engine?.panesChanged(file.path);
+      }),
+    );
     plugin.registerEvent(app.vault.on("delete", (file) => (isTrackedFile(file) ? touched(file.path, true) : undefined)));
     plugin.registerEvent(
       app.vault.on("rename", (file, from) => {
@@ -578,6 +585,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     deletedOnGithub: (path, at) => engine?.deletedOnGithub(path, at),
     deletedAt: (path) => engine?.deletedAt(path) ?? null,
     restored: (path) => engine?.restored(path),
+    conflictResolved: (path) => engine?.conflictResolved(path),
     heldWhy: (path) => engine?.heldWhy(path) ?? null,
     attachmentProblems: (path, problems) => engine?.attachmentProblems(path, problems),
     heardDraft: (repoPath, sha) => engine?.heardDraft(deps.vaultPath(repoPath), undefined, undefined, sha),

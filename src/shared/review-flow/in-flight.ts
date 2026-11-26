@@ -66,6 +66,7 @@ export function pickFileReview(entries: readonly InFlightBranch[] | undefined, v
   let own: InFlightBranch | null = null;
   let holder: InFlightBranch | null = null;
   for (const entry of entries ?? []) {
+    if (entry.changedStatus === "removed") continue;
     if (isGroupBranch(entry.branch)) {
       const overview = groups.get(entry.branch);
       if (overview && group === null) group = { entry, overview };

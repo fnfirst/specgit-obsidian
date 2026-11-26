@@ -1,10 +1,13 @@
 import { gitBlobShaOfText } from "../changes/blob-sha";
+import { groupWrites } from "../changes/burst";
 import { agreedOf, type CacheEntry } from "../changes/cache";
 import type { ChangeRow, Looked } from "../changes/model";
 import { unchangedHere } from "../changes/unchanged-here";
 import { hasBom, stripBom, toLf } from "../disk/line-endings";
 import type { DocumentRef } from "../mapping";
+import { GROUP_NOT_ON_WORDS, GROUP_PLAN_WORDS } from "../shared/review-flow";
 import type { Ended, FileFacts } from "./draft-state";
+import type { WriteBudget } from "./limits";
 import { changeKey, hasOwnOrAgreedDraft } from "./outbound";
 import type { StayData, StayState } from "./state";
 import type { StayPorts } from "./types";
@@ -76,6 +79,43 @@ export const finalizeDraftBusy = (busy: Set<string>, extra: DraftBusyInput): Set
 
 export const filterRowsForPartial = (rows: readonly ChangeRow[], busyPaths: ReadonlySet<string>): ChangeRow[] =>
   rows.filter((row) => !busyPaths.has(row.change.path) && (row.change.from === undefined || !busyPaths.has(row.change.from)));
+
+export const copyBusyPaths = (
+  looked: Looked,
+  data: Pick<StayData, "seen" | "endedOwn">,
+  copyPaths: ReadonlySet<string>,
+  copyLower: ReadonlySet<string>,
+): Set<string> => {
+  const busy = new Set<string>([
+    ...copyPaths,
+    ...inboundActivePaths(looked, data.seen),
+    ...snapshotDraftBusy(looked, looked.drafts, [], Object.keys(data.endedOwn ?? {})),
+  ]);
+  for (const row of looked.rows) {
+    if (copyLower.has(row.change.path.toLowerCase())) busy.add(row.change.path);
+    if (row.change.from !== undefined && copyLower.has(row.change.from.toLowerCase())) busy.add(row.change.from);
+    if (looked.drafts === undefined && isFreshLocalUntitled(row.change.path, looked.files.get(row.change.path))) busy.add(row.change.path);
+  }
+  return busy;
+};
+
+export const RETRY_WAITS_MS: readonly number[] = [5_000, 15_000, 60_000];
+export const UNSURE_RETRY_MS = 30_000;
+
+export const retryWaitFor = (waits: readonly number[], attempt: number): number =>
+  waits[Math.min(Math.max(0, attempt - 1), waits.length - 1)]!;
+
+export const stepLaterRetry = (
+  counts: Map<string, { count: number; generation: number }>,
+  key: string,
+  generation: number,
+  waits: readonly number[] = RETRY_WAITS_MS,
+): number => {
+  const prev = counts.get(key);
+  const count = prev?.generation === generation ? prev.count + 1 : 1;
+  counts.set(key, { count, generation });
+  return retryWaitFor(waits, count);
+};
 
 export const keptPathsReadOnly = (looked: Looked, data: Pick<StayData, "kept" | "seen">): Set<string> => {
   const seen = data.seen ?? {};
@@ -206,4 +246,39 @@ export const backfillAgreed = async (
     if (text === null || gitBlobShaOfText(text) !== entry.sha) continue;
     if (gitBlobShaOfText(toLf(text)) === entry.sent || (hasBom(text) && gitBlobShaOfText(stripBom(toLf(text))) === entry.sent)) ports.agreedAs(path, entry.sha);
   }
+};
+
+export const groupBurstFiles = async (
+  looked: Looked,
+  files: readonly ChangeRow[],
+  ports: Pick<StayPorts, "groupsOn" | "groupsLocked" | "notify" | "createGroup" | "lookAgain">,
+  budget: WriteBudget,
+  state: StayState,
+  isOn: () => boolean,
+): Promise<{ grouped: number; left: number }> => {
+  if (!ports.groupsOn()) {
+    ports.notify(GROUP_NOT_ON_WORDS);
+    return { grouped: 0, left: 0 };
+  }
+  if (ports.groupsLocked()) {
+    ports.notify(GROUP_PLAN_WORDS);
+    return { grouped: 0, left: 0 };
+  }
+  if (files.length < 2) {
+    ports.notify(files.length === 1 ? "A group needs two or more files, so this one stays in the Status tab." : "Nothing is waiting to be grouped.");
+    return { grouped: 0, left: files.length };
+  }
+  const cost = groupWrites(files.length, files.reduce((sum, row) => sum + (looked.files.get(row.change.path)?.size ?? 0), 0));
+  const blocked = budget.waitFor(cost);
+  if (blocked > 0) {
+    ports.notify(`GitHub asked specgit to slow down. Try again in ${Math.ceil(blocked / 60_000)} min.`);
+    return { grouped: 0, left: files.length };
+  }
+  const made = await ports.createGroup([...files]);
+  if (made.writes > 0) budget.spend(made.writes);
+  if (made.outcome === "limited") budget.limited(made.retryAfterMs);
+  state.save();
+  if (made.outcome !== "made" || !isOn()) return { grouped: 0, left: files.length };
+  ports.lookAgain();
+  return { grouped: files.length, left: 0 };
 };

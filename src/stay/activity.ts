@@ -1,3 +1,5 @@
+import { BURST_FILES } from "./limits";
+
 export interface ActivityOptions {
   quietMs: number;
   flurry: number;
@@ -10,10 +12,11 @@ export interface ActivityOptions {
   pendingMs: number;
 }
 
-export const ACTIVITY: ActivityOptions = { quietMs: 8_000, flurry: 8, flurryMs: 1_500, ownMs: 5_000, suspectMs: 10 * 60_000, gitLookbackMs: 15_000, slowFiles: 8, slowMs: 60_000, pendingMs: 60_000 };
+export const ACTIVITY: ActivityOptions = { quietMs: 8_000, flurry: 8, flurryMs: 1_500, ownMs: 5_000, suspectMs: 10 * 60_000, gitLookbackMs: 15_000, slowFiles: BURST_FILES + 1, slowMs: 60_000, pendingMs: 60_000 };
 
 export class Activity {
   private last = Number.NEGATIVE_INFINITY;
+  private readonly lastPath = new Map<string, number>();
   private recent: Array<{ at: number; path: string }> = [];
   private flurryEnds = 0;
   private gitEnds = 0;
@@ -98,6 +101,11 @@ export class Activity {
     }
     this.own.delete(path);
     this.last = now;
+    this.lastPath.set(path, now);
+    if (this.lastPath.size > 64) {
+      const stale = now - this.options.quietMs;
+      for (const [seenPath, seenAt] of this.lastPath) if (seenAt <= stale) this.lastPath.delete(seenPath);
+    }
     const cutoff = now - this.options.flurryMs;
     this.recent = this.recent.filter((event) => event.at > cutoff);
     this.recent.push({ at: now, path });
@@ -123,6 +131,7 @@ export class Activity {
     if (from !== to) {
       for (const event of this.recent) if (event.path === from) event.path = to;
       for (const event of this.history) if (event.path === from) event.path = to;
+      this.moveMark(this.lastPath, from, to);
       this.moveMark(this.suspect, from, to);
       this.moveMark(this.git, from, to);
       this.onRename?.(from, to);
@@ -170,6 +179,15 @@ export class Activity {
     return Math.max(0, Math.max(this.last + this.options.quietMs, this.gitEnds) - this.now());
   }
 
+  quietInFor(path: string, from?: string): number {
+    const now = this.now();
+    const pathAt = Math.max(
+      this.lastPath.get(path) ?? Number.NEGATIVE_INFINITY,
+      from !== undefined ? (this.lastPath.get(from) ?? Number.NEGATIVE_INFINITY) : Number.NEGATIVE_INFINITY,
+    );
+    return Math.max(0, Math.max(pathAt + this.options.quietMs, this.flurryEnds, this.gitEnds) - now);
+  }
+
   isSuspect(path: string): boolean {
     return this.untilOf(this.suspect, path) !== null;
   }
@@ -185,5 +203,8 @@ export class Activity {
   settled(path: string): void {
     this.suspect.delete(path);
     this.git.delete(path);
+    this.lastPath.delete(path);
+    this.history = this.history.filter((event) => event.path !== path);
+    this.recent = this.recent.filter((event) => event.path !== path);
   }
 }

@@ -38,6 +38,10 @@ export class CatchUpFlows {
   }
 
   async settleFromMain(row: ChangeRow, options: CatchUpAsked = {}): Promise<boolean> {
+    if (this.deps.phaseOf(row.change.path) === "live" && (await this.deps.vault.hasUnsavedText(row.change.path))) {
+      this.deps.dialogs.toast("Save or disconnect this note first, then try Choose what to keep again.");
+      return false;
+    }
     const preview = await this.preview(row.doc);
     return preview?.kind === "behind" ? this.catchUp(row, preview, options) : this.catchUpWithMain(row);
   }
@@ -53,6 +57,7 @@ export class CatchUpFlows {
         return false;
       }
       this.host.model.offerChoice(row.change.path, null);
+      this.deps.conflictResolved?.(row.change.path);
       const said = sent.inVault === false ? CATCH_UP_HERE.doneInReview : CATCH_UP_HERE.done;
       this.deps.dialogs.toast(said.title, said.description);
       return true;
@@ -73,6 +78,7 @@ export class CatchUpFlows {
       return false;
     }
     this.host.model.offerChoice(row.change.path, null);
+    this.deps.conflictResolved?.(row.change.path);
     this.deps.dialogs.toast(CATCH_UP_HERE.done.title, CATCH_UP_HERE.done.description);
     return true;
   }
@@ -98,25 +104,38 @@ export class CatchUpFlows {
       const mine = (await this.deps.readText(row.change.path)) ?? "";
       const merged = preview.merge === "clean" ? await this.commitClean(row, preview) : await this.commitChosen(row, preview, mine);
       if (merged === null) return false;
-      const took = await this.host.memory.writeAndRemember(row.change.path, mine, merged.text, merged.text, preview.mainBlob);
+      const live = this.deps.phaseOf(row.change.path) === "live";
+      let took: boolean;
+      if (live) {
+        const now = await this.deps.readText(row.change.path);
+        if (now !== null && stripBom(toLf(now)) === stripBom(toLf(merged.text))) {
+          await this.host.memory.remember(row.change.path, merged.text, undefined, now, merged.commit);
+        }
+        this.host.model.rebased(row.change.path, preview.mainBlob);
+        took = true;
+      } else {
+        took = await this.host.memory.writeAndRemember(row.change.path, mine, merged.text, merged.text, preview.mainBlob, undefined, merged.commit);
+      }
       this.host.model.offerChoice(row.change.path, null);
+      if (took) this.deps.conflictResolved?.(row.change.path);
       const said = took ? CATCH_UP_HERE.done : CATCH_UP_HERE.doneInReview;
       this.deps.dialogs.toast(said.title, [merged.summary, said.description].filter(Boolean).join(" "));
       return true;
     }, { words: CATCH_UP_HERE.busy, paths: [row.change.path] });
   }
 
-  private async commitClean(row: ChangeRow, preview: Behind): Promise<{ text: string; summary: string } | null> {
+  private async commitClean(row: ChangeRow, preview: Behind): Promise<{ text: string; summary: string; commit?: string } | null> {
     const done = await this.deps.review.catchUp(row.doc, preview.mainBlob);
-    const result = done.ok ? (done.body.result as { kind?: string; source?: string; changes?: { summary: string } } | undefined) : undefined;
+    const result = done.ok ? (done.body.result as { kind?: string; source?: string; commitSha?: string; changes?: { summary: string } } | undefined) : undefined;
     if (!done.ok || !result || result.kind !== "caught_up" || result.source === undefined) {
       await this.host.alert({ title: result?.kind === "main_moved" ? CATCH_UP.toastMoved.title : CATCH_UP_HERE.failed, description: result?.kind === "main_moved" ? CATCH_UP.toastMoved.description : done.ok ? CATCH_UP.failedBody : failure(done, CATCH_UP.failedBody) });
       return null;
     }
-    return { text: result.source, summary: result.changes?.summary ?? "" };
+    const commit = typeof result.commitSha === "string" && result.commitSha !== "" ? result.commitSha : undefined;
+    return { text: result.source, summary: result.changes?.summary ?? "", ...(commit ? { commit } : {}) };
   }
 
-  private async commitChosen(row: ChangeRow, preview: Behind, mine: string): Promise<{ text: string; summary: string } | null> {
+  private async commitChosen(row: ChangeRow, preview: Behind, mine: string): Promise<{ text: string; summary: string; commit?: string } | null> {
     const review = await this.deps.review.status(row.doc);
     const ours = review?.reviewBranch;
     const seen = ours ? await this.deps.review.mergePreview(row.doc, ours, preview.base) : null;
@@ -135,6 +154,8 @@ export class CatchUpFlows {
       await this.host.alert({ title: CATCH_UP_HERE.failed, description: failure(resolved, CATCH_UP.failedBody) });
       return null;
     }
-    return { text: resolvedSource, summary: "" };
+    const rawCommit = (resolved.body as { mergeCommitSha?: unknown } | null)?.mergeCommitSha;
+    const commit = typeof rawCommit === "string" && rawCommit !== "" ? rawCommit : undefined;
+    return { text: resolvedSource, summary: "", ...(commit ? { commit } : {}) };
   }
 }

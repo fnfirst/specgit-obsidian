@@ -47,6 +47,8 @@ function readRecord(value: unknown, path: string): Base | null {
 }
 
 export class BaseStore {
+  private readonly pendingForgets = new Set<string>();
+
   constructor(
     private readonly state: LocalState,
     private readonly limits: BaseLimits = BASE_LIMITS,
@@ -54,6 +56,7 @@ export class BaseStore {
   ) {}
 
   has(path: string): boolean {
+    if (this.pendingForgets.has(path)) return false;
     try {
       const stored = this.state.load(noteKey(path));
       return stored !== null && stored !== undefined;
@@ -63,6 +66,7 @@ export class BaseStore {
   }
 
   read(path: string): BaseRead {
+    if (this.pendingForgets.has(path)) return { status: "none" };
     let stored: unknown;
     try {
       stored = this.state.load(noteKey(path));
@@ -77,6 +81,7 @@ export class BaseStore {
   }
 
   write(path: string, base: Pick<Base, "room" | "doc" | "text" | "eol" | "lineage">): void {
+    this.pendingForgets.delete(path);
     if (base.text.length > this.limits.note) return this.forget(path);
     const record = { path, ...base, hash: hashText(base.text), at: this.now() };
     const entries = this.entries().filter((entry) => entry.path !== path);
@@ -95,8 +100,22 @@ export class BaseStore {
   }
 
   forget(path: string): void {
+    this.pendingForgets.delete(path);
     this.clear(path);
     this.saveEntries(this.entries().filter((entry) => entry.path !== path));
+  }
+
+  forgetDeferred(path: string): void {
+    this.pendingForgets.add(path);
+  }
+
+  flushForget(path: string): void {
+    if (!this.pendingForgets.delete(path)) return;
+    if (this.has(path)) this.forget(path);
+  }
+
+  flushForgets(): void {
+    for (const path of [...this.pendingForgets]) this.flushForget(path);
   }
 
   private clear(path: string): void {

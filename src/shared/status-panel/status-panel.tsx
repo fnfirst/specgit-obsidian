@@ -179,7 +179,12 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const soleOpen = isSoleOpen(layout, model.folds);
   const singleOpen = !model.loading && !model.loadFailed && soleOpen;
   const hideList = cardOnly || singleOpen;
-  const [chip, setChip] = useState<StatusChipKey>(() => model.start?.chip ?? "all");
+  const [chipRaw, setChip] = useState<StatusChipKey>(() => model.start?.chip ?? "all");
+  const chip: StatusChipKey =
+    chipRaw === "all" || (chipRaw === "live" ? layout.live.length > 0 : layout.counts[chipRaw] > 0) ? chipRaw : "all";
+  useEffect(() => {
+    if (chip !== chipRaw) setChip("all");
+  }, [chip, chipRaw]);
   const [checkedRaw, setCheckedRaw] = useState<ReadonlySet<string>>(() => new Set(model.checked));
   const [shownAll, setShownAll] = useState<ReadonlySet<string>>(() => new Set());
   const [step, setStep] = useState<{ ids: readonly string[]; documents: number } | null>(() => (model.start?.step ? { ids: [...model.checked], documents: model.checked.length } : null));

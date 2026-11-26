@@ -1,21 +1,21 @@
 import type { Looked } from "../changes/model";
-import { GROUP_NOT_ON_WORDS, GROUP_PLAN_WORDS, LOST_ANSWER_DESCRIPTION, LOST_ANSWER_TITLE } from "../shared/review-flow";
+import { LOST_ANSWER_DESCRIPTION, LOST_ANSWER_TITLE } from "../shared/review-flow";
 import { agreedOf } from "../changes/cache";
 import { Activity } from "./activity";
 import { type AttachmentProblem, StayAttachments } from "./attachments";
 import { DraftOffers, FirstLook } from "./aware-steps";
 import { DraftInbound, UNSAVED_WAITS_MS } from "./draft-inbound";
 import { type Draft, follows, type StayDrafts } from "./draft-state";
-import { DRAFT_SAID } from "./words";
+import { DRAFT_SAID, STAY_SAID as SAID } from "./words";
 import { gitBlobShaOfText } from "../changes/blob-sha";
 import { type GitObservation, sameGitMark } from "./git-watch";
 import { StayHolds } from "./holds";
 import { Inbound } from "./inbound";
 import { missingNotes } from "../changes/missing-notes";
-import { groupWrites, WRITES_PER_FILE } from "../changes/burst";
+import { WRITES_PER_FILE } from "../changes/burst";
 import { Pace, WriteBudget } from "./limits";
 import { type BlockedNew, changeKey, hasOwnOrAgreedDraft, isEdit, planOutbound } from "./outbound";
-import { filterRowsForPartial, inboundActivePaths, isFreshLocalUntitled, keepMissingBases, keptPathsReadOnly, pruneStayLists, refreshGithubHolds, stepBackoff, syncKeptPaths } from "./outbound-pass";
+import { copyBusyPaths, filterRowsForPartial, groupBurstFiles, inboundActivePaths, isFreshLocalUntitled, keepMissingBases, keptPathsReadOnly, pruneStayLists, refreshGithubHolds, RETRY_WAITS_MS, retryWaitFor, stepBackoff, stepLaterRetry, syncKeptPaths, UNSURE_RETRY_MS } from "./outbound-pass";
 import { OwnBlobs } from "./own-blobs";
 import { RoomWrites } from "./room-writes";
 import { type StayGitMark, type StayState, TYPED_KEPT } from "./state";
@@ -24,21 +24,9 @@ import { WAKE_PAD_MS } from "./wait";
 
 export const HEARD_MS = 1_500;
 export const ENDED_WATCH_MS = 65_000;
+export { RETRY_WAITS_MS, UNSURE_RETRY_MS };
 const MORE_MS = 2_000;
-const RETRY_MS = 60_000;
 const TRIES = 3;
-
-const manyAtOnce = (count: number): string =>
-  count === 1 ? "1 file changed along with many others at once, so it wasn't saved. It's in the Status tab." : `${count} files changed at once, so they weren't saved one by one. They're in the Status tab.`;
-
-const SAID = {
-  burst: (count: number) => manyAtOnce(count),
-  flurry: (count: number) => manyAtOnce(count),
-  atStart: (count: number) => `${count} new or renamed ${count === 1 ? "file was" : "files were"} here when Obsidian opened. ${count === 1 ? "It's" : "They're"} in the Status tab.`,
-  taken: (count: number) => `${count === 1 ? "A note was" : `${count} notes were`} removed by another app or a sync. Nothing is deleted from GitHub.`,
-  editsClosed: (count: number) => `${count === 1 ? "1 note" : `${count} notes`} changed while Obsidian was closed. ${count === 1 ? "It's" : "They're"} in the Status tab, not saved yet.`,
-  gaveUp: (count: number) => `specgit couldn't save ${count === 1 ? "a file" : `${count} files`} automatically. ${count === 1 ? "It's" : "They're"} in the Status tab.`,
-};
 
 const QUIT_GRACE_MS = 5_000;
 
@@ -53,6 +41,9 @@ export class StayConnected {
   private looked: Looked | null = null;
   private running: Promise<void> | null = null;
   private again = false;
+  private copying: { generation: number; paths: Set<string>; lower: Set<string> } | null = null;
+  private copyOutbound: Promise<void> | null = null;
+  private copyOutboundAgain = false;
   private inbound: Inbound | null = null;
   private bringer: Inbound | null = null;
   private draftIn: DraftInbound | null = null;
@@ -73,6 +64,7 @@ export class StayConnected {
   private away: { count: number } | null = null;
   private readonly retryAt = new Map<string, number>();
   private readonly tries = new Map<string, number>();
+  private readonly laterTries = new Map<string, { count: number; generation: number }>();
   private readonly outboundUnsaved = new Map<string, { strikes: number; until: number }>();
   private readonly basesTried = new Set<string>();
   private readonly releasedAtStart = new Set<string>();
@@ -105,7 +97,7 @@ export class StayConnected {
       renameOwnBlobs: (from, to) => this.ownBlobs.renamed(from, to),
       consumeRebasedSent: (path, sha) => this.ownBlobs.consumeRebasedSent(path, sha),
       hasConflict: (path, looked) => this.conflicts.get(path) === this.conflictKey(looked, path),
-      onResolved: (path) => this.conflictResolved(path),
+      onResolved: (path) => this.draftConflictResolved(path),
       current,
     }));
   }
@@ -217,6 +209,9 @@ export class StayConnected {
     const keys = Object.keys(typed);
     if (keys.length > TYPED_KEPT) for (const old of keys.sort((a, b) => typed[a]!.at - typed[b]!.at).slice(0, keys.length - TYPED_KEPT)) delete typed[old];
     this.saveSoon();
+    if (this.copying?.generation === generation && !this.copying.lower.has(path.toLowerCase())) {
+      this.sooner("outbound", this.activity.quietInFor(path, from) + WAKE_PAD_MS, () => this.ports.lookAgain());
+    }
     this.typedReads.get(path)?.();
     this.typedReads.delete(path);
     if (deferRead) {
@@ -300,6 +295,7 @@ export class StayConnected {
     this.looked = null;
     this.retryAt.clear();
     this.tries.clear();
+    this.laterTries.clear();
     this.outboundUnsaved.clear();
     this.basesTried.clear();
     this.releasedAtStart.clear();
@@ -329,9 +325,29 @@ export class StayConnected {
     }
     if (this.running) {
       this.again = true;
+      if (this.copying?.generation === this.generation) this.runCopyOutbound(this.copying.generation);
       return;
     }
     this.track(this.pass());
+  }
+
+  private runCopyOutbound(generation: number): void {
+    if (this.copyOutbound) return void (this.copyOutboundAgain = true);
+    this.copyOutbound = (async () => {
+      try {
+        while (this.current(generation) && this.copying?.generation === generation) {
+          this.copyOutboundAgain = false;
+          const looked = this.looked;
+          if (!looked || !this.ports.signedIn() || this.ports.personBusy()) return;
+          const sent = await this.outbound(looked, generation, { busyPaths: copyBusyPaths(looked, this.state.data, this.copying.paths, this.copying.lower) });
+          if (sent && this.current(generation) && this.copying?.generation === generation) this.ports.lookAgain();
+          if (!this.copyOutboundAgain) return;
+        }
+      } finally {
+        this.copyOutbound = null;
+        this.copyOutboundAgain = false;
+      }
+    })();
   }
 
   private track(work: Promise<void>): void {
@@ -515,7 +531,15 @@ export class StayConnected {
       });
       if (missing.length > 0) {
         this.startedOutbound = true;
-        const copied = await this.ports.copyIn(missing, () => this.current(generation), absent.skipped);
+        const copyPaths = new Set([...missing.map(({ path }) => path), ...absent.skipped]);
+        this.copying = { generation, paths: copyPaths, lower: new Set([...copyPaths].map((path) => path.toLowerCase())) };
+        let copied: Awaited<ReturnType<StayPorts["copyIn"]>>;
+        try {
+          copied = await this.ports.copyIn(missing, () => this.current(generation), absent.skipped);
+        } finally {
+          if (this.copying?.generation === generation) this.copying = null;
+          await this.copyOutbound;
+        }
         if (!this.current(generation)) return;
         for (const { path } of missing) {
           if (this.ports.vault.exists(path)) continue;
@@ -549,7 +573,6 @@ export class StayConnected {
     let changed = 0;
     let rescan = false;
     let unfinished = false;
-    let inboundMore = false;
     let inboundFailed = false;
     let draftBusy: ReadonlySet<string> = new Set();
     try {
@@ -557,7 +580,6 @@ export class StayConnected {
       const done = shown ? await this.inbound.run(looked, this.away !== null) : { changed: 0, rescan: false, more: false, wake: null };
       changed = done.changed;
       rescan = done.rescan;
-      inboundMore = done.more;
       unfinished = done.more;
       const inboundWake = done.more ? Math.min(MORE_MS, done.wake ?? Number.POSITIVE_INFINITY) : done.wake;
       if (inboundWake !== null && this.current(generation)) this.later("inbound", inboundWake, () => this.ports.lookAgain());
@@ -593,7 +615,7 @@ export class StayConnected {
       return;
     }
     let sent = false;
-    if (!inboundFailed && !inboundMore && this.current(generation)) {
+    if (!inboundFailed && this.current(generation)) {
       sent = await this.outbound(looked, generation, { busyPaths: new Set([...seenSnapshot, ...draftBusy]) });
     }
     if (!this.current(generation)) return;
@@ -633,9 +655,10 @@ export class StayConnected {
     if (until !== null) this.sooner("drafts", until - now + WAKE_PAD_MS, () => this.ports.lookAgain());
   }
 
-  panesChanged(): void {
+  panesChanged(onlyPath?: string): void {
     if (!this.on) return;
-    const paths = [...new Set([...(this.draftIn?.unsavedPaths() ?? []), ...(this.inbound?.unsavedPaths() ?? []), ...this.outboundUnsaved.keys()])];
+    const all = [...new Set([...(this.draftIn?.unsavedPaths() ?? []), ...(this.inbound?.unsavedPaths() ?? []), ...this.outboundUnsaved.keys()])];
+    const paths = onlyPath === undefined ? all : all.filter((path) => path === onlyPath);
     if (paths.length === 0) return;
     const generation = this.generation;
     void Promise.all(paths.map(async (path) => ((await this.ports.vault.hasUnsavedText(path)) ? null : path))).then((checked) => {
@@ -694,41 +717,15 @@ export class StayConnected {
     }
   }
 
-  private async groupFiles(looked: Looked): Promise<{ grouped: number; left: number }> {
-    if (!this.ports.groupsOn()) {
-      this.ports.notify(GROUP_NOT_ON_WORDS);
-      return { grouped: 0, left: 0 };
-    }
-    if (this.ports.groupsLocked()) {
-      this.ports.notify(GROUP_PLAN_WORDS);
-      return { grouped: 0, left: 0 };
-    }
-    const files = this.burstFiles(looked);
-    if (files.length < 2) {
-      this.ports.notify(files.length === 1 ? "A group needs two or more files, so this one stays in the Status tab." : "Nothing is waiting to be grouped.");
-      return { grouped: 0, left: files.length };
-    }
-    const cost = groupWrites(files.length, files.reduce((sum, row) => sum + (looked.files.get(row.change.path)?.size ?? 0), 0));
-    const blocked = this.budget.waitFor(cost);
-    if (blocked > 0) {
-      this.ports.notify(`GitHub asked specgit to slow down. Try again in ${Math.ceil(blocked / 60_000)} min.`);
-      return { grouped: 0, left: files.length };
-    }
-    const made = await this.ports.createGroup([...files]);
-    if (made.writes > 0) this.budget.spend(made.writes);
-    if (made.outcome === "limited") {
-      this.budget.limited(made.retryAfterMs);
-    }
-    this.state.save();
-    if (made.outcome !== "made" || !this.on) return { grouped: 0, left: files.length };
-    this.ports.lookAgain();
-    return { grouped: files.length, left: 0 };
+  private groupFiles(looked: Looked): Promise<{ grouped: number; left: number }> {
+    return groupBurstFiles(looked, this.burstFiles(looked), this.ports, this.budget, this.state, () => this.on);
   }
 
   private pruneHeld(looked: Looked, committed: ReadonlySet<string>): { changed: boolean; releasedFlurry: Set<string> } {
     return this.holds.prune(looked, committed, (key) => {
       this.tries.delete(key);
       this.retryAt.delete(key);
+      this.laterTries.delete(key);
     });
   }
 
@@ -749,12 +746,17 @@ export class StayConnected {
     return `${looked.drafts?.byPath.get(path)?.blob ?? ""}|${entry?.sha ?? ""}|${entry?.sent ?? ""}|${entry?.base ?? ""}`;
   }
 
-  private conflictResolved(path: string): void {
+  private draftConflictResolved(path: string): void {
     this.conflicts.delete(path);
     this.githubHeldBase.delete(path);
     this.draftIn?.clearConflict(path);
-    if (this.state.data.heldWhy?.[path] !== "github") return;
-    this.holds.clearEditHold(path);
+    if (this.state.data.heldWhy?.[path] === "github") this.holds.clearEditHold(path);
+  }
+
+  conflictResolved(path: string): void {
+    this.draftConflictResolved(path);
+    this.inbound?.caughtUp(path, undefined, false);
+    this.ports.choice?.(path, null);
   }
 
   private followed(looked: Looked, row: Looked["rows"][number], committed: ReadonlySet<string>, blockedNew: BlockedNew): boolean {
@@ -809,6 +811,11 @@ export class StayConnected {
     else this.cancelTimer("flurry");
   }
 
+  private ensureFlurryScheduled(generation: number): void {
+    const next = this.holds.nextFlurryAt();
+    if (next !== null && this.current(generation)) this.sooner("flurry", Math.max(MORE_MS, next - this.ports.now() + WAKE_PAD_MS), () => this.ports.lookAgain());
+  }
+
   private async outbound(looked: Looked, generation: number, partial?: { busyPaths: ReadonlySet<string> }): Promise<boolean> {
     const { data } = this.state;
     const login = this.ports.login();
@@ -828,8 +835,8 @@ export class StayConnected {
       }
       const edits = this.editRules(looked);
       const quiet = this.activity.quietIn();
-      if (quiet > 0 && (!this.startedOutbound || !edits)) {
-        if (!partial) this.scheduleFlurry(generation);
+      if (quiet > 0 && !partial && !this.startedOutbound) {
+        this.scheduleFlurry(generation);
         this.state.save();
         this.later("outbound", quiet + WAKE_PAD_MS, () => this.ports.lookAgain());
         return null;
@@ -865,7 +872,7 @@ export class StayConnected {
           (row.change.from === undefined || !this.draftIn?.holdingRenameSource(row.change.from)) &&
           (this.retryAt.get(changeKey(row.change)) ?? 0) <= this.ports.now() &&
           this.followed(looked, row, committed, blockedNew),
-        settling: quiet > 0,
+        newWait: (row) => this.activity.quietInFor(row.change.path, row.change.from),
         ...(edits ? { edits } : {}),
       });
       if (!partial) {
@@ -889,9 +896,10 @@ export class StayConnected {
           this.ports.notify(words, action, plan.burst !== null ? { lasting: true } : undefined);
         }
         this.scheduleFlurry(generation);
-      }
-      const waits = [plan.wait ?? Number.POSITIVE_INFINITY, quiet > 0 ? quiet : Number.POSITIVE_INFINITY];
-      if (Math.min(...waits) !== Number.POSITIVE_INFINITY && this.current(generation)) this.later("edits", Math.min(...waits) + WAKE_PAD_MS, () => this.ports.lookAgain());
+      } else this.ensureFlurryScheduled(generation);
+      const needCalm = !partial && quiet > 0 && (data.baselinePending === true || this.pendingGitMark !== null || this.releasedAtStart.size > 0 || this.gitMovedAtStart);
+      const wait = Math.min(plan.wait ?? Number.POSITIVE_INFINITY, needCalm ? quiet : Number.POSITIVE_INFINITY);
+      if (wait !== Number.POSITIVE_INFINITY && this.current(generation)) this.later("edits", wait + WAKE_PAD_MS, () => this.ports.lookAgain());
       this.state.save();
       return { plan, committed, blockedNew };
     });
@@ -926,6 +934,9 @@ export class StayConnected {
       if ((result === "committed" && inVault !== false) || result === "held" || result === "conflict") delete this.state.data.typed?.[row.change.path];
       if (result === "committed") {
         this.budget.succeeded();
+        this.retryAt.delete(key);
+        this.tries.delete(key);
+        this.laterTries.delete(key);
         if (this.conflicts.delete(row.change.path)) this.draftIn?.clearConflict(row.change.path);
         if (inVault === false) this.deferOutboundUnsaved(row.change.path);
         if (inVault !== false || !edit) {
@@ -948,13 +959,15 @@ export class StayConnected {
         this.later("outbound", Math.max(0, this.budget.backoff().until - this.ports.now()), () => this.ports.lookAgain());
         this.state.save();
         break;
-      } else if (result === "unsure" || result === "later") {
-        this.retryAt.set(key, this.ports.now() + RETRY_MS);
-        if (result === "unsure") unsure++;
+      } else if (result === "unsure") {
+        this.retryAt.set(key, this.ports.now() + UNSURE_RETRY_MS);
+        unsure++;
+      } else if (result === "later") {
+        this.retryAt.set(key, this.ports.now() + stepLaterRetry(this.laterTries, key, generation));
       } else {
         const tried = (this.tries.get(key) ?? 0) + 1;
         this.tries.set(key, tried);
-        this.retryAt.set(key, this.ports.now() + RETRY_MS * tried);
+        this.retryAt.set(key, this.ports.now() + retryWaitFor(RETRY_WAITS_MS, tried));
         if (tried >= TRIES) {
           if (edit) {
             if (this.holds.holdEdit(looked, row.change.path, "tries")) this.ports.lookAgain();

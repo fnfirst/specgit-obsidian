@@ -54,11 +54,22 @@ export async function groupLanded(deps: ReadBackDeps, repo: string, paths: reado
   return (await readBack(holds, deps.pause)) ? found : null;
 }
 
-export const submitLanded = (deps: ReadBackDeps, doc: DocumentRef): Promise<boolean> =>
-  readBack(async () => {
-    const pr = (await deps.review.status(doc))?.pr;
-    return pr !== undefined && pr !== null && !pr.isDraft && pr.state !== "draft";
-  }, deps.pause);
+export async function submitLandedAs(
+  deps: ReadBackDeps,
+  doc: DocumentRef,
+): Promise<{ reviewBranch: string | null; pr: NonNullable<ReviewStatus["pr"]> } | null> {
+  let found: { reviewBranch: string | null; pr: NonNullable<ReviewStatus["pr"]> } | null = null;
+  const there = async (): Promise<boolean> => {
+    const read = await deps.review.status(doc);
+    const pr = read?.pr;
+    if (!pr || pr.isDraft || pr.state === "draft") return false;
+    found = { reviewBranch: read.reviewBranch, pr };
+    return true;
+  };
+  return (await readBack(there, deps.pause)) ? found : null;
+}
+
+export const submitLanded = async (deps: ReadBackDeps, doc: DocumentRef): Promise<boolean> => (await submitLandedAs(deps, doc)) !== null;
 
 export class ReadBacks {
   constructor(
@@ -81,8 +92,19 @@ export class ReadBacks {
   }
 
   async submit(doc: DocumentRef, answer: StepResult): Promise<StepResult> {
-    if (!isLostAnswerResult(answer) || !(await submitLanded(this.deps(), doc))) return answer;
+    if (!isLostAnswerResult(answer)) return answer;
+    const landed = await submitLandedAs(this.deps(), doc);
+    if (landed === null) return answer;
     this.found();
-    return { ok: true, body: {} };
+    return {
+      ok: true,
+      body: {
+        pr: {
+          ...landed.pr,
+          isDraft: false,
+          ...(landed.reviewBranch ? { headRef: landed.reviewBranch } : {}),
+        },
+      },
+    };
   }
 }

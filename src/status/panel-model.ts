@@ -46,12 +46,14 @@ export interface PanelInput {
   heldDeletes: number;
   offered: number;
   isLive: (path: string) => boolean;
+  isLearned?: (path: string) => boolean;
   stay?: boolean;
   isPaused?: (path: string) => boolean;
   openComments: (path: string) => number;
+  mtimeOf?: (path: string) => number | undefined;
   linked: string;
   plansUrl: string;
-  active?: { path: string; status: NoteStatus | null; behind: boolean; people?: number | null; saver?: SaverStatus | null } | null;
+  active?: { path: string; status: NoteStatus | null; behind: boolean; people?: number | null; saver?: SaverStatus | null; liveCapable?: boolean } | null;
   showChanges: boolean;
   checked: readonly string[];
   notice: StatusNotice | null;
@@ -142,7 +144,9 @@ export type VaultPanelInput = Pick<
   | "heldDeletes"
   | "offered"
   | "isLive"
+  | "isLearned"
   | "openComments"
+  | "mtimeOf"
   | "linked"
   | "editingGroup"
 >;
@@ -181,8 +185,9 @@ export interface VaultPanelBase {
   readonly groupByPath: ReadonlyMap<string, ChangeRow>;
   readonly docIndexById: ReadonlyMap<string, number>;
   readonly holdById: ReadonlyMap<string, string | null>;
+  readonly learnedProtected: ReadonlySet<string>;
   readonly joinCandidates: ReadonlyArray<{ index: number; raw: StatusDoc }>;
-  readonly factsOf: (number: number, pr?: PrInfo | null) => ReviewFacts | null;
+  readonly factsOf: (number: number, pr?: PrInfo | null, path?: string, learnedPr?: PrInfo | null) => ReviewFacts | null;
   readonly drawDoc: (path: string, from: Drawn, holdOverride?: string | null) => StatusDoc;
   readonly fromChange: (row: ChangeRow, behind?: boolean) => Drawn;
 }
@@ -194,7 +199,37 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
   const ownListed = ownListedOf(flight, viewer);
   const firstListed = new Map(flight ? inFlightEntries(flight, viewer, flight.base).map((entry) => [entry.path, entry] as const) : []);
   const rooms = new Map(Array.from(input.rooms, ([path, logins]) => [path, peopleOf(logins)] as const));
-  const factsOf = (number: number, pr?: PrInfo | null): ReviewFacts | null => (number > 0 ? (input.facts.get(number) ?? factsFromPr(pr)) : null);
+  const learnedProtected = new Set<string>();
+  const protectLearnedFacts = (
+    base: ReviewFacts | undefined,
+    fallbackPr: PrInfo | null | undefined,
+    path?: string,
+    learnedPr?: PrInfo | null,
+  ): ReviewFacts | null => {
+    if (!base) return factsFromPr(fallbackPr);
+    const pr = learnedPr ?? fallbackPr;
+    if (!base.isDraft || !pr || pr.isDraft || pr.state === "draft" || path === undefined || input.isLearned?.(path) !== true) return base;
+    learnedProtected.add(path);
+    const prFacts = factsFromPr(pr);
+    const requested = prFacts?.requestedReviewers ?? [];
+    const seen = new Set([
+      ...base.requestedReviewers.map((login) => login.toLowerCase()),
+      ...base.reviewers.map((one) => one.login.toLowerCase()),
+    ]);
+    const missing = requested.filter((login) => !seen.has(login.toLowerCase()));
+    return {
+      ...base,
+      isDraft: false,
+      ...(missing.length > 0
+        ? {
+            requestedReviewers: [...base.requestedReviewers, ...missing],
+            reviewers: [...base.reviewers, ...missing.map((login) => ({ login, state: "requested" as const }))],
+          }
+        : {}),
+    };
+  };
+  const factsOf = (number: number, pr?: PrInfo | null, path?: string, learnedPr?: PrInfo | null): ReviewFacts | null =>
+    number > 0 ? protectLearnedFacts(input.facts.get(number), pr, path, learnedPr) : null;
   const rows = new Map<string, ChangeRow>();
   const members = new Map<string, ChangeRow>();
   const urls = new Map<string, string>();
@@ -234,12 +269,13 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
       return { entry: theirs, facts: theirs.prNumber > 0 ? (input.facts.get(theirs.prNumber) ?? null) : null, acts: reviewRow ?? row, url: theirs.prUrl || null };
     }
     const reviewed = row.entry ?? listedOwn ?? row.unit;
-    const facts = row.entry ? factsOf(row.entry.prNumber, row.light && !row.entry.isDraft ? null : row.review?.pr) : listedOwn ? factsOf(listedOwn.prNumber) : null;
+    const facts = row.entry ? factsOf(row.entry.prNumber, row.light && !row.entry.isDraft ? null : row.review?.pr, path, row.review?.pr) : listedOwn ? factsOf(listedOwn.prNumber, null, path) : null;
     const yours = listedOwn === null && isSomeoneElses(reviewed, viewer) && (!settled || (facts?.isDraft ?? reviewed.isDraft));
     const unsent = listedOwn === null && !settled && (row.entry === null || yours);
     const deleted = row.change.kind === "deleted";
     const { from } = row.change;
     const told = input.told(path);
+    const mtime = input.mtimeOf?.(path);
     return {
       entry: yours ? draftEntry(row.change) : reviewed,
       facts: yours ? null : facts,
@@ -253,6 +289,7 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
         behind,
         ...(row.change.kind === "renamed" && from ? { renamedFrom: noteName(from) } : {}),
         ...(row.unchanged ? {} : { hasChanges: true }),
+        ...(mtime !== undefined && mtime > 0 ? { changed: mtime } : {}),
       },
     };
   };
@@ -275,7 +312,23 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
     }
     const branch = branchOf(overview.id);
     const entries = overview.paths.flatMap((path) => (flight?.paths[path] ?? []).filter((one) => one.branch === branch).slice(0, 1));
-    const item = groupItemOf({ overview, entries, facts: overview.prNumber > 0 ? (input.facts.get(overview.prNumber) ?? null) : null, rooms, viewer, now, ...(input.editingGroup === groupId(overview.id) ? { editing: true } : {}) });
+    const rawGroupFacts = overview.prNumber > 0 ? input.facts.get(overview.prNumber) : undefined;
+    const learnedFiles = !overview.isDraft ? info.files.filter((file) => input.isLearned?.(file.path) === true) : [];
+    const learnedMember =
+      learnedFiles.find((file) => {
+        const pr = file.row?.review?.pr;
+        return pr !== null && pr !== undefined && !pr.isDraft && pr.state !== "draft";
+      }) ?? learnedFiles[0];
+    const learnedPr = learnedMember?.row?.review?.pr;
+    const groupLearnedPr =
+      learnedPr && !learnedPr.isDraft && learnedPr.state !== "draft"
+        ? learnedPr
+        : { number: overview.prNumber, url: overview.prUrl, state: "open" as const, isDraft: false };
+    const groupFacts =
+      rawGroupFacts && rawGroupFacts.isDraft && learnedMember
+        ? protectLearnedFacts(rawGroupFacts, null, learnedMember.path, groupLearnedPr)
+        : (rawGroupFacts ?? null);
+    const item = groupItemOf({ overview, entries, facts: groupFacts, rooms, viewer, now, ...(input.editingGroup === groupId(overview.id) ? { editing: true } : {}) });
     urls.set(item.id, overview.prUrl);
     return [info.members.length > 0 ? { ...item, hasChanges: true } : item];
   });
@@ -346,6 +399,7 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
     groupByPath,
     docIndexById,
     holdById,
+    learnedProtected,
     joinCandidates,
     factsOf,
     drawDoc,
@@ -366,7 +420,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
   const unchanged = openPath !== null && !base.loosePaths.has(openPath) ? input.unchanged?.(openPath) : undefined;
   if (openPath !== null && unchanged?.entry) {
     const { entry } = unchanged;
-    const doc = base.drawDoc(openPath, { entry, facts: base.factsOf(entry.prNumber, unchanged.light && !entry.isDraft ? null : unchanged.review?.pr), acts: unchanged, url: entry.prUrl }, activeHold);
+    const doc = base.drawDoc(openPath, { entry, facts: base.factsOf(entry.prNumber, unchanged.light && !entry.isDraft ? null : unchanged.review?.pr, openPath, unchanged.review?.pr), acts: unchanged, url: entry.prUrl }, activeHold);
     const listedSlice = base.items.slice(0, base.listedCount).filter((one) => !(one.kind === "doc" && one.id === openPath));
     const docsSlice = base.items.slice(base.listedCount, base.listedCount + base.docsCount);
     const groupsSlice = base.items.slice(base.listedCount + base.docsCount);
@@ -469,7 +523,7 @@ function pinnedOf(
   own: StatusDoc | undefined,
   rowByPath: ReadonlyMap<string, ChangeRow>,
   groupByPath: ReadonlyMap<string, ChangeRow>,
-  factsOf: (number: number, pr?: PrInfo | null) => ReviewFacts | null,
+  factsOf: (number: number, pr?: PrInfo | null, path?: string, learnedPr?: PrInfo | null) => ReviewFacts | null,
   rows: ReadonlyMap<string, ChangeRow>,
 ): StatusPinned {
   const { path, status } = active;
@@ -483,10 +537,11 @@ function pinnedOf(
     !card.group.overview.ending &&
     (active.behind || (card.group.overview.hold === "behind" && card.group.overview.holdPaths.includes(path)));
   const entry = row?.entry ?? null;
-  const facts = entry ? factsOf(entry.prNumber, row?.light && !entry.isDraft ? null : row?.review?.pr) : null;
+  const facts = entry ? factsOf(entry.prNumber, row?.light && !entry.isDraft ? null : row?.review?.pr, path, row?.review?.pr) : null;
   const submitted = entry !== null && facts !== null && !facts.isDraft;
-  const here = hereOf(status);
-  const phase = phaseOf(status);
+  const liveCapable = active.liveCapable !== false;
+  const here = liveCapable ? hereOf(status) : [];
+  const phase = liveCapable ? phaseOf(status) : "local";
   const author = entry?.authorLogin ?? facts?.authorLogin ?? null;
   const isMine = author === null || sameLogin(author, input.viewer);
   const publishable = entry !== null && entry.prNumber > 0 && isMine && (own?.state === "in-review" || own?.state === "changes-requested");
@@ -518,7 +573,7 @@ function pinnedOf(
     ...(own?.asksYou ? { asksYou: true } : {}),
     here,
     ...(own?.check ? { check: own.check } : {}),
-    ...(publishedHeld ? { lane: "none" as const } : {}),
+    ...(publishedHeld ? { lane: "none" as const } : own?.lane ? { lane: own.lane } : {}),
     ...(own?.hasChanges ? { hasChanges: true } : {}),
     ...(noChangesToShow ? { hideChanges: true } : {}),
     showChanges: input.showChanges,
@@ -539,11 +594,15 @@ function pinnedOf(
     ...(warning ? { warning } : {}),
     ...(own?.views ? { views: own.views } : {}),
     menu: ["open-in-specgit", "copy-link"],
-    plugin: {
-      connected: phase !== "local",
-      joining: phase === "joining",
-      ...(pluginAction ? { action: pluginAction } : {}),
-      ...(phase === "local" && (active.people ?? 0) > 0 ? { people: active.people! } : {}),
-    },
+    ...(liveCapable
+      ? {
+          plugin: {
+            connected: phase !== "local",
+            joining: phase === "joining",
+            ...(pluginAction ? { action: pluginAction } : {}),
+            ...(phase === "local" && (active.people ?? 0) > 0 ? { people: active.people! } : {}),
+          },
+        }
+      : {}),
   };
 }
