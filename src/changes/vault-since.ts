@@ -1,6 +1,6 @@
 import type { MainFile } from "../auth/git-copy";
 import { changesBetween } from "../disk/merge";
-import { toLf } from "../disk/line-endings";
+import { stripBom, toLf } from "../disk/line-endings";
 import type { Shown } from "../disk/regions";
 import { type DocumentRef, noteName, pathKind } from "../mapping";
 import { THING_WORDS } from "../pick/words";
@@ -48,7 +48,7 @@ export async function readSince(reads: SinceReads, doc: DocumentRef, file: Vault
   const name = noteName(file.path);
   const said = (words: string): SinceRead => ({ kind: "said", words });
   const laid = (before: string, after: string, same: string, context: ChangesContext): SinceRead => {
-    const shown = changesBetween(toLf(before), toLf(after));
+    const shown = changesBetween(stripBom(toLf(before)), stripBom(toLf(after)));
     return shown === null ? said(same) : { kind: "shown", shown, context };
   };
   const base = (): Promise<string | null> => reads.gitBlob(doc, file.base as string);

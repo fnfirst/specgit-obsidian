@@ -234,7 +234,7 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
       return { entry: theirs, facts: theirs.prNumber > 0 ? (input.facts.get(theirs.prNumber) ?? null) : null, acts: reviewRow ?? row, url: theirs.prUrl || null };
     }
     const reviewed = row.entry ?? listedOwn ?? row.unit;
-    const facts = row.entry ? factsOf(row.entry.prNumber, row.review?.pr) : listedOwn ? factsOf(listedOwn.prNumber) : null;
+    const facts = row.entry ? factsOf(row.entry.prNumber, row.light && !row.entry.isDraft ? null : row.review?.pr) : listedOwn ? factsOf(listedOwn.prNumber) : null;
     const yours = listedOwn === null && isSomeoneElses(reviewed, viewer) && (!settled || (facts?.isDraft ?? reviewed.isDraft));
     const unsent = listedOwn === null && !settled && (row.entry === null || yours);
     const deleted = row.change.kind === "deleted";
@@ -275,7 +275,7 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
     }
     const branch = branchOf(overview.id);
     const entries = overview.paths.flatMap((path) => (flight?.paths[path] ?? []).filter((one) => one.branch === branch).slice(0, 1));
-    const item = groupItemOf({ overview, entries, facts: factsOf(overview.prNumber, card.review?.pr), rooms, viewer, now, ...(input.editingGroup === groupId(overview.id) ? { editing: true } : {}) });
+    const item = groupItemOf({ overview, entries, facts: overview.prNumber > 0 ? (input.facts.get(overview.prNumber) ?? null) : null, rooms, viewer, now, ...(input.editingGroup === groupId(overview.id) ? { editing: true } : {}) });
     urls.set(item.id, overview.prUrl);
     return [info.members.length > 0 ? { ...item, hasChanges: true } : item];
   });
@@ -366,7 +366,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
   const unchanged = openPath !== null && !base.loosePaths.has(openPath) ? input.unchanged?.(openPath) : undefined;
   if (openPath !== null && unchanged?.entry) {
     const { entry } = unchanged;
-    const doc = base.drawDoc(openPath, { entry, facts: base.factsOf(entry.prNumber, unchanged.review?.pr), acts: unchanged, url: entry.prUrl }, activeHold);
+    const doc = base.drawDoc(openPath, { entry, facts: base.factsOf(entry.prNumber, unchanged.light && !entry.isDraft ? null : unchanged.review?.pr), acts: unchanged, url: entry.prUrl }, activeHold);
     const listedSlice = base.items.slice(0, base.listedCount).filter((one) => !(one.kind === "doc" && one.id === openPath));
     const docsSlice = base.items.slice(base.listedCount, base.listedCount + base.docsCount);
     const groupsSlice = base.items.slice(base.listedCount + base.docsCount);
@@ -483,7 +483,7 @@ function pinnedOf(
     !card.group.overview.ending &&
     (active.behind || (card.group.overview.hold === "behind" && card.group.overview.holdPaths.includes(path)));
   const entry = row?.entry ?? null;
-  const facts = entry ? factsOf(entry.prNumber, row?.review?.pr) : null;
+  const facts = entry ? factsOf(entry.prNumber, row?.light && !entry.isDraft ? null : row?.review?.pr) : null;
   const submitted = entry !== null && facts !== null && !facts.isDraft;
   const here = hereOf(status);
   const phase = phaseOf(status);

@@ -1,7 +1,7 @@
 import { FILES_PER_BATCH } from "./copy-in";
 import { isOwnDraft, teammateReview } from "./batch-reviews";
 import { gitBlobShaOfText } from "./blob-sha";
-import { toLf } from "../disk/line-endings";
+import { stripBom, toLf } from "../disk/line-endings";
 import { CasePathIndex, type DocumentRef, noteName } from "../mapping";
 import { isLostAnswerResult, reviewIsOpen, type StepResult } from "../review/review-api";
 import { discardAsk, type DiscardCounts, type DiscardResult, type DiscardWorld, discardedWords, DISCARD, discardTitle, type LeftAlone, nothingToDiscard, type SkipReason } from "./discard-words";
@@ -315,7 +315,7 @@ export class Discard {
     let already = false;
     const wrote = await this.host.deps.vault.process(path, (current) => {
       already = toLf(current) === toLf(text);
-      differs = toLf(current) !== toLf(mine);
+      differs = stripBom(toLf(current)) !== stripBom(toLf(mine));
       return already || differs ? null : text;
     });
     if (wrote === "gone") return "gone";

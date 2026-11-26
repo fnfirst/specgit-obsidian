@@ -48,7 +48,7 @@ export interface FlowDeps {
   model: ChangesModel;
   dialogs: Dialogs;
   readText(path: string): Promise<string | null>;
-  writeText(path: string, text: string, expected: string): Promise<boolean>;
+  writeText(path: string, text: string, expected: string): Promise<boolean | string>;
   vault: GuardedVault;
   phaseOf(path: string): NotePhase;
   hasRoomBase(path: string): boolean;

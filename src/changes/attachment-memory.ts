@@ -23,22 +23,36 @@ export const ATTACHMENTS_KEPT = 500;
 
 export class AttachmentMemory {
   private readonly key: string;
+  private readonly sourceKey: string;
   private base: Record<string, string>;
+  private sources: Record<string, string>;
   private readonly hashes = new Map<string, { mtime: number; size: number; sha: string }>();
 
   constructor(
     place: string,
     private readonly state: LocalState,
   ) {
-    this.key = `specgit-attachments-${hashText(place)}`;
+    const id = hashText(place);
+    this.key = `specgit-attachments-${id}`;
+    this.sourceKey = `specgit-attachment-sources-${id}`;
+    const stored = this.loadRecord(this.key);
+    this.base = stored;
+    const storedSources = this.loadRecord(this.sourceKey);
+    this.sources = {};
+    for (const [path, branch] of Object.entries(storedSources)) {
+      if (path in this.base) this.sources[path] = branch;
+    }
+  }
+
+  private loadRecord(key: string): Record<string, string> {
     const stored = (() => {
       try {
-        return this.state.load(this.key);
+        return this.state.load(key);
       } catch {
         return null;
       }
     })();
-    this.base = typeof stored === "object" && stored !== null && !Array.isArray(stored) && Object.values(stored).every((sha) => typeof sha === "string") ? { ...(stored as Record<string, string>) } : {};
+    return typeof stored === "object" && stored !== null && !Array.isArray(stored) && Object.values(stored).every((value) => typeof value === "string") ? { ...(stored as Record<string, string>) } : {};
   }
 
   agreedOf(repoPath: string): string | undefined {
@@ -50,20 +64,47 @@ export class AttachmentMemory {
     return sha;
   }
 
-  agree(repoPath: string, sha: string): void {
-    if (this.base[repoPath] === sha) {
-      delete this.base[repoPath];
-      this.base[repoPath] = sha;
-      return;
-    }
+  sourceOf(repoPath: string): string | undefined {
+    return this.sources[repoPath];
+  }
+
+  agree(repoPath: string, sha: string, source?: string): void {
+    const shaChanged = this.base[repoPath] !== sha;
     delete this.base[repoPath];
     this.base[repoPath] = sha;
-    const keys = Object.keys(this.base);
-    if (keys.length > ATTACHMENTS_KEPT) for (const old of keys.slice(0, keys.length - ATTACHMENTS_KEPT)) delete this.base[old];
-    try {
-      this.state.save(this.key, this.base);
-    } catch {
-      void 0;
+    let sourcesChanged = false;
+    if (source !== undefined) {
+      if (this.sources[repoPath] !== source) {
+        this.sources[repoPath] = source;
+        sourcesChanged = true;
+      }
+    } else if (repoPath in this.sources) {
+      delete this.sources[repoPath];
+      sourcesChanged = true;
+    }
+    if (shaChanged) {
+      const keys = Object.keys(this.base);
+      if (keys.length > ATTACHMENTS_KEPT) {
+        for (const old of keys.slice(0, keys.length - ATTACHMENTS_KEPT)) {
+          delete this.base[old];
+          if (old in this.sources) {
+            delete this.sources[old];
+            sourcesChanged = true;
+          }
+        }
+      }
+      try {
+        this.state.save(this.key, this.base);
+      } catch {
+        void 0;
+      }
+    }
+    if (sourcesChanged) {
+      try {
+        this.state.save(this.sourceKey, this.sources);
+      } catch {
+        void 0;
+      }
     }
   }
 

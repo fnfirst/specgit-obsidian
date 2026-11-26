@@ -1,5 +1,5 @@
 import { Budget } from "../disk/diff";
-import { toLf } from "../disk/line-endings";
+import { hasBom, stripBom, toLf } from "../disk/line-endings";
 import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
 import { noteName } from "../mapping";
 import { CATCH_UP, type CatchUpPreview } from "../shared/review-flow";
@@ -7,6 +7,7 @@ import { CATCH_UP_HERE } from "../review/words";
 import type { Dialogs, FlowDeps } from "./flow-deps";
 import { failure, UNREADABLE, type Sent } from "./flow-helpers";
 import { mergedWith } from "./note-merge";
+import { inRepoEndings } from "./repo-endings";
 import type { ChangeRow, ChangesModel, Doing } from "./model";
 import type { SentMemory } from "./sent-memory";
 
@@ -82,7 +83,7 @@ export class CatchUpFlows {
     const mine = await this.deps.readText(row.change.path);
     if (!seen || !seen.ok || mine === null) return null;
     const body = seen.body as { baseSource: string; theirsSource: string };
-    return mergeFile(row.change.path, toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400)).conflicts;
+    return mergeFile(row.change.path, stripBom(toLf(body.baseSource)), stripBom(toLf(mine)), stripBom(toLf(body.theirsSource)), this.deps.budget?.() ?? new Budget(400)).conflicts;
   }
 
   async catchUp(row: ChangeRow, preview: Behind, options: CatchUpAsked = {}): Promise<boolean> {
@@ -124,14 +125,16 @@ export class CatchUpFlows {
       return null;
     }
     const body = seen.body as { baseSource: string; theirsSource: string; oursTipSha: string; theirsTipSha: string };
-    const merged = mergeFile(row.change.path, toLf(body.baseSource), toLf(mine), toLf(body.theirsSource), this.deps.budget?.() ?? new Budget(400));
+    const merged = mergeFile(row.change.path, stripBom(toLf(body.baseSource)), stripBom(toLf(mine)), stripBom(toLf(body.theirsSource)), this.deps.budget?.() ?? new Budget(400));
     const chosen = await this.deps.chooseWhatToKeep(buildReviewRequest(row.change.path, merged.review, { other: "github", signal: new AbortController().signal }));
     if (chosen === null) return null;
-    const resolved = await this.deps.review.resolveMerge(row.doc, { ours, theirs: preview.base, oursTipSha: body.oursTipSha, theirsTipSha: body.theirsTipSha, resolvedSource: chosen });
+    const styled = inRepoEndings(chosen, body.theirsSource);
+    const resolvedSource = styled !== "" && hasBom(mine) && !hasBom(styled) ? `\uFEFF${styled}` : styled;
+    const resolved = await this.deps.review.resolveMerge(row.doc, { ours, theirs: preview.base, oursTipSha: body.oursTipSha, theirsTipSha: body.theirsTipSha, resolvedSource });
     if (!resolved.ok) {
       await this.host.alert({ title: CATCH_UP_HERE.failed, description: failure(resolved, CATCH_UP.failedBody) });
       return null;
     }
-    return { text: chosen, summary: "" };
+    return { text: resolvedSource, summary: "" };
   }
 }

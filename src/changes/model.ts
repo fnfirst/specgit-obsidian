@@ -22,6 +22,8 @@ import { type ReviewKey, reviewKey } from "./review-key";
 import { isAnotherAuthor } from "./review-owner";
 import { isLocalOnlyNew as checkLocalOnlyNew } from "./local-new";
 
+const EMPTY_REMOVALS: ReadonlyMap<string, string | null> = new Map();
+
 const PRESENCE_RETRY_MS = 2_000;
 const PRESENCE_RETRY_MOST_MS = 30_000;
 
@@ -66,6 +68,7 @@ interface VerifyTarget {
   pr: PrInfo;
   fallback: ReviewStatus | null;
   fromStale: boolean;
+  downgraded?: boolean;
 }
 
 function flightOf(groups: GroupsRead): { paths: NonNullable<GroupsRead["paths"]>; stale: boolean; overviews: ReadonlyMap<string, GroupOverview>; saves?: SavesTo; asOf?: number } | null {
@@ -755,9 +758,11 @@ export class ChangesModel {
     const byPath = new Map<string, Draft>();
     const vaultPath = (path: string): string => this.deps.vaultPath?.(path) ?? path;
     const removals = removalsByBranch(flight.paths, vaultPath);
-    for (const [path, entries] of Object.entries(flight.paths)) {
-      const draft = draftOf(entries, login, flight.overviews, flight.saves);
-      if (draft) byPath.set(vaultPath(path), { ...draft, removes: removals.get(draft.branch) ?? new Map() });
+    for (const path in flight.paths) {
+      const draft = draftOf(flight.paths[path], login, flight.overviews, flight.saves);
+      if (!draft) continue;
+      draft.removes = removals.size > 0 ? (removals.get(draft.branch) ?? EMPTY_REMOVALS) : EMPTY_REMOVALS;
+      byPath.set(vaultPath(path), draft);
     }
     return { drafts: { byPath, level: !flight.stale, ...(flight.asOf === undefined ? {} : { asOf: flight.asOf }) } };
   }
@@ -940,13 +945,33 @@ export class ChangesModel {
     return { failedReads, limited };
   }
 
+  private syncGroupDraft(pr: PrInfo | null | undefined): void {
+    if (!pr || pr.number <= 0 || !this.groupsRead.on) return;
+    const isDraft = pr.isDraft || pr.state === "draft";
+    let changed = false;
+    const next: Record<string, GroupOverview> = {};
+    for (const [branch, one] of Object.entries(this.groupsRead.overviews)) {
+      if (one.prNumber === pr.number && one.isDraft !== isDraft) {
+        next[branch] = { ...one, isDraft };
+        changed = true;
+      } else {
+        next[branch] = one;
+      }
+    }
+    if (changed) this.groupsRead = { ...this.groupsRead, overviews: next };
+  }
+
   private async verifyReviews(targets: readonly VerifyTarget[]): Promise<{ retryAfterMs?: number } | null> {
     if (targets.length === 0) return null;
     const place = this.deps.place?.() ?? "";
     const remaining = this.detailsLimitedUntil - this.now();
     if (remaining > 0) return { retryAfterMs: remaining };
     this.detailsLimitedUntil = 0;
+    const needsStatus = (target: VerifyTarget): boolean => target.fromStale || target.downgraded === true;
+    const learnedBefore = new Map(targets.map((target) => [target.change.path, this.learnedAt.get(target.change.path)]));
+    const superseded = (path: string): boolean => this.learnedAt.get(path) !== learnedBefore.get(path);
     const applyFallback = (target: VerifyTarget): void => {
+      if (superseded(target.change.path)) return;
       this.learnedAt.delete(target.change.path);
       this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review: target.fallback, light: true });
     };
@@ -956,9 +981,12 @@ export class ChangesModel {
         if (!doc) continue;
         const review = await this.deps.review.status(doc);
         if ((this.deps.place?.() ?? "") !== place || this.disposed) return;
-        if (review === null) continue;
-        this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review });
-        if (!review.pr || review.pr.state === "merged" || review.pr.state === "closed") this.learnedAt.delete(target.change.path);
+        if (review === null || superseded(target.change.path)) continue;
+        const pr = review.pr && review.pr.number === target.pr.number && target.pr.group && !review.pr.group ? { ...review.pr, group: target.pr.group } : review.pr;
+        const nextReview = pr === review.pr ? review : { ...review, pr };
+        this.statuses.set(target.change.path, { key: this.keyOf(target.change), at: this.now(), review: nextReview });
+        this.syncGroupDraft(pr);
+        if (!pr || pr.state === "merged" || pr.state === "closed") this.learnedAt.delete(target.change.path);
       }
     };
     const numbered = targets.flatMap((target) => {
@@ -966,26 +994,27 @@ export class ChangesModel {
       return doc ? [{ target, repo: doc.repo }] : [];
     });
     if (!this.deps.review.details) {
-      const staleOnes: VerifyTarget[] = [];
+      const statusOnes: VerifyTarget[] = [];
       for (const { target } of numbered) {
-        if (target.fromStale) staleOnes.push(target);
+        if (needsStatus(target)) statusOnes.push(target);
         else applyFallback(target);
       }
-      await verifyViaStatus(staleOnes.slice(0, LOOK_BUDGET));
+      await verifyViaStatus(statusOnes.slice(0, LOOK_BUDGET));
       return null;
     }
     const missing: VerifyTarget[] = [];
     for (let at = 0; at < numbered.length; at += DETAILS_PER_REQUEST) {
       const run = numbered.slice(at, at + DETAILS_PER_REQUEST);
-      const details = await this.deps.review.details(run[0]!.repo, run.map((one) => one.target.pr.number));
+      const numbers = [...new Set(run.map((one) => one.target.pr.number))];
+      const details = await this.deps.review.details(run[0]!.repo, numbers);
       if ((this.deps.place?.() ?? "") !== place || this.disposed) return null;
       if (details === null) {
-        const staleOnes: VerifyTarget[] = [];
+        const statusOnes: VerifyTarget[] = [];
         for (const { target } of numbered.slice(at)) {
-          if (target.fromStale) staleOnes.push(target);
+          if (needsStatus(target)) statusOnes.push(target);
           else applyFallback(target);
         }
-        await verifyViaStatus(staleOnes.slice(0, LOOK_BUDGET));
+        await verifyViaStatus(statusOnes.slice(0, LOOK_BUDGET));
         return null;
       }
       if (!(details instanceof Map)) {
@@ -995,9 +1024,10 @@ export class ChangesModel {
         return null;
       }
       for (const { target } of run) {
+        if (superseded(target.change.path)) continue;
         const detail = details.get(target.pr.number);
         if (!detail) {
-          if (target.fromStale) missing.push(target);
+          if (needsStatus(target)) missing.push(target);
           else applyFallback(target);
           continue;
         }
@@ -1014,6 +1044,7 @@ export class ChangesModel {
           review: { reviewBranch: target.known.review?.reviewBranch ?? null, pr: mergedPr, ...(target.known.review?.saver ? { saver: target.known.review.saver } : {}) },
           withoutSaver: true,
         });
+        this.syncGroupDraft(mergedPr);
       }
     }
     if (missing.length > 0) await verifyViaStatus(missing.slice(0, LOOK_BUDGET));
@@ -1038,20 +1069,16 @@ export class ChangesModel {
     const login = this.deps.viewerLogin?.() ?? null;
     const active = this.deps.activePath?.() ?? null;
     const now = this.now();
-    const prPaths = new Map<number, Set<string>>();
-    for (const [repoPath, entries] of Object.entries(flight.paths)) {
-      for (const entry of entries) {
-        if (typeof entry.prNumber === "number" && entry.prNumber > 0) {
+    let prPaths: Map<number, Set<string>> | null = null;
+    const listedElsewhere = (prNumber: number, repoPath: string): boolean => {
+      if (prPaths === null) {
+        prPaths = new Map();
+        for (const path in flight.paths) for (const entry of flight.paths[path]!) if (typeof entry.prNumber === "number" && entry.prNumber > 0) {
           let paths = prPaths.get(entry.prNumber);
-          if (!paths) {
-            paths = new Set();
-            prPaths.set(entry.prNumber, paths);
-          }
-          paths.add(repoPath);
+          if (!paths) { paths = new Set(); prPaths.set(entry.prNumber, paths); }
+          paths.add(path);
         }
       }
-    }
-    const listedElsewhere = (prNumber: number, repoPath: string): boolean => {
       const paths = prPaths.get(prNumber);
       if (!paths) return false;
       for (const path of paths) if (path !== repoPath) return true;
@@ -1079,14 +1106,15 @@ export class ChangesModel {
           ? { reviewBranch: null, pr: null, saver: keepSaver }
           : null;
       const droppedOpen = wasOpen && light === null;
-      const downgradedOpen = wasOpen && !was.isDraft && light !== null && light.number === was.number && light.isDraft;
+      const downgradedOpen = wasOpen && !was.isDraft && was.state !== "draft" && light !== null && light.number === was.number && light.isDraft;
       if (flight.stale && known) {
         if (droppedOpen || downgradedOpen) {
           this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
+          if (downgradedOpen) this.syncGroupDraft(was);
           const readyToVerify = !withinGrace && was.number > 0 && now - known.at >= STATUS_TTL_MS;
           const levelExpired = this.levelAt === null || now - this.levelAt >= DETAIL_TTL_MS;
           if (readyToVerify && (listed || levelExpired)) {
-            verify.push({ change, known, pr: was, fallback: nextReview, fromStale: true });
+            verify.push({ change, known, pr: was, fallback: nextReview, fromStale: true, downgraded: downgradedOpen });
           }
           continue;
         }
@@ -1095,10 +1123,14 @@ export class ChangesModel {
           continue;
         }
       }
-      if (known && withinGrace && (light?.number !== was?.number || light?.isDraft !== was?.isDraft)) continue;
-      if (!flight.stale && known && droppedOpen && !was.group && was.number > 0 && !listedElsewhere(was.number, repoPath)) {
+      if (known && withinGrace && (light?.number !== was?.number || light?.isDraft !== was?.isDraft)) {
+        if (was && light && was.number === light.number && was.isDraft !== light.isDraft) this.syncGroupDraft(was);
+        continue;
+      }
+      if (!flight.stale && known && was && was.number > 0 && ((droppedOpen && !was.group && !listedElsewhere(was.number, repoPath)) || downgradedOpen)) {
         this.statuses.set(change.path, { ...known, key: this.keyOf(change) });
-        verify.push({ change, known, pr: was, fallback: nextReview, fromStale: false });
+        if (downgradedOpen) this.syncGroupDraft(was);
+        verify.push({ change, known, pr: was, fallback: nextReview, fromStale: false, downgraded: downgradedOpen });
         continue;
       }
       if (known && known.light !== true && !waiting && !needsActiveSaver && !was && !light && !known.review?.reviewBranch && !batch.review && now - known.at < DETAIL_TTL_MS) {
@@ -1367,9 +1399,9 @@ export class ChangesModel {
     const flight = this.flight;
     if (!flight) return null;
     const paths: Record<string, InFlightResponse["paths"][string]> = {};
-    for (const [path, entries] of Object.entries(flight.paths)) {
+    for (const path in flight.paths) {
       const here = this.vaultPathFor(path);
-      if (this.deps.documentFor(here) !== null && !isHiddenPath(here)) paths[here] = entries;
+      if (this.deps.documentFor(here) !== null && !isHiddenPath(here)) paths[here] = flight.paths[path]!;
     }
     return { base: "", paths, groups: this.vaultOverviews() ?? {} };
   }

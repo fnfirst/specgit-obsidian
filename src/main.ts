@@ -8,6 +8,7 @@ import { NOTE_BRANCH } from "./auth/config";
 import { Board } from "./board";
 import { SpecgitApi } from "./api";
 import { obsidianDialogs } from "./changes/dialogs";
+import { deferDuringUntitled, forgetFreshUntitled, forgetFreshUntitledIf, isFreshUntitled, onFreshUntitledCreate, trackFreshLocalNotes } from "./changes/local-new";
 import { listRepository } from "./changes/mirror-listing";
 import { OwnLinks } from "./changes/own-links";
 import { setUpChanges } from "./changes/setup";
@@ -73,6 +74,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       }
     }
     registerMark();
+    trackFreshLocalNotes(this);
     if (stayPaused) showNotice(STAY_PAUSED_NOTICE, true);
 
     const ownRestarts = new OwnRestarts(undefined, { load: (key) => this.app.loadLocalStorage(key) as unknown, save: (key, value) => this.app.saveLocalStorage(key, value) });
@@ -131,6 +133,17 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     clearChosenOn = (doc) => connections.clearChosenOn(doc);
     this.connections = connections;
     const disk = diskPath(this.app);
+    let clearFreshSent = (_path: string): void => undefined;
+    this.register(
+      onFreshUntitledCreate(this, (path) => {
+        const doc = documentFor(this.config, path);
+        if (doc) connections.forget(doc);
+        if (disk.bases.has(path)) disk.bases.forget(path);
+        ownLinks.forget(path);
+        if (cameIn.get(path) !== undefined) cameIn.set(path, null);
+        clearFreshSent(path);
+      }),
+    );
     const gitBases = new GitBases({
       bases: disk.bases,
       vault: disk.vault,
@@ -353,7 +366,14 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     });
 
     repoShaOf = (path) => changes.model.vault()?.files.get(path)?.repoSha ?? null;
-    isLocalOnlyNew = (path) => disk.bases.read(path).status === "none" && changes.model.isLocalOnlyNew(path);
+    clearFreshSent = (path) => changes.model.learnSent(path, null);
+    isLocalOnlyNew = (path) => {
+      if (disk.bases.read(path).status !== "none") {
+        if (isFreshUntitled(this, path)) forgetFreshUntitled(this, path);
+        return false;
+      }
+      return changes.model.isLocalOnlyNew(path);
+    };
     isDeferredLocalNew = (doc) => {
       const key = docKey(doc);
       const path = changes.model.vaultPathFor(doc.path);
@@ -406,21 +426,35 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       dialogs,
     });
     this.register(this.settingsSaved.subscribe(() => this.stay?.settingsChanged()));
+    const defaultsChanged = deferDuringUntitled(this, () => {
+      if (this.config.stayConnected) connections.defaultsChanged();
+    });
     this.register(
       changes.model.onLooked((looked) => {
         if (looked === null) return;
         for (const [key, path] of [...deferredNew]) {
           const current = documentFor(this.config, path);
-          if (!current || docKey(current) !== key || !looked.files.has(path) || !isLocalOnlyNew(path)) deferredNew.delete(key);
+          if (!current || docKey(current) !== key || (!isFreshUntitled(this, path) && !looked.files.has(path)) || !isLocalOnlyNew(path)) deferredNew.delete(key);
         }
-        if (this.config.stayConnected) connections.defaultsChanged();
+        if (this.config.stayConnected) defaultsChanged();
       }),
     );
     mainMoved = (path) => changes.model.row(path)?.change.mainMoved === true;
     draftBy = (path) => changes.model.draftAuthor(path);
-    liveJoined = (path) => changes.liveFiles.joined(path);
+    liveJoined = (path) => {
+      forgetFreshUntitled(this, path);
+      changes.liveFiles.joined(path);
+    };
     sentBase = (path, doc, since, signal) => changes.sentBase(path, doc, since, signal);
-    this.register(connections.onChoice(() => changes.model.redraw()));
+    this.register(
+      connections.onChoice(() => {
+        forgetFreshUntitledIf(this, (path) => {
+          const doc = documentFor(this.config, path);
+          return doc !== null && connections.wants(doc);
+        });
+        changes.model.redraw();
+      }),
+    );
     setUpNoteBar(this, { model: changes.model, isLive: (path) => board.phaseOf(path) === "live", onStatus: (listener) => board.subscribe(listener), join: (path) => void joinNote(path), addToMyNote: (path) => this.stay?.addToMyNote(path) });
     this.register(changes.model.subscribe(() => setAwareNotices(changes.model.state().aware !== null)));
     checkConnected = async () => {
@@ -430,6 +464,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     const joinNote = async (path: string): Promise<void> => {
       const doc = documentFor(this.config, path);
       if (!doc || !auth.isSignedIn()) return;
+      forgetFreshUntitled(this, path);
       await ensureOpen(this, path);
       connections.choose(doc, true);
     };
@@ -588,19 +623,26 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     const item = this.addStatusBarItem();
     item.addClass("specgit-status-item", "mod-clickable");
     this.registerDomEvent(item, "click", openPanel);
+    let rendered = "\n\n0";
     const show = (): void => {
       const status = board.get(this.app.workspace.getActiveFile()?.path ?? "");
       const words = statusText(status);
+      const tip = words === "" ? "" : statusTip(status ?? { phase: "local" });
+      const live = status !== undefined && wordFor(status) === "Live" && !status.readOnly;
+      const signature = `${words}\n${tip}\n${live ? "1" : "0"}`;
+      if (signature === rendered) return;
+      rendered = signature;
       item.empty();
       if (words === "") return;
       setIcon(item.createSpan({ cls: "specgit-status-mark" }), MARK_ICON);
       item.createSpan({ text: words, cls: "specgit-status-words" });
-      setTooltip(item, statusTip(status ?? { phase: "local" }), { placement: "top" });
-      item.toggleClass("is-live", status !== undefined && wordFor(status) === "Live" && !status.readOnly);
+      setTooltip(item, tip, { placement: "top" });
+      item.toggleClass("is-live", live);
     };
-    this.register(board.subscribe(show));
-    this.registerEvent(this.app.workspace.on("file-open", show));
-    this.registerEvent(this.app.workspace.on("active-leaf-change", show));
+    const scheduleShow = deferDuringUntitled(this, show);
+    this.register(board.subscribe(scheduleShow));
+    this.registerEvent(this.app.workspace.on("file-open", scheduleShow));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", scheduleShow));
   }
 
   private tellWhatCameIn(board: Board<Shown[]>, path: string, shown: Shown[] | null, words?: string): ((words: string) => void) | void {

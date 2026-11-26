@@ -19,10 +19,10 @@ export function resolvePrimary(
   if (upstream) {
     return { kind: "propose", label: `Propose to ${upstream.owner}/${upstream.repo}` };
   }
+  if (canResolve && pr?.mergeableState === "dirty") return { kind: "resolve", label: "Resolve conflicts…" };
   if (!pr || pr.isDraft || pr.state === "draft") {
     return { kind: "submit", label: "Submit for review…" };
   }
-  if (canResolve && pr.mergeableState === "dirty") return { kind: "resolve", label: "Resolve conflicts…" };
   if (viewerCanApprove(pr, viewerLogin)) {
     return { kind: "approve", label: "Approve" };
   }

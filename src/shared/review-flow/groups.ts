@@ -16,6 +16,7 @@ export interface GroupOverview {
   name: string;
   prNumber: number;
   prUrl: string;
+  authorLogin?: string | null;
   isDraft: boolean;
   mergeableState: "clean" | "dirty" | "blocked" | "unknown" | null;
   hold: GroupHold | null;

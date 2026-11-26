@@ -243,19 +243,34 @@ export class StatusController {
     const found = new Set<number>();
     for (const row of rows) if (row.entry && row.entry.prNumber > 0) found.add(row.entry.prNumber);
     for (const card of groups) if (card.group && card.group.overview.prNumber > 0) found.add(card.group.overview.prNumber);
-    for (const entries of Object.values(this.env.model.flightAnswer()?.paths ?? {})) for (const one of entries) if (one.prNumber !== undefined && one.prNumber > 0) found.add(one.prNumber);
+    const paths = this.env.model.flightAnswer()?.paths;
+    if (paths) {
+      for (const key in paths) {
+        for (const one of paths[key]!) if (one.prNumber !== undefined && one.prNumber > 0) found.add(one.prNumber);
+      }
+    }
     return [...found].sort((a, b) => a - b);
   }
 
-  private ordered(): number[] {
+  private collectNumbers(): { all: number[]; ordered: number[] } {
     const { rows, groups } = this.env.model.state();
+    const found = new Set<number>();
     const own = new Set<number>();
-    for (const row of rows) if (row.entry && row.entry.prNumber > 0) own.add(row.entry.prNumber);
-    for (const card of groups) if (card.group && card.group.overview.prNumber > 0) own.add(card.group.overview.prNumber);
+    for (const row of rows) if (row.entry && row.entry.prNumber > 0) { found.add(row.entry.prNumber); own.add(row.entry.prNumber); }
+    for (const card of groups) if (card.group && card.group.overview.prNumber > 0) { found.add(card.group.overview.prNumber); own.add(card.group.overview.prNumber); }
     const viewer = this.env.viewer();
-    for (const entries of Object.values(this.env.model.flightAnswer()?.paths ?? {})) for (const one of entries) if (one.prNumber !== undefined && one.prNumber > 0 && isViewersBranch(one, viewer)) own.add(one.prNumber);
-    const all = this.numbers();
-    return [...all.filter((number) => own.has(number)), ...all.filter((number) => !own.has(number))];
+    const paths = this.env.model.flightAnswer()?.paths;
+    if (paths) {
+      for (const key in paths) {
+        for (const one of paths[key]!) {
+          if (one.prNumber === undefined || one.prNumber <= 0) continue;
+          found.add(one.prNumber);
+          if (isViewersBranch(one, viewer)) own.add(one.prNumber);
+        }
+      }
+    }
+    const all = [...found].sort((a, b) => a - b);
+    return { all, ordered: [...all.filter((number) => own.has(number)), ...all.filter((number) => !own.has(number))] };
   }
 
   private setTimer(run: () => void, ms: number): unknown {
@@ -421,10 +436,9 @@ export class StatusController {
     if (this.disposed) return;
     void this.env.githubStatus?.refresh();
     if (this.env.model.state().phase === "rate-limited") return;
-    const current = this.numbers();
     if (this.readAt === 0 || this.fullRefreshPending || this.now() - this.readAt >= FACTS_FRESH_MS) void this.read();
     else if (this.pendingRefresh.size > 0) void this.read(true);
-    else this.syncNumbers(current);
+    else this.syncNumbers(this.numbers());
   }
 
   reviewsChanged(): void {
@@ -456,14 +470,13 @@ export class StatusController {
       return this.reading;
     }
     if (!only) this.cancelRetry();
-    const numbers = this.ordered();
+    const { all: current, ordered: numbers } = this.collectNumbers();
     let wanted: number[];
     if (only) {
       const targets = new Set(only);
       wanted = numbers.filter((number) => targets.has(number));
       if (wanted.length === 0) return Promise.resolve();
     } else {
-      const current = this.numbers();
       this.asked = current.join(",");
       this.askedSet = new Set(current);
       const full = !retrying || this.fullRefreshPending;

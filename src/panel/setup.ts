@@ -1,8 +1,8 @@
 import type { Plugin } from "obsidian";
 import { MARK_ICON } from "../brand/mark";
-import { coalesceDuringUntitled, isPluginLocalOnlyNew, onLocalNewUpdate, trackFreshLocalNotes } from "../changes/local-new";
+import { coalesceDuringUntitled, createUntitledDeferrer, deferDuringUntitled, isPluginLocalOnlyNew, onLocalNewUpdate, trackFreshLocalNotes } from "../changes/local-new";
 import { PanelModel, type PanelDeps, type TabId } from "./model";
-import type { PanelActions, PanelComments } from "./panel";
+import type { PanelActions, PanelComments, PanelTabs } from "./panel";
 import { PANEL_TYPE, PanelView } from "./view";
 
 export interface PanelHandle {
@@ -12,6 +12,20 @@ export interface PanelHandle {
 
 const OPEN_PANEL = "Open specgit";
 
+function guardTabSubscribe(plugin: Plugin, tabs: PanelTabs): PanelTabs {
+  return {
+    ...tabs,
+    subscribe: (listener) => {
+      const deferred = createUntitledDeferrer(plugin, listener);
+      const stop = tabs.subscribe(deferred.trigger);
+      return () => {
+        deferred.dispose();
+        stop();
+      };
+    },
+  };
+}
+
 export function setUpPanel(plugin: Plugin, deps: PanelDeps, actions: PanelActions, comments: PanelComments): PanelHandle {
   const { workspace } = plugin.app;
   trackFreshLocalNotes(plugin);
@@ -19,7 +33,8 @@ export function setUpPanel(plugin: Plugin, deps: PanelDeps, actions: PanelAction
     ...deps,
     isLocalOnlyNew: deps.isLocalOnlyNew ?? ((path) => isPluginLocalOnlyNew(plugin, path)),
   });
-  plugin.registerView(PANEL_TYPE, (leaf) => new PanelView(leaf, model, actions, comments));
+  const guardedComments: PanelComments = comments.tabs ? { ...comments, tabs: guardTabSubscribe(plugin, comments.tabs) } : comments;
+  plugin.registerView(PANEL_TYPE, (leaf) => new PanelView(leaf, model, actions, guardedComments));
 
   const show = async (): Promise<void> => {
     const [first, ...extra] = workspace.getLeavesOfType(PANEL_TYPE);
@@ -39,11 +54,12 @@ export function setUpPanel(plugin: Plugin, deps: PanelDeps, actions: PanelAction
   plugin.addCommand({ id: "show-panel", name: OPEN_PANEL, icon: MARK_ICON, callback: () => void show() });
 
   const scheduleUpdate = coalesceDuringUntitled(plugin, () => model.update());
+  const scheduleAskPeople = deferDuringUntitled(plugin, () => model.askPeople());
 
   plugin.registerEvent(workspace.on("active-leaf-change", scheduleUpdate));
   plugin.registerEvent(workspace.on("file-open", scheduleUpdate));
   plugin.register(deps.status.subscribe(scheduleUpdate));
   plugin.register(deps.cameIn.subscribe(scheduleUpdate));
-  plugin.register(onLocalNewUpdate(plugin, () => model.askPeople()));
+  plugin.register(onLocalNewUpdate(plugin, scheduleAskPeople));
   return { model, reveal };
 }

@@ -1,7 +1,5 @@
-import type { DocumentRef } from "../mapping";
 import type { Looked } from "../changes/model";
 import { GROUP_NOT_ON_WORDS, GROUP_PLAN_WORDS, LOST_ANSWER_DESCRIPTION, LOST_ANSWER_TITLE } from "../shared/review-flow";
-import { toLf } from "../disk/line-endings";
 import { agreedOf } from "../changes/cache";
 import { Activity } from "./activity";
 import { type AttachmentProblem, StayAttachments } from "./attachments";
@@ -17,6 +15,7 @@ import { missingNotes } from "../changes/missing-notes";
 import { groupWrites, WRITES_PER_FILE } from "../changes/burst";
 import { Pace, WriteBudget } from "./limits";
 import { type BlockedNew, changeKey, hasOwnOrAgreedDraft, isEdit, planOutbound } from "./outbound";
+import { filterRowsForPartial, inboundActivePaths, isFreshLocalUntitled, keepMissingBases, keptPathsReadOnly, pruneStayLists, refreshGithubHolds, stepBackoff, syncKeptPaths } from "./outbound-pass";
 import { OwnBlobs } from "./own-blobs";
 import { RoomWrites } from "./room-writes";
 import { type StayGitMark, type StayState, TYPED_KEPT } from "./state";
@@ -26,8 +25,6 @@ import { WAKE_PAD_MS } from "./wait";
 export const HEARD_MS = 1_500;
 export const ENDED_WATCH_MS = 65_000;
 const MORE_MS = 2_000;
-const BASES_PER_PASS = 10;
-const BASES_BATCHED_PER_PASS = 50;
 const RETRY_MS = 60_000;
 const TRIES = 3;
 
@@ -548,14 +545,19 @@ export class StayConnected {
     }
     this.inbound ??= new Inbound({ ports: this.ports, state: this.state, activity: this.activity, holds: this.holds, isRemoteRoom: (path, sha) => this.roomWrites.matches(path, sha), isOwnBlob: (path, sha) => this.ownBlobs.matches(path, sha), onSettled: (path, sha) => this.ownBlobs.settled(path, sha), onRebasedSent: (path, sha) => this.ownBlobs.noteRebasedSent(path, sha), current: () => this.current(generation), onResolved: (path) => this.conflictResolved(path) });
     const draftIn = this.draftInbound(() => this.current(generation));
+    const seenSnapshot = inboundActivePaths(looked, data.seen);
     let changed = 0;
     let rescan = false;
     let unfinished = false;
+    let inboundMore = false;
+    let inboundFailed = false;
+    let draftBusy: ReadonlySet<string> = new Set();
     try {
       const shown = !this.ports.hidden();
       const done = shown ? await this.inbound.run(looked, this.away !== null) : { changed: 0, rescan: false, more: false, wake: null };
       changed = done.changed;
       rescan = done.rescan;
+      inboundMore = done.more;
       unfinished = done.more;
       const inboundWake = done.more ? Math.min(MORE_MS, done.wake ?? Number.POSITIVE_INFINITY) : done.wake;
       if (inboundWake !== null && this.current(generation)) this.later("inbound", inboundWake, () => this.ports.lookAgain());
@@ -563,6 +565,7 @@ export class StayConnected {
         const drafts = await draftIn.run(looked, (sha) => this.inbound?.textOf(sha));
         changed += drafts.changed;
         rescan ||= drafts.rescan;
+        draftBusy = drafts.busyPaths;
         this.firstLook.added(drafts.changed);
         if (drafts.more) unfinished = true;
         const draftWake = drafts.more ? Math.min(MORE_MS, drafts.wake ?? Number.POSITIVE_INFINITY) : drafts.wake;
@@ -570,6 +573,7 @@ export class StayConnected {
       }
     } catch {
       this.ports.diagnose("a pass of main's changes failed");
+      inboundFailed = true;
       unfinished = true;
     }
     if (!this.current(generation)) return;
@@ -580,12 +584,20 @@ export class StayConnected {
         this.away = null;
       }
     }
-    if (changed > 0 || rescan) return this.ports.lookAgain();
-    if (unfinished) return;
-    this.firstLook.report(this.ports);
-    await this.keepBases(looked, generation);
+    const settlingInbound = changed > 0 || rescan || unfinished;
+    if (!settlingInbound) {
+      this.firstLook.report(this.ports);
+      await this.keepBases(looked, generation);
+      if (!this.current(generation)) return;
+      await this.outbound(looked, generation);
+      return;
+    }
+    let sent = false;
+    if (!inboundFailed && !inboundMore && this.current(generation)) {
+      sent = await this.outbound(looked, generation, { busyPaths: new Set([...seenSnapshot, ...draftBusy]) });
+    }
     if (!this.current(generation)) return;
-    await this.outbound(looked, generation);
+    if (changed > 0 || rescan || sent) this.ports.lookAgain();
   }
 
   async bringIn(path: string): Promise<boolean> {
@@ -617,13 +629,8 @@ export class StayConnected {
 
   private deferOutboundUnsaved(path: string): void {
     const now = this.ports.now();
-    let known = this.outboundUnsaved.get(path);
-    if (!known || (now >= known.until && known.strikes < UNSAVED_WAITS_MS.length)) {
-      const strikes = known ? known.strikes : 0;
-      known = { strikes: strikes + 1, until: now + UNSAVED_WAITS_MS[strikes]! };
-      this.outboundUnsaved.set(path, known);
-    }
-    if (now < known.until) this.sooner("drafts", known.until - now + WAKE_PAD_MS, () => this.ports.lookAgain());
+    const until = stepBackoff(this.outboundUnsaved, path, now, UNSAVED_WAITS_MS);
+    if (until !== null) this.sooner("drafts", until - now + WAKE_PAD_MS, () => this.ports.lookAgain());
   }
 
   panesChanged(): void {
@@ -662,27 +669,8 @@ export class StayConnected {
     this.timers.delete(timer);
   }
 
-  private async keepBases(looked: Looked, generation: number): Promise<void> {
-    const wanted: Array<{ change: Looked["rows"][number]["change"]; doc: DocumentRef }> = [];
-    for (const { change, doc } of looked.rows) {
-      if (change.kind !== "edited" || change.base === null || change.repoSha !== change.base) continue;
-      if (this.ports.baseText(change.path, change.base) !== null || this.ports.phaseOf(change.path) !== "local" || this.basesTried.has(`${change.path}|${change.base}`)) continue;
-      this.basesTried.add(`${change.path}|${change.base}`);
-      wanted.push({ change, doc });
-    }
-    const together = this.ports.blobTexts ? await this.ports.blobTexts(wanted.slice(0, BASES_BATCHED_PER_PASS).map(({ change, doc }) => ({ doc, sha: change.base! }))) : new Map<string, string>();
-    if (!this.current(generation)) return;
-    let reads = 0;
-    for (const [at, { change, doc }] of wanted.entries()) {
-      const text = at < BASES_BATCHED_PER_PASS ? together.get(change.base!) : undefined;
-      if (text !== undefined) {
-        this.ports.recordBase(change.path, doc, toLf(text), text);
-        continue;
-      }
-      if (reads++ >= BASES_PER_PASS || !this.current(generation)) return;
-      const main = await this.ports.gitFile(doc);
-      if (main.kind === "file" && main.sha === change.base && this.current(generation)) this.ports.recordBase(change.path, doc, toLf(main.text), main.text);
-    }
+  private keepBases(looked: Looked, generation: number): Promise<void> {
+    return keepMissingBases(looked, this.ports, this.basesTried, () => this.current(generation));
   }
 
   private burstFiles(looked: Looked): Looked["rows"] {
@@ -791,7 +779,7 @@ export class StayConnected {
       held: (row) => {
         const path = row.change.path;
         const entry = looked.files.get(path);
-        if (entry === undefined || held[path] === entry.sha) return true;
+        if (entry === undefined || held[path] === entry.sha || this.draftIn?.pending(path)) return true;
         const conflict = this.conflicts.get(path);
         if (conflict === undefined) return false;
         if (conflict === this.conflictKey(looked, path)) return true;
@@ -821,64 +809,45 @@ export class StayConnected {
     else this.cancelTimer("flurry");
   }
 
-  private async outbound(looked: Looked, generation: number): Promise<void> {
+  private async outbound(looked: Looked, generation: number, partial?: { busyPaths: ReadonlySet<string> }): Promise<boolean> {
     const { data } = this.state;
     const login = this.ports.login();
-    const rowByKey = new Map(looked.rows.map((row) => [changeKey(row.change), row] as const));
-    const keys = new Set(rowByKey.keys());
-    data.baseline = (data.baseline ?? []).filter((key) => {
-      const row = rowByKey.get(key);
-      if (row === undefined) return false;
-      if (row.change.kind === "new" || row.change.kind === "renamed") {
-        return !hasOwnOrAgreedDraft(looked.files.get(row.change.path), looked.drafts?.byPath.get(row.change.path), login);
-      }
-      return true;
-    });
-    data.committed = data.committed.filter((key) => keys.has(key));
-    data.held = [...new Set(data.held.filter((key) => keys.has(key)))];
-    data.burst = data.burst.filter((key) => keys.has(key));
+    if (!partial) pruneStayLists(looked, data, login);
     const prepared = this.holds.batch(() => {
-      for (const path of [...this.githubHeldBase.keys()]) if (data.heldWhy?.[path] !== "github") this.githubHeldBase.delete(path);
-      for (const [path, why] of Object.entries(data.heldWhy ?? {})) {
-        if (why !== "github") continue;
-        const base = looked.files.get(path)?.base ?? null;
-        const heldBase = this.githubHeldBase.get(path);
-        if (heldBase === undefined) this.githubHeldBase.set(path, base);
-        else if (base !== null && base === looked.repo.get(path) && heldBase !== base) {
+      if (!partial) {
+        refreshGithubHolds(looked, data, this.githubHeldBase, (path, base) => {
           this.conflictResolved(path);
           this.inbound?.caughtUp(path, base);
+        });
+        const pruned = this.pruneHeld(looked, new Set(data.committed));
+        if (!this.startedOutbound || !this.startedEdits) for (const path of pruned.releasedFlurry) this.releasedAtStart.add(path);
+        if (syncKeptPaths(looked, data)) {
+          this.holds.noteChanged();
+          this.ports.lookAgain();
         }
-      }
-      const pruned = this.pruneHeld(looked, new Set(data.committed));
-      if (!this.startedOutbound || !this.startedEdits) for (const path of pruned.releasedFlurry) this.releasedAtStart.add(path);
-      const seen = data.seen ?? {};
-      const newPaths = new Set(looked.rows.filter((row) => row.change.kind === "new").map((row) => row.change.path));
-      const kept = [...new Set([...data.kept, ...[...newPaths].filter((path) => seen[path] !== undefined)])].filter((path) => newPaths.has(path));
-      const grew = kept.some((path) => !data.kept.includes(path));
-      data.kept = kept;
-      if (grew) {
-        this.holds.noteChanged();
-        this.ports.lookAgain();
       }
       const edits = this.editRules(looked);
       const quiet = this.activity.quietIn();
       if (quiet > 0 && (!this.startedOutbound || !edits)) {
-        this.scheduleFlurry(generation);
+        if (!partial) this.scheduleFlurry(generation);
         this.state.save();
         this.later("outbound", quiet + WAKE_PAD_MS, () => this.ports.lookAgain());
         return null;
       }
       const atStart = !this.startedOutbound;
-      this.startedOutbound = true;
       const editsAtStart = edits !== null && !this.startedEdits;
-      if (edits) this.startedEdits = true;
+      if (!partial) {
+        this.startedOutbound = true;
+        if (edits) this.startedEdits = true;
+      }
       const startHold: "baseline" | "closed" | null = this.gitMovedAtStart ? "closed" : data.baselinePending === true ? "baseline" : null;
       const committed = new Set(data.committed);
-      const blockedNew: BlockedNew = { baseline: new Set(data.baseline), held: new Set(data.held), kept: new Set(data.kept) };
+      const blockedNew: BlockedNew = { baseline: new Set(data.baseline), held: new Set(data.held), kept: partial ? keptPathsReadOnly(looked, data) : new Set(data.kept) };
+      const rows = partial ? filterRowsForPartial(looked.rows, partial.busyPaths) : looked.rows;
       const plan = planOutbound({
         atStart: startHold === "closed" && atStart,
         editsAtStart: startHold !== null && editsAtStart,
-        rows: looked.rows,
+        rows,
         looked,
         login,
         baseline: blockedNew.baseline,
@@ -890,6 +859,7 @@ export class StayConnected {
         allowed: (row) =>
           this.ports.phaseOf(row.change.path) === "local" &&
           !this.ports.disconnected(row.doc) &&
+          !(isFreshLocalUntitled(row.change.path, looked.files.get(row.change.path)) && looked.drafts?.byPath.has(row.change.path) === true) &&
           !this.roomWrites.matches(row.change.path, looked.files.get(row.change.path)?.sha) &&
           !this.draftIn?.holdingRenameSource(row.change.path) &&
           (row.change.from === undefined || !this.draftIn?.holdingRenameSource(row.change.from)) &&
@@ -898,35 +868,39 @@ export class StayConnected {
         settling: quiet > 0,
         ...(edits ? { edits } : {}),
       });
-      const recorded = this.holds.recordHeld(looked, plan.hold, { startReason: startHold ?? "closed", burst: plan.burst !== null });
-      if (this.startedOutbound && this.startedEdits && edits !== null && quiet === 0 && !this.activity.hasGit()) {
-        this.releasedAtStart.clear();
-        this.gitMovedAtStart = false;
-        if (data.baselinePending) delete data.baselinePending;
-        if (this.pendingGitMark !== null) {
-          data.gitMark = this.pendingGitMark;
-          this.pendingGitMark = null;
+      if (!partial) {
+        const recorded = this.holds.recordHeld(looked, plan.hold, { startReason: startHold ?? "closed", burst: plan.burst !== null });
+        if (this.startedOutbound && this.startedEdits && edits !== null && quiet === 0 && !this.activity.hasGit()) {
+          this.releasedAtStart.clear();
+          this.gitMovedAtStart = false;
+          if (data.baselinePending) delete data.baselinePending;
+          if (this.pendingGitMark !== null) {
+            data.gitMark = this.pendingGitMark;
+            this.pendingGitMark = null;
+          }
         }
+        if (recorded.pendingDraft) this.ports.lookAgain();
+        if (recorded.closedEdits > 0) this.ports.notify(SAID.editsClosed(recorded.closedEdits), { label: "Show them", run: () => this.ports.openStatus?.() }, { lasting: true });
+        if (recorded.atStartNew > 0) this.ports.notify(SAID.atStart(recorded.atStartNew));
+        if (recorded.arrived > 0) {
+          const words = plan.burst === null ? SAID.flurry(recorded.arrived) : SAID.burst(plan.burst);
+          const groupable = this.burstFiles(looked).length;
+          const action = groupable >= 2 && this.ports.groupsOn() && !this.ports.groupsLocked() ? { label: "Group together", run: () => void this.groupHeld() } : undefined;
+          this.ports.notify(words, action, plan.burst !== null ? { lasting: true } : undefined);
+        }
+        this.scheduleFlurry(generation);
       }
-      if (recorded.pendingDraft) this.ports.lookAgain();
-      if (recorded.closedEdits > 0) this.ports.notify(SAID.editsClosed(recorded.closedEdits), { label: "Show them", run: () => this.ports.openStatus?.() }, { lasting: true });
-      if (recorded.atStartNew > 0) this.ports.notify(SAID.atStart(recorded.atStartNew));
-      if (recorded.arrived > 0) {
-        const words = plan.burst === null ? SAID.flurry(recorded.arrived) : SAID.burst(plan.burst);
-        const groupable = this.burstFiles(looked).length;
-        const action = groupable >= 2 && this.ports.groupsOn() && !this.ports.groupsLocked() ? { label: "Group together", run: () => void this.groupHeld() } : undefined;
-        this.ports.notify(words, action, plan.burst !== null ? { lasting: true } : undefined);
-      }
-      this.scheduleFlurry(generation);
       const waits = [plan.wait ?? Number.POSITIVE_INFINITY, quiet > 0 ? quiet : Number.POSITIVE_INFINITY];
       if (Math.min(...waits) !== Number.POSITIVE_INFINITY && this.current(generation)) this.later("edits", Math.min(...waits) + WAKE_PAD_MS, () => this.ports.lookAgain());
       this.state.save();
       return { plan, committed, blockedNew };
     });
-    if (prepared === null) return;
+    if (prepared === null) return false;
     const { plan, committed, blockedNew } = prepared;
-    const rowPaths = new Set(looked.rows.map((row) => row.change.path));
-    for (const path of [...this.outboundUnsaved.keys()]) if (!rowPaths.has(path)) this.outboundUnsaved.delete(path);
+    if (!partial) {
+      const rowPaths = new Set(looked.rows.map((row) => row.change.path));
+      for (const path of [...this.outboundUnsaved.keys()]) if (!rowPaths.has(path)) this.outboundUnsaved.delete(path);
+    }
     let sent = 0;
     let gaveUp = 0;
     let unsure = 0;
@@ -990,11 +964,12 @@ export class StayConnected {
       }
       this.state.save();
     }
-    if (!this.current(generation)) return;
+    if (!this.current(generation)) return false;
     if (unsure > 0) this.ports.notify(`${LOST_ANSWER_TITLE}. ${LOST_ANSWER_DESCRIPTION}`);
     const next = Math.min(...[...this.retryAt.values()].filter((at) => at > this.ports.now()), Number.POSITIVE_INFINITY);
     if (next !== Number.POSITIVE_INFINITY) this.later("outbound", next - this.ports.now() + WAKE_PAD_MS, () => this.ports.lookAgain());
     if (gaveUp > 0) this.ports.notify(SAID.gaveUp(gaveUp));
-    if (sent > 0) this.ports.lookAgain();
+    if (sent > 0 && !partial) this.ports.lookAgain();
+    return sent > 0;
   }
 }

@@ -12,7 +12,7 @@ import { trashOption } from "../disk/obsidian-config";
 import type { NotePhase } from "../status";
 import { changesBetween } from "../disk/merge";
 import { cameInWords, changesIn } from "../disk/regions";
-import { toLf } from "../disk/line-endings";
+import { stripBom, toLf } from "../disk/line-endings";
 import { type DocumentRef, fileFor, LISTED_FILE, type MappingSettings, normalizeFolder, underFolder } from "../mapping";
 import { pageSignals } from "../comments/setup";
 import { showNoticeWithAction } from "../notices";
@@ -304,18 +304,16 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     review,
     model,
     dialogs: deps.dialogs,
-    readText: async (path) => {
-      const file = app.vault.getFileByPath(path);
-      return file ? app.vault.read(file) : null;
-    },
+    readText: (path) => vault.read(path),
     writeText: async (path, text, expected) => {
       const file = app.vault.getFileByPath(path);
       if (!(file instanceof TFile)) return false;
-      const before = toLf(await app.vault.read(file));
-      if (!(await writeIfHolds((edit) => app.vault.process(file, edit), expected, text))) return false;
-      const shown = changesBetween(before, toLf(text));
+      const before = stripBom(toLf((await vault.read(path)) ?? ""));
+      let written = "";
+      if (!(await writeIfHolds((edit) => app.vault.process(file, edit), expected, text, (saved) => void (written = saved)))) return false;
+      const shown = changesBetween(before, stripBom(toLf(written)));
       if (shown) showNoticeWithAction(cameInWords(changesIn(shown)), "See changes", () => showChanges(app, shown));
-      return true;
+      return written;
     },
     vault,
     phaseOf: deps.phaseOf,

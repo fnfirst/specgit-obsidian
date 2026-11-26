@@ -24,7 +24,7 @@ export interface StayData {
   burst: string[];
   heldShas?: Record<string, string>;
   editsHeld?: Record<string, string>;
-  endedOwn?: Record<string, { sent: string; ended: "published" | "discarded" }>;
+  endedOwn?: Record<string, { sent: string; ended: "published" | "discarded"; base?: string | null }>;
   typed?: Record<string, { sha: string; at: number }>;
   roomWrote?: Record<string, string[]>;
   ownBlobs?: Record<string, string[]>;
@@ -95,8 +95,18 @@ function read(stored: unknown): StayData {
   const editsHeld = typeof held === "object" && held !== null && !Array.isArray(held) && Object.values(held).every((sha) => typeof sha === "string") ? { editsHeld: held as Record<string, string> } : {};
   const ended = record.endedOwn;
   const endedOwn =
-    typeof ended === "object" && ended !== null && !Array.isArray(ended) && Object.values(ended).every((one) => typeof one === "object" && one !== null && typeof (one as { sent?: unknown }).sent === "string" && ((one as { ended?: unknown }).ended === "published" || (one as { ended?: unknown }).ended === "discarded"))
-      ? { endedOwn: ended as Record<string, { sent: string; ended: "published" | "discarded" }> }
+    typeof ended === "object" &&
+    ended !== null &&
+    !Array.isArray(ended) &&
+    Object.values(ended).every(
+      (one) =>
+        typeof one === "object" &&
+        one !== null &&
+        typeof (one as { sent?: unknown }).sent === "string" &&
+        ((one as { ended?: unknown }).ended === "published" || (one as { ended?: unknown }).ended === "discarded") &&
+        ((one as { base?: unknown }).base === undefined || (one as { base?: unknown }).base === null || typeof (one as { base?: unknown }).base === "string"),
+    )
+      ? { endedOwn: ended as Record<string, { sent: string; ended: "published" | "discarded"; base?: string | null }> }
       : {};
   const typedAt = record.typed;
   const typed =

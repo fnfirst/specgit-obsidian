@@ -50,7 +50,7 @@ export function placeOf(settings: MappingSettings, vaultPath: string): Place {
   return kind === "other" ? { kind: "other" } : { kind, doc: { repo: settings.repo, path } };
 }
 
-export const isHiddenPath = (path: string): boolean => path.split("/").some((part) => part.startsWith("."));
+export const isHiddenPath = (path: string): boolean => path.startsWith(".") || path.includes("/.");
 
 const UNSAFE_VAULT_CHARS = /[\\:\p{Cc}]/u;
 

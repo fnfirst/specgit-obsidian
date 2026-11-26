@@ -145,7 +145,7 @@ export class SpecgitTokenSource implements TokenSource {
   }
 
   private failure(answer: Answer): RoomTokenError {
-    if (answer.reason === PLUGIN_OUTDATED_CODE) {
+    if (answer.reason === PLUGIN_OUTDATED_CODE || answer.status === 426) {
       return new RoomTokenError("plugin_outdated", answer.message ?? "This version of specgit is out of date. Update it in Community plugins.", answer.status, answer.reason);
     }
     if (answer.reason === DOCUMENT_DELETED_CODE) {

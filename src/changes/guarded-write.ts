@@ -1,11 +1,19 @@
-import { toLf } from "../disk/line-endings";
+import { stripBom, toLf, withBomAndEol } from "../disk/line-endings";
 
-export async function writeIfHolds(process: (edit: (current: string) => string) => Promise<unknown>, expected: string, text: string): Promise<boolean> {
+export async function writeIfHolds(
+  process: (edit: (current: string) => string) => Promise<unknown>,
+  expected: string,
+  text: string,
+  onWrite?: (written: string) => void,
+): Promise<boolean> {
   let wrote = false;
+  let written = "";
   await process((current) => {
-    if (toLf(current) !== toLf(expected)) return current;
+    if (stripBom(toLf(current)) !== stripBom(toLf(expected))) return current;
     wrote = true;
-    return text;
+    written = stripBom(text) === "" ? "" : current === "" ? text : withBomAndEol(toLf(text), current);
+    return written;
   });
+  if (wrote) onWrite?.(written);
   return wrote;
 }

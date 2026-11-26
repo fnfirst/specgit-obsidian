@@ -12,11 +12,12 @@ export function restingSignals(signals: PollSignals, stayOn: () => boolean): Pol
 export function watchSignature(looked: Looked | null): string {
   if (looked === null) return "off";
   const rows = looked.rows.map((row) => `${row.change.path}:${row.change.sha}:${row.entry?.prNumber ?? 0}:${row.entry?.isDraft ?? ""}`).join(",");
-  const drafts = [...(looked.drafts?.byPath ?? [])]
-    .map(([path, draft]) => `${path}:${draft.blob ?? ""}`)
-    .sort()
-    .join(",");
-  return `${looked.repo.size}|${rows}|${drafts}`;
+  const drafts: string[] = [];
+  if (looked.drafts) {
+    for (const [path, draft] of looked.drafts.byPath) drafts.push(`${path}:${draft.blob ?? ""}`);
+    drafts.sort();
+  }
+  return `${looked.repo.size}|${rows}|${drafts.join(",")}`;
 }
 
 export interface WatchDeps {

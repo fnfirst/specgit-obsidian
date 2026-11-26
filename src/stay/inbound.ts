@@ -140,7 +140,7 @@ export class Inbound {
   caughtUp(path: string, repoSha?: string): void {
     this.declined.delete(path);
     if (repoSha !== undefined) {
-      if (this.ctx.state.data.endedOwn?.[path]?.sent === repoSha) delete this.ctx.state.data.endedOwn[path];
+      delete this.ctx.state.data.endedOwn?.[path];
       this.settled(path, repoSha);
     } else this.clearPending(path);
     this.ctx.onResolved?.(path);
@@ -170,8 +170,11 @@ export class Inbound {
     const rawAdded = [...looked.repo].filter(([path, sha]) => seen[path] !== sha);
     const added: Array<[string, string]> = [];
     for (const [path, sha] of rawAdded) {
-      if (looked.files.get(path)?.base === sha) this.caughtUp(path, sha);
-      else added.push([path, sha]);
+      const entry = looked.files.get(path);
+      if (entry?.base === sha) {
+        this.settleOwnSent(looked, path, entry, sha);
+        this.caughtUp(path, sha);
+      } else added.push([path, sha]);
     }
     const removed = Object.entries(seen).filter(([path]) => !looked.repo.has(path));
     const active = new Set<string>([...added.map(([path]) => path), ...removed.map(([path]) => path)]);
@@ -517,17 +520,8 @@ export class Inbound {
     return entry.sent === sha || endedOwn?.[path]?.sent === sha || agreedOf(entry) === sha || this.ctx.isOwnBlob?.(path, sha) === true;
   }
 
-  private rebaseOwn(looked: Looked, path: string, doc: DocumentRef, entry: CacheEntry, sha: string): void {
-    if (!this.isOwnBlob(path, entry, sha)) return;
-    const endedOwn = this.ctx.state.data.endedOwn;
-    if (entry.base !== sha) {
-      const known = this.texts.get(sha);
-      if (known !== undefined) this.ctx.ports.recordBase(path, doc, toLf(known), known);
-      this.ctx.ports.rebase(path, sha);
-      entry.base = sha;
-      this.rescan = true;
-    }
-    if (endedOwn?.[path]?.sent === sha) delete endedOwn[path];
+  private settleOwnSent(looked: Looked, path: string, entry: CacheEntry, sha: string): void {
+    delete this.ctx.state.data.endedOwn?.[path];
     const draft = looked.drafts?.byPath.get(path);
     if (looked.drafts?.level === true && !draft && entry.sent === sha) {
       this.ctx.ports.agreed(path, null);
@@ -536,6 +530,18 @@ export class Inbound {
     } else if (entry.sent === sha) {
       this.ctx.onRebasedSent?.(path, sha);
     }
+  }
+
+  private rebaseOwn(looked: Looked, path: string, doc: DocumentRef, entry: CacheEntry, sha: string): void {
+    if (!this.isOwnBlob(path, entry, sha)) return;
+    if (entry.base !== sha) {
+      const known = this.texts.get(sha);
+      if (known !== undefined) this.ctx.ports.recordBase(path, doc, toLf(known), known);
+      this.ctx.ports.rebase(path, sha);
+      entry.base = sha;
+      this.rescan = true;
+    }
+    this.settleOwnSent(looked, path, entry, sha);
     this.ctx.onResolved?.(path);
   }
 
@@ -548,7 +554,7 @@ export class Inbound {
       return;
     }
     const entry = looked.files.get(path);
-    if (entry?.sha === sha || entry?.base === sha) {
+    if (entry !== undefined && (entry.sha === sha || entry.base === sha || (entry.same === sha && entry.sameBy !== "server"))) {
       if (this.opening.has(path)) this.settleReason.set(path, "matched");
       if (entry.base !== sha) {
         const known = this.texts.get(sha);
@@ -556,7 +562,7 @@ export class Inbound {
         ports.rebase(path, sha);
         entry.base = sha;
       }
-      if (this.ctx.state.data.endedOwn?.[path]?.sent === sha) delete this.ctx.state.data.endedOwn[path];
+      this.settleOwnSent(looked, path, entry, sha);
       if (entry.base === sha) this.ctx.onResolved?.(path);
       return this.settled(path, sha);
     }
@@ -582,7 +588,7 @@ export class Inbound {
         entry.base = main.sha;
         this.rescan = true;
       }
-      if (this.ctx.state.data.endedOwn?.[path]?.sent === main.sha) delete this.ctx.state.data.endedOwn[path];
+      this.settleOwnSent(looked, path, entry, main.sha);
       return this.settled(path, main.sha);
     }
     if (!entry) return this.create(path, doc, main, said);
@@ -648,6 +654,7 @@ export class Inbound {
     await this.bring(path, after);
     this.came(said, path, before, after);
     this.keepAsBase(path, doc, main);
+    delete this.ctx.state.data.endedOwn?.[path];
     this.settled(path, main.sha);
     said.updated.push(noteName(path));
   }
@@ -681,10 +688,10 @@ export class Inbound {
       this.came(said, path, mine, merged);
     } else this.rescan = true;
     this.keepAsBase(path, doc, main);
+    delete endedOwn?.[path];
     if (sentMatchesMain) {
       ports.agreed(path, null);
       clearSent(entry);
-      delete endedOwn?.[path];
     }
     this.settled(path, main.sha);
   }
@@ -716,6 +723,7 @@ export class Inbound {
         }
         await this.bring(path, text);
         this.keepAsBase(path, doc, main);
+        delete this.ctx.state.data.endedOwn?.[path];
         this.settled(path, main.sha);
         this.ctx.onResolved?.(path);
         this.ctx.state.save();

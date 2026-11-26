@@ -13,6 +13,7 @@ import { FILE_WORDS, outsideFolderWords } from "../pick/words";
 import type { PanelModel, PanelState, TabId } from "./model";
 import { NEVER, useWatch } from "./use-watch";
 import { NOT_LIVE } from "../review/words";
+import { outdatedRooms } from "../room/outdated";
 import type { StatusView } from "../status/controller";
 
 export interface OnboardingWatch {
@@ -145,7 +146,7 @@ const TONES: Record<NoteWord, "quiet" | "live" | "working" | "warn"> = {
   "Not live": "warn",
 };
 
-function NotLiveWhy({ status, actions }: { status: PanelState["status"]; actions: PanelActions }) {
+function NotLiveWhy({ status, actions, outdated }: { status: PanelState["status"]; actions: PanelActions; outdated?: string | null }) {
   switch (status?.why) {
     case "read-only":
       return <p class="specgit-hint" data-testid="not-live-why">{NOT_LIVE.readOnly(actions.repo?.() ?? "this repository")}</p>;
@@ -157,6 +158,7 @@ function NotLiveWhy({ status, actions }: { status: PanelState["status"]; actions
         </>
       );
     case "unreachable":
+      if (outdated) return <p class="specgit-hint" data-testid="not-live-why">{outdated}</p>;
       return (
         <>
           <p class="specgit-hint" data-testid="not-live-why">{NOT_LIVE.unreachable}</p>
@@ -166,6 +168,7 @@ function NotLiveWhy({ status, actions }: { status: PanelState["status"]; actions
     case "deleted":
       return <p class="specgit-hint" data-testid="not-live-why">{NOT_LIVE.deleted}</p>;
     default:
+      if (outdated) return <p class="specgit-hint" data-testid="not-live-why">{outdated}</p>;
       return <p class="specgit-hint">Disconnect, then Connect Live to try again.</p>;
   }
 }
@@ -194,6 +197,7 @@ function Retrying({ at, tryNow }: { at: number | null; tryNow?: (() => void) | u
 function Header({ state, actions }: { state: PanelState; actions: PanelActions }) {
   const { note, status } = state;
   const word = status ? wordFor(status) : "Local";
+  const outdated = useWatch(outdatedRooms.subscribe, () => outdatedRooms.messageForNote(state.repo, state.folder, note?.path));
   return (
     <Top
       repo={state.repo}
@@ -207,7 +211,7 @@ function Header({ state, actions }: { state: PanelState; actions: PanelActions }
         )
       }
     >
-      {note ? noteLines(state, actions) : state.file ? <FileBlock file={state.file} actions={actions} /> : <NoNote elsewhere={state.elsewhere} repo={state.repo} folder={state.folder} />}
+      {note ? noteLines(state, actions, outdated) : state.file ? <FileBlock file={state.file} actions={actions} /> : <NoNote elsewhere={state.elsewhere} repo={state.repo} folder={state.folder} />}
     </Top>
   );
 }
@@ -247,13 +251,13 @@ function NoNote({ elsewhere, repo, folder }: { elsewhere: PanelState["elsewhere"
   );
 }
 
-function noteLines(state: PanelState, actions: PanelActions): ComponentChildren {
+function noteLines(state: PanelState, actions: PanelActions, outdated: string | null): ComponentChildren {
   const phase = phaseOf(state.status);
   const readOnly = phase === "live" && state.status?.readOnly === true;
   if (!isNotLive(phase) && !readOnly) return null;
   return (
     <>
-      {isNotLive(phase) && <NotLiveWhy status={state.status} actions={actions} />}
+      {isNotLive(phase) && <NotLiveWhy status={state.status} actions={actions} outdated={outdated} />}
       {readOnly && <p class="specgit-hint">You can read this note live but not change it.</p>}
     </>
   );

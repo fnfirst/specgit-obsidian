@@ -1,5 +1,5 @@
 import { changesBetween } from "../disk/merge";
-import { toLf } from "../disk/line-endings";
+import { stripBom, toLf } from "../disk/line-endings";
 import { BURST_FROM } from "./burst";
 import type { Shown } from "../disk/regions";
 import { type DocumentRef, noteName } from "../mapping";
@@ -607,7 +607,7 @@ export class ChangesFlows {
     const [main, mine] = await Promise.all([row.change.kind === "new" ? Promise.resolve("") : this.deps.gitCopy(row.doc), this.deps.readText(row.change.path)]);
     if (mine === null) return { kind: "gone" };
     if (main === null) return { kind: "unreadable" };
-    const shown = changesBetween(toLf(main), toLf(mine));
+    const shown = changesBetween(stripBom(toLf(main)), stripBom(toLf(mine)));
     return shown === null ? { kind: "same" } : { kind: "changes", shown };
   }
 

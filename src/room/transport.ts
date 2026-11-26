@@ -19,6 +19,7 @@ export interface Transport {
   readonly acknowledged: boolean;
   readonly startOver: boolean;
   readonly stopped: Stop | null;
+  readonly outdated?: string | null;
   readonly online: boolean;
   readonly refusal: string | null;
   readonly readOnly: boolean;
@@ -35,6 +36,7 @@ interface TokenEvents {
   readOnly(readOnly: boolean): void;
   startOver(): void;
   deleted(): void;
+  outdated(message: string): void;
   steps(steps: RoomSteps | null): void;
 }
 
@@ -52,6 +54,7 @@ function tokensFor(ref: DocumentRef, source: TokenSource, first: RoomToken, now:
     } catch (error) {
       if (error instanceof AuthError && (error.code === "room_ended" || error.code === "signed_out")) on.startOver();
       if (error instanceof AuthError && error.code === "document_deleted") on.deleted();
+      if (error instanceof AuthError && error.code === "plugin_outdated") on.outdated(error.message);
       throw error;
     }
     const sub = tokenSub(fresh.token);
@@ -91,6 +94,7 @@ class HocuspocusTransport implements Transport {
   refusal: string | null = null;
   startOver = false;
   stopped: Stop | null = null;
+  outdated: string | null = null;
   private readonly listeners = new Set<() => void>();
   private rejoins = 0;
   private budgetRejoins = 0;
@@ -200,6 +204,13 @@ class HocuspocusTransport implements Transport {
     this.stop("deleted");
   }
 
+  stopForOutdated(message: string): void {
+    if (!this.live) return;
+    this.outdated = message;
+    this.end();
+    this.changed();
+  }
+
   destroy(): void {
     this.listeners.clear();
     this.stopRejoining();
@@ -208,7 +219,7 @@ class HocuspocusTransport implements Transport {
   }
 
   private get live(): boolean {
-    return this.stopped === null && !this.startOver;
+    return this.stopped === null && !this.startOver && this.outdated === null;
   }
 
   private changed(): void {
@@ -276,7 +287,7 @@ export function hocuspocusTransport(sockets: SocketPool, tokens: TokenSource, no
     const first = await tokens.roomToken(ref, { session: sessionSeedClaim(doc) });
     const lease = sockets.lease(first.url);
     let transport: HocuspocusTransport | null = null;
-    const token = tokensFor(ref, tokens, first, now, { readOnly: (readOnly) => transport?.setReadOnly(readOnly), startOver: () => transport?.restart(), deleted: () => transport?.stopForDeleted(), steps: (steps) => transport?.setSteps(steps) }, () => sessionSeedClaim(doc));
+    const token = tokensFor(ref, tokens, first, now, { readOnly: (readOnly) => transport?.setReadOnly(readOnly), startOver: () => transport?.restart(), deleted: () => transport?.stopForDeleted(), outdated: (message) => transport?.stopForOutdated(message), steps: (steps) => transport?.setSteps(steps) }, () => sessionSeedClaim(doc));
     const provider = new ManagedProvider({ websocketProvider: lease.socket, name: first.room, document: doc, awareness, token });
     transport = new HocuspocusTransport(provider, lease, first.room, doc, first.readOnly === true, first.steps ?? null);
     return transport;

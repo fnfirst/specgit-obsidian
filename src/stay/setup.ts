@@ -307,6 +307,13 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         return made;
       },
       createStream: guardedBinaryCreateStream(app),
+      branchActive: (candidate) => {
+        const drafts = lastLooked?.drafts;
+        if (!drafts || !drafts.level) return true;
+        for (const draft of drafts.byPath.values()) if (draft.branch === candidate) return true;
+        return false;
+      },
+      publishedSha: (vaultPath) => (typeof deps.model.attachmentSha === "function" ? deps.model.attachmentSha(vaultPath) : undefined),
     };
     await attachmentLooks.bring(ports, memory, branch, notePath, text, said, options);
   };

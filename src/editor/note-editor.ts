@@ -20,7 +20,7 @@ import { Join, type Outcome, TOO_LARGE_MESSAGE } from "./join";
 import { isNoteEditor } from "./kind";
 import { OwnWrites } from "./own-write";
 import { NoteNotices } from "./note-notices";
-import { type Phase, setDeleted, setJoiningEditable, setReader, setPhase } from "./phase";
+import { type Phase, joiningEditableField, phaseField, setDeleted, setJoiningEditable, setReader, setPhase } from "./phase";
 import { NoteRegistry } from "./registry";
 import { Review } from "./review";
 import type { EditorServices } from "./services";
@@ -97,6 +97,8 @@ export class NoteEditor implements PluginValue {
   private localHoldTimer: number | null = null;
   private localFallback = false;
   private pausedFromLive = false;
+  private phaseDispatchPending = false;
+  private pendingRefocus = false;
 
   constructor(
     private readonly view: EditorView,
@@ -274,7 +276,6 @@ export class NoteEditor implements PluginValue {
     this.baseOpened = false;
     this.registry.add(this.path, this);
     this.moveTo("local");
-    this.openGitBase(ref);
     this.matchChoice();
   }
 
@@ -287,10 +288,10 @@ export class NoteEditor implements PluginValue {
   private matchChoice(): void {
     const { ref } = this;
     if (this.destroyed || !ref) return;
-    this.openGitBase(ref);
     const shown = this.showsItsNote();
     this.shownNote = shown;
     if (!shown) return;
+    this.openGitBase(ref);
     const wanted = this.services.connections.wants(ref);
     if (wanted && this.phase === "local") {
       const fallbackSibling = this.registry.editorsOf(this.path).some((editor) => editor !== this && editor.localFallback);
@@ -942,31 +943,37 @@ export class NoteEditor implements PluginValue {
     if (phase !== "joining") this.clearPatience();
     const wasHeldJoining = this.phase === "joining" && !this.joiningEditable && !this.mayOnlyRead;
     if (this.phase !== phase || this.joiningEditable !== editable) {
-      const doc = this.view.dom.ownerDocument;
-      const active = doc.activeElement;
-      const inBody = active !== null && this.view.contentDOM.contains(active);
-      const canFocusNow = this.canRefocus();
-      const focused = canFocusNow && (inBody || (this.view.hasFocus && (active === null || active === doc.body)));
-      if (!wasHeldJoining && phase === "joining" && !editable && !this.mayOnlyRead) this.restoreFocus = focused;
-      const refocus =
-        wasHeldJoining &&
-        phase === "live" &&
-        canFocusNow &&
-        (focused || (this.restoreFocus && (active === null || active === doc.body)));
+      const checkHold = !wasHeldJoining && phase === "joining" && !editable && !this.mayOnlyRead;
+      const checkLive = wasHeldJoining && phase === "live";
+      if (checkHold || checkLive) {
+        const doc = this.view.dom.ownerDocument;
+        const active = doc.activeElement;
+        const inBody = active !== null && this.view.contentDOM.contains(active);
+        const canFocusNow = this.canRefocus();
+        const focused = canFocusNow && (inBody || (this.view.hasFocus && (active === null || active === doc.body)));
+        if (checkHold) this.restoreFocus = focused;
+        if (checkLive && canFocusNow && (focused || (this.restoreFocus && (active === null || active === doc.body)))) this.pendingRefocus = true;
+      }
       if (phase !== "joining") this.restoreFocus = false;
       this.phase = phase;
       this.joiningEditable = editable;
-      later(() => {
-        if (this.destroyed) return;
-        this.view.dispatch({ effects: [setJoiningEditable.of(this.joiningEditable), setPhase.of(this.phase)] });
-        if (refocus && this.phase === "live" && this.canRefocus()) {
-          const currentDoc = this.view.dom.ownerDocument;
-          const current = currentDoc.activeElement;
-          if (current === null || current === currentDoc.body || this.view.contentDOM.contains(current)) {
-            this.view.focus();
+      if (!this.phaseDispatchPending) {
+        this.phaseDispatchPending = true;
+        later(() => {
+          this.phaseDispatchPending = false;
+          const refocus = this.pendingRefocus;
+          this.pendingRefocus = false;
+          if (this.destroyed) return;
+          if (this.view.state.field(phaseField, false) !== this.phase || this.view.state.field(joiningEditableField, false) !== this.joiningEditable) {
+            this.view.dispatch({ effects: [setJoiningEditable.of(this.joiningEditable), setPhase.of(this.phase)] });
           }
-        }
-      });
+          if (refocus && this.phase === "live" && this.canRefocus()) {
+            const currentDoc = this.view.dom.ownerDocument;
+            const current = currentDoc.activeElement;
+            if (current === null || current === currentDoc.body || this.view.contentDOM.contains(current)) this.view.focus();
+          }
+        });
+      }
     }
     this.report();
   }

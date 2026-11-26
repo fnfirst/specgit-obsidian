@@ -11,6 +11,7 @@ import { BRIDGE_FIELD, MARKDOWN_ROOT, sessionSeedClaim, TREE_ROOT } from "../pro
 import type { RoomSteps } from "../token-source";
 import { BridgeRequests } from "./bridge-requests";
 import { isFresh, refusedBy, showsBridge, watchFreshness } from "./freshness";
+import { outdatedRooms, PLUGIN_OUTDATED_BANNER } from "./outdated";
 import { OwnChanges } from "./own-changes";
 import type { OpenTransport, Stop, Transport } from "./transport";
 
@@ -79,12 +80,15 @@ export class Room {
           return answer;
         },
         (error) => {
+          if (this.destroyed) throw error;
           if (error instanceof AuthError && error.code === "room_ended") {
             this.ended = true;
             this.refresh();
           } else if (error instanceof AuthError && error.code === "document_deleted") {
             this.failedWith = "document_deleted";
             this.refresh();
+          } else if (error instanceof AuthError && error.code === "plugin_outdated") {
+            this.failOutdated(error.message);
           }
           throw error;
         },
@@ -178,7 +182,7 @@ export class Room {
   }
 
   retry(): void {
-    if (this.state !== "failed" || this.destroyed || this.ready) return;
+    if (this.state !== "failed" || this.destroyed || this.ready || this.failedWith === "plugin_outdated" || this.failedWith === "document_deleted") return;
     this.stopWaitingToRetry();
     this.stopWaitingForBridge();
     this.stopWaitingOffline();
@@ -211,6 +215,7 @@ export class Room {
 
   destroy(): void {
     this.destroyed = true;
+    outdatedRooms.clear(this.ref, this);
     if (this.recheckTimer !== null) window.clearTimeout(this.recheckTimer);
     this.stopWaitingToRetry();
     this.listeners.clear();
@@ -234,11 +239,37 @@ export class Room {
       this.transport = transport;
       this.stopWatchingTransport = transport.subscribe(() => this.refresh());
       this.failedTries = 0;
+      this.failedWith = null;
+      outdatedRooms.clearRef(this.ref);
     } catch (error) {
+      if (this.destroyed) return;
+      if (error instanceof AuthError && error.code === "plugin_outdated") {
+        this.failOutdated(error.message);
+        return;
+      }
       this.failure = error instanceof Error ? error.message : "Couldn't reach specgit.";
       this.failedWith = error instanceof AuthError ? error.code : null;
-      if (this.failedWith !== "signed_out" && this.failedWith !== "document_deleted") this.retryLater(retryAfterFromError(error));
+      if (this.failedWith !== "signed_out" && this.failedWith !== "document_deleted") {
+        this.retryLater(retryAfterFromError(error));
+      }
     }
+    this.refresh();
+  }
+
+  private failOutdated(message: string): void {
+    if (this.destroyed) return;
+    this.failure = message;
+    this.failedWith = "plugin_outdated";
+    this.stopWaitingToRetry();
+    this.stopWaitingForBridge();
+    this.stopWaitingOffline();
+    if (this.recheckTimer !== null) {
+      window.clearTimeout(this.recheckTimer);
+      this.recheckTimer = null;
+    }
+    this.bridgeRequests.stop();
+    this.dropTransport();
+    outdatedRooms.mark(this.ref, this, PLUGIN_OUTDATED_BANNER);
     this.refresh();
   }
 
@@ -276,7 +307,10 @@ export class Room {
         if (steps?.failed) again();
         else if (askAgain(steps) && tries + 1 < RECHECK_BEFORE_TRIES) again();
       },
-      (error) => again(retryAfterFromError(error)),
+      (error) => {
+        if (this.failedWith === "plugin_outdated" || this.failedWith === "document_deleted") return;
+        again(retryAfterFromError(error));
+      },
     );
   }
 
@@ -311,6 +345,10 @@ export class Room {
 
   private refresh(): void {
     if (this.destroyed) return;
+    if (this.transport?.outdated) {
+      this.failOutdated(this.transport.outdated);
+      return;
+    }
     this.own.sweep();
     const synced = this.transport?.synced ?? false;
     const fresh = isFresh(this.doc, this.awareness);
@@ -321,7 +359,7 @@ export class Room {
       this.vouchedText = this.text.toJSON();
       this.recheck();
     } else if (this.ready) this.followBridge(synced, fresh);
-    const seen = `${this.state}/${this.online}/${this.readOnly}/${this.present}/${this.startOver}/${this.stopped}/${this.others}/${this.alsoIn}/${this.retryAtMs}`;
+    const seen = `${this.state}/${this.online}/${this.readOnly}/${this.present}/${this.startOver}/${this.stopped}/${this.others}/${this.alsoIn}/${this.retryAtMs}/${this.failedWith ?? ""}`;
     if (seen === this.lastSeen) return;
     this.lastSeen = seen;
     this.notify();

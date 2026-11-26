@@ -76,7 +76,7 @@ export class RoomPool {
   retryFailed(gap = RETRY_AFTER_MS): void {
     const now = this.now();
     for (const entry of this.entries.values()) {
-      if (entry.room.state !== "failed" || now - entry.lastTried < gap) continue;
+      if (entry.room.state !== "failed" || entry.room.failureCode === "plugin_outdated" || entry.room.failureCode === "document_deleted" || now - entry.lastTried < gap) continue;
       entry.lastTried = now;
       entry.room.retry();
     }

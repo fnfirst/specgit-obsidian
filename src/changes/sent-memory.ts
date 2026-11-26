@@ -271,7 +271,7 @@ export class SentMemory {
   async accepted(path: string, text: string, body: string, base: string | null = null, answer?: Record<string, unknown> | null): Promise<boolean> {
     const held = heldBy(answer);
     const returned = returnedBy(answer);
-    const merged = returned !== null && toLf(returned) !== toLf(body) ? withBomAndEol(toLf(returned), text) : body;
+    const merged = returned !== null && stripBom(toLf(returned)) !== stripBom(toLf(body)) ? withBomAndEol(toLf(returned), text) : body;
     const remembered = held !== null ? ("text" in held ? held.text : null) : (returned ?? body);
     const commit = typeof answer?.commitSha === "string" && answer.commitSha !== "" ? answer.commitSha : undefined;
     const to = reviewKey(answer?.pr as { number?: unknown; group?: unknown } | null | undefined) ?? this.host.model.reviewOf(path);
@@ -294,7 +294,7 @@ export class SentMemory {
 
   async writeAndRemember(path: string, mine: string, merged: string, remembered: string | null, base: string | null = null, to?: ReviewKey | null, commit?: string, same = false): Promise<boolean> {
     let held = mine;
-    if (toLf(merged) !== toLf(mine)) {
+    if (stripBom(toLf(merged)) !== stripBom(toLf(mine))) {
       const wrote = await this.write(path, merged, mine);
       if (wrote === false) return false;
       held = typeof wrote === "string" ? wrote : merged;

@@ -46,10 +46,10 @@ function teammateEntry(entries: readonly InFlightBranch[], login: string): InFli
 
 export function teammateReview(entries: readonly InFlightBranch[] | undefined, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): TheirReview | null {
   if (!entries || entries.length === 0 || login === null || login === "") return null;
-  const { group, own } = pickFileReview(entries, login, groups, saves);
-  if (own || group || openedBy(entries, login)) return null;
   const entry = teammateEntry(entries, login);
   if (!entry) return null;
+  const { group, own } = pickFileReview(entries, login, groups, saves);
+  if (own || group || openedBy(entries, login)) return null;
   return { by: reviewAuthor(entry)!, branch: entry.branch, prNumber: entry.prNumber ?? null, prUrl: entry.prUrl ?? null, draft: prOf(entry)?.isDraft ?? true };
 }
 
@@ -73,7 +73,9 @@ export function removalsByBranch(paths: Readonly<Record<string, readonly InFligh
     removed.set(from, to);
     found.set(branch, removed);
   };
-  for (const [path, entries] of Object.entries(paths)) {
+  for (const path in paths) {
+    const entries = paths[path];
+    if (!entries) continue;
     for (const entry of entries) {
       if (entry.changedStatus === "removed") add(entry.branch, vaultPath(path), null);
       else if (entry.changedStatus === "renamed" && entry.renamedFrom) add(entry.branch, vaultPath(entry.renamedFrom), vaultPath(path));
@@ -84,8 +86,8 @@ export function removalsByBranch(paths: Readonly<Record<string, readonly InFligh
 
 export function teammateReviews(paths: Readonly<Record<string, readonly InFlightBranch[]>>, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves: SavesTo | undefined, vaultPath: (path: string) => string): Map<string, TheirReview> {
   const found = new Map<string, TheirReview>();
-  for (const [path, entries] of Object.entries(paths)) {
-    const review = teammateReview(entries, login, groups, saves);
+  for (const path in paths) {
+    const review = teammateReview(paths[path], login, groups, saves);
     if (review) found.set(vaultPath(path), review);
   }
   return found;

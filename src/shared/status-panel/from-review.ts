@@ -192,8 +192,8 @@ export interface GroupItemInput {
 
 export function groupItemOf({ overview, entries, facts = null, rooms, viewer, now, editing }: GroupItemInput): StatusGroup {
   const unit = groupEntry(overview);
-  const overviewAuthor = "authorLogin" in overview && typeof overview.authorLogin === "string" && overview.authorLogin !== "" ? overview.authorLogin : null;
-  const entryAuthors = entries.map((one) => openedBy(one)).filter((login): login is string => login !== null && login !== "");
+  const overviewAuthor = overview.authorLogin && overview.authorLogin !== "" ? overview.authorLogin : null;
+  const entryAuthors = entries.flatMap((one) => [openedBy(one), one.prAuthorLogin ?? null]).filter((login): login is string => login !== null && login !== "");
   const fallbackAuthor = overviewAuthor ?? entryAuthors[0] ?? null;
   const own: ReviewFacts = { isDraft: overview.isDraft, state: "open", mergeableState: overview.mergeableState, reviewDecision: null, requestedReviewers: [], authorLogin: fallbackAuthor, reviewers: [] };
   const awaitingFacts = facts === null && overview.prNumber > 0 && !overview.isDraft;

@@ -3,7 +3,7 @@ import { MARK_ICON } from "../brand/mark";
 import { type Bearer } from "../auth/bearer";
 import { obsidianTransport } from "../auth/obsidian-transport";
 import type { Dialogs } from "../changes/flow-deps";
-import { coalesceDuringUntitled, isPluginLocalOnlyNew, onLocalNewUpdate, trackFreshLocalNotes } from "../changes/local-new";
+import { coalesceDuringUntitled, deferDuringUntitled, isPluginLocalOnlyNew, onLocalNewUpdate, trackFreshLocalNotes, untitledCreateRemainingMs } from "../changes/local-new";
 import { openExternalUrl } from "../links";
 import type { DocumentRef } from "../mapping";
 import { type PollSignals, type ThreadsStoreDeps } from "../shared/review-flow";
@@ -154,13 +154,14 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
 
   const selectionListeners = new Set<() => void>();
   const selectionChanged = (): void => selectionListeners.forEach((listener) => listener());
+  const scheduleSelection = deferDuringUntitled(plugin, selectionChanged);
   const editorSelectionListeners = new Set<() => void>();
 
   plugin.registerEditorExtension(
     marks.extension({
       selected: (read) => {
         if (!read) editorSelectionListeners.forEach((listener) => listener());
-        selectionChanged();
+        scheduleSelection();
       },
       clicked: (path, threadId) => {
         const note = hub.forNote(path);
@@ -171,21 +172,27 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     }),
   );
 
+  const pendingForget = new Set<string>();
+  plugin.register(() => pendingForget.clear());
   const follow = (): void => {
+    for (const oldPath of pendingForget) hub.forget(oldPath);
+    pendingForget.clear();
     hub.setActive(workspace.getActiveFile()?.path ?? null);
     selectionChanged();
   };
   const scheduleFollow = coalesceDuringUntitled(plugin, follow);
+  const scheduleWake = deferDuringUntitled(plugin, () => hub.wakeActive());
   plugin.registerEvent(workspace.on("active-leaf-change", scheduleFollow));
   plugin.registerEvent(workspace.on("file-open", scheduleFollow));
   plugin.registerEvent(
     vault.on("rename", (_file, oldPath) => {
-      hub.forget(oldPath);
+      if (untitledCreateRemainingMs(plugin) > 0) pendingForget.add(oldPath);
+      else hub.forget(oldPath);
       scheduleFollow();
     }),
   );
   plugin.registerEvent(vault.on("delete", (file) => hub.forget(file.path)));
-  plugin.register(onLocalNewUpdate(plugin, () => hub.wakeActive()));
+  plugin.register(onLocalNewUpdate(plugin, scheduleWake));
   workspace.onLayoutReady(follow);
 
   const comment = (editor: Editor, path: string, offered: Span | null = null, lost?: () => void): void => void startCommentOn(hub, marks.editorFor(editor), path, offered, lost);

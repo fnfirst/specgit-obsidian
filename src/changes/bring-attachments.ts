@@ -1,3 +1,4 @@
+import { NOTE_BRANCH } from "../auth/config";
 import type { AttachmentFile } from "../auth/git-copy";
 import type { CommitScope, StreamCreateResult, StreamReplaceResult } from "../disk/vault-binary";
 import { isVaultTarget, normalizeFolder } from "../mapping";
@@ -44,6 +45,42 @@ export interface BringPorts {
   create(path: string, bytes: ArrayBuffer): Promise<"created" | "exists" | "failed">;
   createStream?(path: string, stream: ReadableStream<Uint8Array>, size?: number, commit?: CommitScope): Promise<StreamCreateResult>;
   replaceStream?(path: string, stream: ReadableStream<Uint8Array>, options: { agreed: string; vaultSha: string; size?: number }, commit?: CommitScope): Promise<StreamReplaceResult>;
+  branchActive?(branch: string): boolean;
+  publishedSha?(vaultPath: string): string | null | undefined;
+}
+
+export function draftSourceOf(branch: string): string | undefined {
+  return branch === NOTE_BRANCH ? undefined : branch;
+}
+
+export function branchBeatsOwner(incoming: string, owner: string): boolean {
+  return incoming !== NOTE_BRANCH && incoming < owner;
+}
+
+function ownerForSha(sha: string, source: string | undefined, published: string | null | undefined): string | undefined {
+  if (source === undefined) return undefined;
+  if (published !== undefined && published !== null && sha === published) return undefined;
+  return source;
+}
+
+function canClaimUpgradeOwner(sha: string, published: string | null | undefined): boolean {
+  return published === null || (published !== undefined && sha !== published);
+}
+
+async function resolveDraftSha(
+  ports: BringPorts,
+  read: ReadableAttachment,
+): Promise<{ kind: "sha"; sha: string; read: ReadableAttachment } | { kind: "outage" } | { kind: "skipped" }> {
+  if (read.kind === "stream" && read.size !== undefined && read.size > MAX_ATTACHMENT_BYTES) {
+    await cancelIfStream(read);
+    return { kind: "skipped" };
+  }
+  if (read.sha !== undefined) return { kind: "sha", sha: read.sha, read };
+  if (read.kind === "bytes") return { kind: "sha", sha: await ports.shaOf(read.bytes), read };
+  const got = await readStreamBounded(read.stream, MAX_ATTACHMENT_BYTES, read.size);
+  if (!got.ok) return { kind: got.outage ? "outage" : "skipped" };
+  const sha = await ports.shaOf(got.bytes);
+  return { kind: "sha", sha, read: { kind: "bytes", bytes: got.bytes, sha } };
 }
 
 type ReadableAttachment = Extract<AttachmentFile, { kind: "bytes" | "stream" }>;
@@ -127,6 +164,24 @@ async function landReplacement(
 export class AttachmentLooks {
   private readonly misses = new Map<string, number>();
   private readonly looked = new Map<string, { at: number; embeds: string }>();
+  private readonly inflight = new Map<string, Promise<void>>();
+
+  private async exclusive<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const prior = this.inflight.get(key) ?? Promise.resolve();
+    let release = (): void => undefined;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prior.then(() => mine);
+    this.inflight.set(key, tail);
+    await prior;
+    try {
+      return await run();
+    } finally {
+      release();
+      if (this.inflight.get(key) === tail) this.inflight.delete(key);
+    }
+  }
 
   async bring(ports: BringPorts, memory: AttachmentMemory | undefined, branch: string, notePath: string, text: string, said: (words: string | null) => void, options: { replace?: boolean } = {}): Promise<void> {
     const links = fileAttachmentLinks(notePath, text);
@@ -137,27 +192,66 @@ export class AttachmentLooks {
     if (recheck) this.looked.set(notePath, { at: now, embeds });
     let both: string | null = null;
     let outside = false;
+    const source = draftSourceOf(branch);
     for (const link of links) {
       const here = ports.resolve(link, notePath);
       if (here !== null) {
         if (options.replace !== true) continue;
         const repoPath = recheck && memory ? ports.repoPathOf(here.path) : null;
-        const agreed = repoPath === null ? undefined : memory!.agreedOf(repoPath);
-        if (repoPath === null || agreed === undefined || here.size > MAX_ATTACHMENT_BYTES) continue;
-        const read = await ports.draftAttachment(repoPath, agreed);
-        if (read.kind === "unreadable" && read.outage === true) return;
-        if (read.kind !== "bytes" && read.kind !== "stream") continue;
-        let vaultSha: string;
-        try {
-          vaultSha = await ports.vaultSha(here);
-        } catch (err) {
-          await cancelIfStream(read);
-          throw err;
-        }
-        const res = await landReplacement(ports, here.path, read, agreed, vaultSha);
-        if (res.outcome === "outage") return;
-        if (res.outcome === "replaced" || (res.outcome === "same" && res.sha !== agreed)) memory!.agree(repoPath, res.sha);
-        else if (res.outcome === "both") both = ATTACHMENT_BOTH(attachmentName(repoPath));
+        if (repoPath === null || here.size > MAX_ATTACHMENT_BYTES) continue;
+        const outcome = await this.exclusive(repoPath, async (): Promise<"ok" | "outage"> => {
+          const agreed = memory!.agreedOf(repoPath);
+          if (agreed === undefined) return "ok";
+          const owner = memory!.sourceOf(repoPath);
+          const ownerActive = owner !== undefined && (ports.branchActive ? ports.branchActive(owner) : true);
+          if (ownerActive && owner !== branch && branch === NOTE_BRANCH) return "ok";
+          const read = await ports.draftAttachment(repoPath, agreed);
+          if (read.kind === "unreadable" && read.outage === true) return "outage";
+          const published = ports.publishedSha?.(here.path);
+          if (read.kind === "unchanged") {
+            if (owner === undefined && source !== undefined && canClaimUpgradeOwner(agreed, published)) memory!.agree(repoPath, agreed, source);
+            return "ok";
+          }
+          if (read.kind !== "bytes" && read.kind !== "stream") return "ok";
+          let vaultSha: string;
+          try {
+            vaultSha = await ports.vaultSha(here);
+          } catch (err) {
+            await cancelIfStream(read);
+            throw err;
+          }
+          if (ownerActive && owner !== branch) {
+            const resolved = await resolveDraftSha(ports, read);
+            if (resolved.kind === "outage") return "outage";
+            if (resolved.kind === "skipped") return "ok";
+            if (resolved.sha === vaultSha || resolved.sha === agreed) {
+              await cancelIfStream(resolved.read);
+              return "ok";
+            }
+            if (published !== undefined && published !== null && resolved.sha === published && vaultSha !== published) {
+              await cancelIfStream(resolved.read);
+              return "ok";
+            }
+            const beatsMainBaseline = published !== undefined && published !== null && vaultSha === published && resolved.sha !== published;
+            if (!beatsMainBaseline && !branchBeatsOwner(branch, owner)) {
+              await cancelIfStream(resolved.read);
+              both = ATTACHMENT_BOTH(attachmentName(repoPath));
+              return "ok";
+            }
+            const res = await landReplacement(ports, here.path, resolved.read, agreed, vaultSha);
+            if (res.outcome === "outage") return "outage";
+            if (res.outcome === "replaced" || (res.outcome === "same" && res.sha !== agreed)) memory!.agree(repoPath, res.sha, ownerForSha(res.sha, source, published));
+            else if (res.outcome === "both") both = ATTACHMENT_BOTH(attachmentName(repoPath));
+            return "ok";
+          }
+          const res = await landReplacement(ports, here.path, read, agreed, vaultSha);
+          if (res.outcome === "outage") return "outage";
+          if (res.outcome === "replaced" || (res.outcome === "same" && res.sha !== agreed)) memory!.agree(repoPath, res.sha, ownerForSha(res.sha, source, published));
+          else if (res.outcome === "same" && owner === undefined && source !== undefined && canClaimUpgradeOwner(res.sha, published)) memory!.agree(repoPath, res.sha, source);
+          else if (res.outcome === "both") both = ATTACHMENT_BOTH(attachmentName(repoPath));
+          return "ok";
+        });
+        if (outcome === "outage") return;
         continue;
       }
       const missKey = `${branch}\n${notePath}\n${link}`;
@@ -187,7 +281,8 @@ export class AttachmentLooks {
             if (made.status === "outage") return;
             if (made.status === "created") {
               found = true;
-              memory?.agree(read.path, made.sha);
+              const published = ports.publishedSha?.(placed.path);
+              memory?.agree(read.path, made.sha, ownerForSha(made.sha, source, published));
             } else if (made.status === "exists") {
               found = true;
             }
