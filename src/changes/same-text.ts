@@ -60,8 +60,41 @@ export async function sameAsRepo(deps: SameTextDeps, path: string, doc: Document
   return sameFileText(path, theirs, text) ? "same" : "differs";
 }
 
-export const SAME_PER_LOOK = 12;
+export const SAME_PER_LOOK = 24;
+export const BLOB_CACHE_MAX = 200;
 const AT_ONCE = 4;
+
+export class BlobCache {
+  private readonly entries = new Map<string, string>();
+
+  constructor(private readonly max = BLOB_CACHE_MAX) {}
+
+  get(key: string): string | undefined {
+    const hit = this.entries.get(key);
+    if (hit === undefined) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, hit);
+    return hit;
+  }
+
+  has(key: string): boolean {
+    return this.entries.has(key);
+  }
+
+  set(key: string, value: string): void {
+    this.entries.delete(key);
+    this.entries.set(key, value);
+    while (this.entries.size > this.max) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
 
 export interface SettleSameness {
   files: ReadonlyMap<string, CacheEntry>;
@@ -123,7 +156,33 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
       if (next) first.push(next);
     }
   }
-  if (prefetch && queue.length > 0 && alive()) await prefetch(queue.slice(0, SAME_PER_LOOK).map((one) => ({ doc: one.doc, sha: one.against })));
+  const chainedPrefetched = new Set<string>();
+  if (prefetch && queue.length > 0 && alive()) {
+    const toPrefetch: Array<{ doc: DocumentRef; sha: string }> = [];
+    const seen = new Set<string>();
+    const addRead = (doc: DocumentRef, sha: string): void => {
+      const key = `${doc.repo}\n${sha}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      toPrefetch.push({ doc, sha });
+    };
+    for (const one of queue.slice(0, SAME_PER_LOOK)) {
+      addRead(one.doc, one.against);
+      const repoSha = one.repoSha;
+      if (
+        one.base &&
+        repoSha !== undefined &&
+        repoSha !== one.against &&
+        files.get(one.path)?.same !== repoSha &&
+        files.get(one.path)?.differs !== repoSha &&
+        (unsure.get(`${one.sha}|${repoSha}`) ?? 0) <= now()
+      ) {
+        addRead(one.doc, repoSha);
+        chainedPrefetched.add(`${one.path}\n${one.sha}\n${repoSha}`);
+      }
+    }
+    if (toPrefetch.length > 0) await prefetch(toPrefetch);
+  }
   let reads = 0;
   const worker = async (): Promise<void> => {
     while (reads < SAME_PER_LOOK && queue.length > 0) {
@@ -131,7 +190,11 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
       reads++;
       const one = queue.shift()!;
       const next = answer(one, await ask(one.path, one.doc, one.sha, one.against, true));
-      if (next) queue.push(next);
+      if (!next) continue;
+      if (chainedPrefetched.has(`${next.path}\n${next.sha}\n${next.against}`)) {
+        if (!alive()) return;
+        answer(next, await ask(next.path, next.doc, next.sha, next.against, true));
+      } else queue.push(next);
     }
   };
   await Promise.all(Array.from({ length: Math.min(AT_ONCE, queue.length) }, worker));

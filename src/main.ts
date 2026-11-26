@@ -52,6 +52,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
   private stay: StayHandle | null = null;
   private account: SpecgitAccount | null = null;
   private connections: Connections | null = null;
+  private teardownTransport: (() => void) | null = null;
   private device = new DeviceSettings({ load: () => null, save: () => undefined });
   private readonly settingsSaved = new Signal();
 
@@ -138,10 +139,12 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       repoSha: (path) => repoShaOf(path),
     });
     this.register(gitBases.watch());
-    this.register(() => {
+    this.teardownTransport = () => {
+      this.teardownTransport = null;
       rooms.destroy();
       sockets.destroy();
-    });
+    };
+    this.register(() => this.teardownTransport?.());
 
     let repoShaOf = (_path: string): string | null => null;
     let isLocalOnlyNew = (_path: string): boolean => false;
@@ -290,7 +293,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       bases: disk.bases,
       gitCopy: (doc) => gitCopy.read(doc),
       gitFile: (doc) => gitCopy.readFile(doc),
-      gitBlobs: (repo, commit, files) => gitCopy.readBlobs(repo, commit, files),
+      gitBlobs: (repo, commit, files, byBlob) => gitCopy.readBlobs(repo, commit, files, byBlob),
       branchFile: (doc, branch) => gitCopy.readBranchFile(doc, branch),
       gitBlob: (doc, sha, signal) => gitCopy.readBlob(doc, sha, signal),
       signedIn: isSignedIn,
@@ -471,6 +474,8 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
 
   override onunload(): void {
     this.stay?.flush();
+    this.teardownTransport?.();
+    Reflect.deleteProperty(window, "__ $YJS$ __");
   }
 
   async setStayConnected(on: boolean): Promise<void> {

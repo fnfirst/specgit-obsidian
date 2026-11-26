@@ -51,6 +51,7 @@ export class CatchUpFlows {
         await this.deps.dialogs.alert({ title: CATCH_UP_HERE.failed, description: sent.message });
         return false;
       }
+      this.host.model.offerChoice(row.change.path, null);
       const said = sent.inVault === false ? CATCH_UP_HERE.doneInReview : CATCH_UP_HERE.done;
       this.deps.dialogs.toast(said.title, said.description);
       return true;
@@ -70,6 +71,7 @@ export class CatchUpFlows {
       this.deps.dialogs.toast(CATCH_UP_HERE.leftAsWas.title, CATCH_UP_HERE.leftAsWas.description);
       return false;
     }
+    this.host.model.offerChoice(row.change.path, null);
     this.deps.dialogs.toast(CATCH_UP_HERE.done.title, CATCH_UP_HERE.done.description);
     return true;
   }
@@ -96,6 +98,7 @@ export class CatchUpFlows {
       const merged = preview.merge === "clean" ? await this.commitClean(row, preview) : await this.commitChosen(row, preview, mine);
       if (merged === null) return false;
       const took = await this.host.memory.writeAndRemember(row.change.path, mine, merged.text, merged.text, preview.mainBlob);
+      this.host.model.offerChoice(row.change.path, null);
       const said = took ? CATCH_UP_HERE.done : CATCH_UP_HERE.doneInReview;
       this.deps.dialogs.toast(said.title, [merged.summary, said.description].filter(Boolean).join(" "));
       return true;

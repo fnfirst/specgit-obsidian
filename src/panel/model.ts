@@ -33,6 +33,7 @@ export interface PanelDeps {
   folder?(): string;
   stayConnected(): boolean;
   peopleIn(doc: DocumentRef): Promise<number | null>;
+  isLocalOnlyNew?: (path: string) => boolean;
   now?: () => number;
   signals?: PollSignals;
 }
@@ -124,6 +125,7 @@ export class PanelModel {
   askPeople(): void {
     const { note, status } = this.current;
     if (this.open === 0 || !note || !this.current.signedIn || (status && status.phase !== "local")) return;
+    if (this.deps.isLocalOnlyNew?.(note.path) === true) return;
     const { signals } = this.deps;
     if (signals) {
       if (signals.hidden()) return;

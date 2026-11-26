@@ -2,6 +2,7 @@ import { CHANGE_GRACE_MS } from "../shared/review-flow";
 import type { ReviewFacts } from "../shared/status-panel";
 
 export const HELD_RECHECK_MS = [2_500, 6_000] as const;
+const FOLLOW_UP_RECHECK_MS = [6_000, 12_000] as const;
 
 interface HeldMove {
   isDraft: boolean;
@@ -80,12 +81,20 @@ export class DraftHold {
   private scheduleRechecks(): void {
     this.cancelRechecks();
     if (this.moves.size === 0) return;
-    const run = (): void => {
+    const run = (followUp: boolean): void => {
       if (this.reconcile(this.lastFacts)) this.host.onChanged();
       if (this.moves.size === 0) return;
       this.host.recheck([...this.moves.keys()]);
+      if (followUp && this.moves.size > 0) {
+        for (const ms of FOLLOW_UP_RECHECK_MS) {
+          this.recheckTimers.push(this.host.setTimer(() => run(false), ms));
+        }
+      }
     };
-    for (const ms of HELD_RECHECK_MS) this.recheckTimers.push(this.host.setTimer(run, ms));
+    const last = HELD_RECHECK_MS.length - 1;
+    for (let i = 0; i < HELD_RECHECK_MS.length; i++) {
+      this.recheckTimers.push(this.host.setTimer(() => run(i === last), HELD_RECHECK_MS[i]!));
+    }
   }
 
   private scheduleExpiry(): void {
@@ -151,11 +160,16 @@ export class DraftHold {
     if (this.moves.size === 0) return false;
     const now = this.host.now();
     let dropped = false;
+    const staleExpired: number[] = [];
     for (const [number, move] of [...this.moves]) {
       const expired = now - move.at >= CHANGE_GRACE_MS;
       const known = settled?.get(number);
       const agreed = settledSeq !== undefined && settledSeq > move.seq && known !== undefined && moveAgrees(known, move);
       if (expired || agreed) {
+        if (expired && !agreed) {
+          const latest = known ?? facts.get(number);
+          if (settled === undefined && (!latest || !moveAgrees(latest, move))) staleExpired.push(number);
+        }
         this.moves.delete(number);
         dropped = true;
       }
@@ -164,6 +178,7 @@ export class DraftHold {
       if (this.moves.size === 0) this.cancelTimers();
       else this.scheduleExpiry();
     }
+    if (staleExpired.length > 0) this.host.recheck(staleExpired);
     return dropped;
   }
 

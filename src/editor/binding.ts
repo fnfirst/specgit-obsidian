@@ -1,5 +1,6 @@
-import { Annotation, type ChangeSpec, Transaction } from "@codemirror/state";
+import { Annotation, type ChangeSpec, type EditorState, Transaction } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+import { editorInfoField } from "obsidian";
 import type * as Y from "yjs";
 import { fileAttachmentLinks } from "../changes/attachment-links";
 import { Budget, splices } from "../disk/diff";
@@ -69,9 +70,13 @@ function write(text: Y.Text, changes: readonly Splice[]): void {
 
 class Lens {
   private map = new LineEndingMap("");
-  private eol: Eol = "lf";
+  private eol: Eol;
 
-  constructor(private readonly text: Y.Text) {
+  constructor(
+    private readonly text: Y.Text,
+    preferredEol: Eol = "lf",
+  ) {
+    this.eol = preferredEol;
     this.read();
   }
 
@@ -98,7 +103,7 @@ class Lens {
   private read(): void {
     const room = this.text.toJSON();
     this.map = new LineEndingMap(room);
-    this.eol = eolOf(room);
+    if (room !== "" && room.includes("\n")) this.eol = eolOf(room);
   }
 }
 
@@ -110,34 +115,49 @@ export class Binding {
     private readonly room: BoundRoom,
     private readonly lost: () => void,
     private readonly lens: Lens,
+    private boundFile: object | null,
+    private boundPath: string | null,
     private readonly links?: LocalLinkSink,
   ) {
     room.text.observe(this.onRoomChange);
   }
 
-  static bind(view: EditorView, room: BoundRoom, lost: () => void, note: string, links?: LocalLinkSink): Binding {
+  static bind(view: EditorView, room: BoundRoom, lost: () => void, note: string, links?: LocalLinkSink, expectedPath?: string, preferredEol?: Eol): Binding {
     const { text } = room;
-    const lens = new Lens(text);
+    const active = view.state.field(editorInfoField, false)?.file ?? null;
+    const boundPath = expectedPath ?? active?.path ?? null;
+    const eol: Eol = preferredEol ?? (note.includes("\r\n") ? "crlf" : "lf");
+    const lens = new Lens(text, eol);
     const [inRoom, editor] = [lens.projected, view.state.doc.toString()];
     const budget = new Budget(JOIN_MS);
     const target = room.readOnly ? inRoom : note;
     const toRoom = splices(inRoom, target, budget);
     if (toRoom.length > 0) {
       room.markLocalEdit?.();
-      text.doc?.transact(() => write(text, toRoom.map((change) => lens.toRoom(change))), JOINING);
-      lens.changed(toRoom.map((change) => change.insert).join(""));
+      const changes = toRoom.map((change) => lens.toRoom(change));
+      text.doc?.transact(() => write(text, changes), JOINING);
+      lens.changed(changes.map((change) => change.insert).join(""));
     }
     const toEditor = splices(editor, target, budget);
     if (toEditor.length > 0) view.dispatch({ changes: toEditor.map(({ from, to, insert }): ChangeSpec => ({ from, to, insert })), annotations: ROOM_CHANGE });
-    return new Binding(view, room, lost, lens, links);
+    return new Binding(view, room, lost, lens, active, boundPath, links);
   }
 
-  static follow(view: EditorView, room: BoundRoom, lost: () => void, links?: LocalLinkSink): Binding {
-    return Binding.bind(view, room, lost, toLf(room.text.toJSON()), links);
+  static follow(view: EditorView, room: BoundRoom, lost: () => void, links?: LocalLinkSink, expectedPath?: string, preferredEol?: Eol): Binding {
+    return Binding.bind(view, room, lost, toLf(room.text.toJSON()), links, expectedPath, preferredEol);
+  }
+
+  retarget(file: object | null, path: string | null): void {
+    this.boundFile = file;
+    this.boundPath = path;
   }
 
   update(update: ViewUpdate): void {
     if (!this.bound || !update.docChanged) return;
+    if (!this.matchesView(update.state)) {
+      this.stop();
+      return;
+    }
     for (const transaction of update.transactions) {
       if (!transaction.docChanged || transaction.annotation(fromRoom) !== undefined) continue;
       if (this.room.readOnly) return this.fail();
@@ -150,6 +170,15 @@ export class Binding {
     if (!this.bound) return;
     this.bound = false;
     this.room.text.unobserve(this.onRoomChange);
+  }
+
+  private matchesView(state: EditorState = this.view.state): boolean {
+    const info = state.field(editorInfoField, false);
+    if (info === undefined) return true;
+    const active = info.file ?? null;
+    if (this.boundPath !== null && active?.path !== this.boundPath) return false;
+    if (this.boundFile !== null && active !== this.boundFile) return false;
+    return true;
   }
 
   private writeLocal(transaction: Transaction): void {
@@ -178,6 +207,10 @@ export class Binding {
 
   private readonly onRoomChange = (event: Y.YTextEvent, transaction: Y.Transaction): void => {
     if (transaction.meta.get(this)) return;
+    if (!this.matchesView()) {
+      this.stop();
+      return;
+    }
     const changes: ChangeSpec[] = [];
     let at = 0;
     let inserted = "";

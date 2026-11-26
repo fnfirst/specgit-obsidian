@@ -28,6 +28,8 @@ const stepsIn = (answer: unknown): RoomSteps | null => (typeof answer === "objec
 
 export const BRIDGE_GRACE_MS = 1_500;
 
+export const OFFLINE_GRACE_MS = 10_000;
+
 export class Room {
   readonly doc = Object.assign(new Y.Doc(), { clientID: personClientId() });
   readonly awareness = new Awareness(this.doc);
@@ -46,6 +48,9 @@ export class Room {
   private replacement: Room | null = null;
   private vouchedText: string | null = null;
   private absence: number | null = null;
+  private offlineTimer: number | null = null;
+  private offlineExpired = false;
+  private ended = false;
   private readonly bridgeRequests: BridgeRequests;
   private readonly ask: () => Promise<unknown>;
   private recheckTimer: number | null = null;
@@ -67,11 +72,23 @@ export class Room {
     askForBridge: (session: string | null) => Promise<unknown>,
   ) {
     this.ask = () =>
-      askForBridge(sessionSeedClaim(this.doc)).then((answer) => {
-        const steps = stepsIn(answer);
-        if (steps) this.transport?.setSteps(steps);
-        return answer;
-      });
+      askForBridge(sessionSeedClaim(this.doc)).then(
+        (answer) => {
+          const steps = stepsIn(answer);
+          if (steps) this.transport?.setSteps(steps);
+          return answer;
+        },
+        (error) => {
+          if (error instanceof AuthError && error.code === "room_ended") {
+            this.ended = true;
+            this.refresh();
+          } else if (error instanceof AuthError && error.code === "document_deleted") {
+            this.failedWith = "document_deleted";
+            this.refresh();
+          }
+          throw error;
+        },
+      );
     this.bridgeRequests = new BridgeRequests(this.ask);
     publishIdentity(this.awareness, identity);
     this.stopWatchingFreshness = watchFreshness(this.doc, this.awareness, () => this.refresh());
@@ -85,8 +102,9 @@ export class Room {
   }
 
   get state(): RoomState {
+    if (this.failure !== null || this.offlineExpired) return "failed";
     if (this.ready) return "ready";
-    if (this.failure !== null || this.transport?.refusal) return "failed";
+    if (this.transport?.refusal) return "failed";
     return this.transport?.synced ? "joining" : "connecting";
   }
 
@@ -115,7 +133,7 @@ export class Room {
   }
 
   get startOver(): boolean {
-    return this.transport?.startOver ?? false;
+    return this.ended || (this.transport?.startOver ?? false);
   }
 
   get stopped(): Stop | null {
@@ -160,9 +178,14 @@ export class Room {
   }
 
   retry(): void {
-    if (this.state !== "failed" || this.destroyed) return;
+    if (this.state !== "failed" || this.destroyed || this.ready) return;
     this.stopWaitingToRetry();
+    this.stopWaitingForBridge();
+    this.stopWaitingOffline();
     this.failure = null;
+    this.ready = false;
+    this.present = false;
+    this.offlineExpired = false;
     this.dropTransport();
     this.refresh();
     void this.connect();
@@ -194,6 +217,7 @@ export class Room {
     this.stopWatchingFreshness();
     this.awareness.off("update", this.onAwareness);
     this.stopWaitingForBridge();
+    this.stopWaitingOffline();
     this.bridgeRequests.stop();
     this.dropTransport();
     this.own.stop();
@@ -304,16 +328,33 @@ export class Room {
   }
 
   private followBridge(synced: boolean, fresh: boolean): void {
-    if (fresh) {
+    const connected = this.online && synced && !this.transport?.refusal;
+    if (connected) {
+      this.stopWaitingOffline();
+      this.offlineExpired = false;
+    } else {
+      this.stopWaitingForBridge();
+      if (!this.offlineExpired && this.offlineTimer === null && this.stopped === null && !this.startOver) {
+        this.offlineTimer = window.setTimeout(() => {
+          this.offlineTimer = null;
+          if (!this.destroyed && (!this.online || !this.transport?.synced || Boolean(this.transport?.refusal)) && this.stopped === null && !this.startOver) {
+            this.offlineExpired = true;
+            this.present = false;
+            this.refresh();
+          }
+        }, OFFLINE_GRACE_MS);
+      }
+    }
+    if (fresh && connected) {
       this.stopWaitingForBridge();
       if (!this.present) {
         this.present = true;
         this.vouchedText = this.text.toJSON();
       }
-    } else if (synced && this.present && this.absence === null) {
+    } else if (connected && this.present && this.absence === null) {
       this.absence = window.setTimeout(() => {
         this.absence = null;
-        if (!this.destroyed && this.present && this.transport?.synced && !isFresh(this.doc, this.awareness)) {
+        if (!this.destroyed && this.present && this.online && this.transport?.synced && !this.transport?.refusal && !isFresh(this.doc, this.awareness)) {
           this.present = false;
           this.refresh();
         }
@@ -325,6 +366,12 @@ export class Room {
     if (this.absence === null) return;
     window.clearTimeout(this.absence);
     this.absence = null;
+  }
+
+  private stopWaitingOffline(): void {
+    if (this.offlineTimer === null) return;
+    window.clearTimeout(this.offlineTimer);
+    this.offlineTimer = null;
   }
 
   private notify(): void {

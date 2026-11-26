@@ -117,10 +117,14 @@ async function chooseForGroup(ports: StatusPorts, card: ChangeRow): Promise<void
   else if (picked === "stop") await ports.flows.stopEnding(card);
 }
 
+const CHOOSE_MATCHED = "This note already matches GitHub. Nothing to resolve.";
+
 async function chooseForNote(ports: StatusPorts, path: string, row: ChangeRow | undefined): Promise<void> {
   const choice = ports.choice(path);
   if (choice) return choice.run();
-  if (row) await ports.flows.settleFromMain(row);
+  if (row) return void (await ports.flows.settleFromMain(row));
+  await ports.refresh();
+  ports.toast(CHOOSE_MATCHED);
 }
 
 async function catchUp(ports: StatusPorts, row: ChangeRow | undefined): Promise<void> {

@@ -1,9 +1,9 @@
-import { CATCH_UP, type CatchUpPreview, isViewersBranch, TRY_AGAIN } from "../shared/review-flow";
+import { CATCH_UP, type CatchUpPreview, isViewersBranch, type SaverStatus, TRY_AGAIN } from "../shared/review-flow";
 import type { ActionAnswer, PanelAction, PanelHost, ReviewFacts, StatusNotice, StatusReviewer } from "../shared/status-panel";
-import { comparedOf, onGitHubFiles } from "../changes/vault-state";
+import { comparedOf, onGitHubFiles, type VaultStates } from "../changes/vault-state";
 import { type Built, panelModelFromVault, type VaultPanelBase, vaultPanelOf } from "./panel-model";
 import { runAction, type StatusFlows, type StatusPorts } from "./panel-actions";
-import type { ChangeRow, ChangesModel, ChangesPhase } from "../changes/model";
+import type { ChangeRow, ChangesModel, ChangesPhase, ChangesState } from "../changes/model";
 import type { Dialogs } from "../changes/flow-deps";
 import type { PanelState } from "../panel/model";
 import type { PanelActions } from "../panel/panel";
@@ -13,6 +13,7 @@ import { CATCH_UP_HERE } from "../review/words";
 import { viewsOf } from "../changes/vault-since";
 import { type DocumentRef, noteName } from "../mapping";
 import type { BroughtDraft } from "../changes/bring-in";
+import { phaseOf, type NoteStatus } from "../status";
 import { DraftHold, HELD_RECHECK_MS } from "./draft-hold";
 
 export const FACTS_PER_REQUEST = 50;
@@ -89,6 +90,17 @@ export class SinceView {
 
 const CHECKED_KEY = (place: string): string => `specgit-status-checked:${place}`;
 
+function saverSignature(saver: SaverStatus | null): string {
+  return saver ? `${saver.state}\0${saver.reason ?? ""}` : "";
+}
+
+function statusSignature(status: NoteStatus | null): string {
+  const phase = phaseOf(status);
+  const here = status?.here;
+  if (!here || here.length === 0) return phase;
+  return `${phase}\0${here.map((one) => `${one.login ?? one.name}\u0001${one.picture ?? ""}`).join("\0")}`;
+}
+
 function unchangedSignature(row: ChangeRow | undefined): string {
   if (!row?.entry) return "";
   const { entry, review } = row;
@@ -157,8 +169,16 @@ export class StatusController {
   private version = 0;
   private vaultVersion = 0;
   private vaultBuilt: { key: unknown[]; value: VaultPanelBase } | null = null;
+  private vaultToldById = new Map<string, string | null>();
   private built: { key: unknown[]; value: Built } | null = null;
   private lastView: StatusView | null = null;
+  private lastViewMeta = "";
+  private lastModelState: ChangesState;
+  private lastModelVault: VaultStates | null;
+  private watchedPath: string | null = null;
+  private watchedSignature = "";
+  private watchedSaver = "";
+  private watchedReadPending = false;
   private units: Built["units"] = { rows: new Map(), members: new Map(), urls: new Map() };
   private disposed = false;
   private readonly stops: Array<() => void> = [];
@@ -166,6 +186,8 @@ export class StatusController {
 
   constructor(private readonly env: StatusEnv) {
     this.now = env.now ?? Date.now;
+    this.lastModelState = env.model.state();
+    this.lastModelVault = env.model.vault();
     this.holds = new DraftHold({
       now: this.now,
       repo: () => env.repo(),
@@ -274,13 +296,63 @@ export class StatusController {
     if (this.holds.record(prNumber, isDraft, ++this.seq, this.facts, this.reading !== null, requestedReviewers)) this.changed();
   }
 
+  private joinKeyOf(vaultBase: VaultPanelBase): string {
+    return vaultBase.joinCandidates.length === 0 ? "" : vaultBase.joinCandidates.map(({ raw }) => (this.env.isLive(raw.id) ? "1" : "0")).join("");
+  }
+
+  private viewMeta(vaultBase: VaultPanelBase, view: StatusView | null): string {
+    const path = this.shownPath(view);
+    const stay = view ? view.state.stay : this.env.stayOn?.() === true;
+    const paused = path !== null && this.env.isPaused?.(path) === true;
+    const hold = path !== null ? this.env.model.holdOf(path) : null;
+    return [stay ? "1" : "0", paused ? "1" : "0", hold ?? "", this.joinKeyOf(vaultBase)].join("\0");
+  }
+
+  private vaultMetaChanged(): boolean {
+    if (!this.vaultBuilt) return true;
+    const { model } = this.env;
+    if (this.vaultBuilt.key[4] !== (this.env.offered?.().length ?? 0)) return true;
+    if (this.vaultBuilt.key[5] !== this.env.viewer()) return true;
+    if (this.vaultBuilt.key[6] !== this.env.folder()) return true;
+    for (const [id, prev] of this.vaultBuilt.value.holdById) {
+      if (model.holdOf(id) !== prev) return true;
+    }
+    for (const [id, prev] of this.vaultToldById) {
+      if (model.toldWords(id) !== prev) return true;
+    }
+    return false;
+  }
+
   private modelChanged(): void {
     if (this.disposed) return;
-    const { busy } = this.env.model.state();
+    const state = this.env.model.state();
+    const vault = this.env.model.vault();
+    const sameVault = state === this.lastModelState && vault === this.lastModelVault;
+    this.lastModelState = state;
+    this.lastModelVault = vault;
+    const { busy } = state;
     const ended = this.wasBusy && !busy;
     this.wasBusy = busy;
     if (ended || this.numbers().join(",") !== this.asked) void this.read();
     this.preview();
+    if (sameVault && this.watchedPath !== null && !this.vaultMetaChanged()) {
+      const nextSig = unchangedSignature(this.env.model.unchangedRow(this.watchedPath));
+      const nextSaver = saverSignature(this.env.model.saverOf(this.watchedPath));
+      if (nextSig !== this.watchedSignature || nextSaver !== this.watchedSaver) {
+        this.watchedSignature = nextSig;
+        this.watchedSaver = nextSaver;
+        this.watchedReadPending = false;
+        this.changed(false);
+        return;
+      }
+      if (this.watchedReadPending) {
+        this.watchedReadPending = false;
+        if (this.vaultBuilt && this.viewMeta(this.vaultBuilt.value, this.lastView) !== this.lastViewMeta) {
+          this.changed(false);
+        }
+        return;
+      }
+    }
     this.changed();
   }
 
@@ -401,25 +473,44 @@ export class StatusController {
     return view ? (view.state.note?.path ?? null) : this.env.activePath();
   }
 
+  private isLocalOnlyNew(path: string): boolean {
+    return typeof this.env.model.isLocalOnlyNew === "function" && this.env.model.isLocalOnlyNew(path);
+  }
+
   unchangedPath(view: StatusView | null): string | null {
     const path = this.shownPath(view);
-    return path !== null && !this.env.model.row(path) ? path : null;
+    return path !== null && !this.env.model.row(path) && !this.isLocalOnlyNew(path) ? path : null;
   }
 
   unreadPath(view: StatusView | null): string | null {
     const path = this.shownPath(view);
-    const row = path === null ? undefined : this.env.model.row(path);
+    if (path === null || this.isLocalOnlyNew(path)) return null;
+    const row = this.env.model.row(path);
     return row && (row.unread || row.light) ? row.change.path : null;
   }
 
   readRow(path: string | null): void {
-    const row = path === null ? undefined : this.env.model.row(path);
+    if (path === null || this.isLocalOnlyNew(path)) return;
+    const row = this.env.model.row(path);
     if (row) void this.env.model.read([row]);
   }
 
   watchUnchanged(path: string | null): () => void {
-    this.env.model.watchUnchanged(path);
-    return () => this.env.model.watchUnchanged(null);
+    const target = path !== null && this.isLocalOnlyNew(path) ? null : path;
+    this.watchedPath = target;
+    this.watchedSignature = target === null ? "" : unchangedSignature(this.env.model.unchangedRow(target));
+    this.watchedSaver = target === null ? "" : saverSignature(this.env.model.saverOf(target));
+    this.watchedReadPending = target !== null && !this.env.model.row(target);
+    this.env.model.watchUnchanged(target);
+    return () => {
+      if (this.watchedPath === target) {
+        this.watchedPath = null;
+        this.watchedSignature = "";
+        this.watchedSaver = "";
+        this.watchedReadPending = false;
+      }
+      this.env.model.watchUnchanged(null);
+    };
   }
 
   build(view: StatusView | null): Built {
@@ -456,6 +547,7 @@ export class StatusController {
           views.set(file.path, viewsOf(compared).flatMap((one) => (one === "github" || one === "difference" ? [one] : [])));
         }
       }
+      const toldById = new Map<string, string | null>();
       vaultBase = vaultPanelOf({
         state,
         viewer,
@@ -466,7 +558,11 @@ export class StatusController {
         vaultHas: (one) => model.vaultHas(one),
         docFor: this.env.documentFor,
         holdOf: (one) => model.holdOf(one),
-        told: (one) => model.toldWords(one),
+        told: (one) => {
+          const words = model.toldWords(one);
+          toldById.set(one, words);
+          return words;
+        },
         both,
         viewsOf: (one) => views.get(one) ?? [],
         newer: vault ? onGitHubFiles(vault) : [],
@@ -477,6 +573,7 @@ export class StatusController {
         linked,
         editingGroup: this.editing,
       });
+      this.vaultToldById = toldById;
       this.vaultBuilt = { key: vaultKey, value: vaultBase };
     }
     const status = view?.state.status ?? null;
@@ -489,14 +586,16 @@ export class StatusController {
     const activeComments = path !== null ? this.env.openComments(path) : 0;
     const readOnly = model.readOnly();
     const plansUrl = this.env.plansUrl();
-    const joinKey = vaultBase.joinCandidates.length === 0 ? "" : vaultBase.joinCandidates.map(({ raw }) => (this.env.isLive(raw.id) ? "1" : "0")).join("");
+    const joinKey = this.joinKeyOf(vaultBase);
+    this.lastViewMeta = [stay ? "1" : "0", paused ? "1" : "0", hold ?? "", joinKey].join("\0");
     const place = this.env.place();
     if (this.checked === null || this.checkedFor !== place) {
       const stored = this.env.storage.load(CHECKED_KEY(place));
       this.checked = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === "string") : [];
       this.checkedFor = place;
     }
-    const key: unknown[] = [vaultBase, this.version, view?.state ?? null, path, behind, status, saver, stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, this.checked, this.notice, this.reviewers, readOnly, plansUrl, joinKey];
+    const activePeople = phaseOf(status) === "local" && (view?.state.people ?? 0) > 0 ? view!.state.people! : 0;
+    const key: unknown[] = [vaultBase, this.version, path, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, this.checked, this.notice, this.reviewers, readOnly, plansUrl, joinKey];
     if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) {
       this.lastView = view;
       return this.built.value;

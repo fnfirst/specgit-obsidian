@@ -1,9 +1,12 @@
 import type { LocalState } from "../disk/bases";
 import { hashText } from "../hash";
 import { splitRepo, type SpecgitApi } from "../api";
+import { retryAfterFromError } from "../api/retry-after";
 import { GIT_PROVIDER, NOTE_BRANCH } from "../auth/config";
 
 export const ADDED_KEPT = 2_000;
+export const DEFAULT_MIRROR_PAUSE_MS = 60_000;
+export const MAX_MIRROR_RETRY_AFTER_MS = 60 * 60_000;
 
 export interface MirrorFile {
   path: string;
@@ -31,6 +34,26 @@ const isChange = (value: unknown): value is MirrorChange => {
   );
 };
 
+const clampMirrorRetry = (ms: number): number | null =>
+  Number.isFinite(ms) && ms > 0 ? Math.min(Math.ceil(ms), MAX_MIRROR_RETRY_AFTER_MS) : null;
+
+const retryAfterOf = (answer: { retryAfterMs?: number; body: Record<string, unknown> | null }): number | null => {
+  if (typeof answer.retryAfterMs === "number") return clampMirrorRetry(answer.retryAfterMs);
+  const body = answer.body;
+  if (!body) return null;
+  if (typeof body.retryAfterMs === "number") return clampMirrorRetry(body.retryAfterMs);
+  if (typeof body.retryAfterSec === "number") return clampMirrorRetry(body.retryAfterSec * 1000);
+  if (typeof body.retryAfter === "number") return clampMirrorRetry(body.retryAfter * 1000);
+  return null;
+};
+
+const pausedUntilOf = (body: Record<string, unknown>, now: number): number | null => {
+  const paused = body.paused;
+  if (typeof paused !== "object" || paused === null || Array.isArray(paused)) return null;
+  const { until, reason } = paused as { until?: unknown; reason?: unknown };
+  return typeof until === "number" && Number.isFinite(until) && until > now && reason !== "failing" ? until : null;
+};
+
 export type MirrorState =
   | {
       kind: "files";
@@ -41,6 +64,7 @@ export type MirrorState =
     }
   | { kind: "building" }
   | { kind: "not_installed" }
+  | { kind: "rate_limited"; retryAfterMs: number | null }
   | { kind: "unknown"; status: number | null };
 
 export class MirrorClient {
@@ -48,6 +72,8 @@ export class MirrorClient {
   private files = new Map<string, string>();
   private headSha: string | null = null;
   private added = new Map<string, number>();
+  private pausedUntil = 0;
+  private pausedCount = 0;
 
   constructor(
     private readonly api: SpecgitApi,
@@ -79,6 +105,7 @@ export class MirrorClient {
   }
 
   async moved(): Promise<boolean> {
+    if (this.now() < this.pausedUntil) return false;
     const before = this.version;
     const state = await this.read();
     return state.kind === "files" && state.version !== before;
@@ -87,18 +114,44 @@ export class MirrorClient {
   async read(): Promise<MirrorState> {
     const named = splitRepo(this.repo);
     if (!named) return { kind: "unknown", status: null };
+    const started = this.now();
+    if (started < this.pausedUntil) {
+      return { kind: "rate_limited", retryAfterMs: clampMirrorRetry(this.pausedUntil - started) };
+    }
     const query: Record<string, string> = { branch: NOTE_BRANCH, folder: "", fresh: "1" };
     if (this.version !== null) query.since = String(this.version);
     let answer;
     try {
-      answer = await this.api.call("GET", `/api/repos/${GIT_PROVIDER}/${named.owner}/${named.repo}/changes`, { query });
-    } catch {
+      answer = await this.api.call("GET", `/api/repos/${GIT_PROVIDER}/${named.owner}/${named.repo}/changes`, { query, maxRetryAfterMs: MAX_MIRROR_RETRY_AFTER_MS });
+    } catch (error) {
+      const retryAfterMs = retryAfterFromError(error, MAX_MIRROR_RETRY_AFTER_MS);
+      if (retryAfterMs !== undefined) {
+        this.pausedCount += 1;
+        this.pausedUntil = this.now() + retryAfterMs;
+        return { kind: "rate_limited", retryAfterMs };
+      }
       return { kind: "unknown", status: null };
     }
     if (answer.status === 202) return { kind: "building" };
     if (answer.code === "app_not_installed") return { kind: "not_installed" };
+    if (answer.status === 429 || answer.code === "rate_limited") {
+      const retryAfterMs = retryAfterOf(answer);
+      const pauseMs = retryAfterMs ?? Math.min(DEFAULT_MIRROR_PAUSE_MS * 2 ** Math.min(this.pausedCount, 4), MAX_MIRROR_RETRY_AFTER_MS);
+      this.pausedCount += 1;
+      this.pausedUntil = this.now() + pauseMs;
+      return { kind: "rate_limited", retryAfterMs };
+    }
     const body = answer.body;
     if (answer.status !== 200 || !body || typeof body.version !== "number") return { kind: "unknown", status: answer.status };
+    const now = this.now();
+    const pausedUntil = pausedUntilOf(body, now);
+    if (pausedUntil !== null) {
+      this.pausedCount += 1;
+      this.pausedUntil = pausedUntil;
+      return { kind: "rate_limited", retryAfterMs: clampMirrorRetry(pausedUntil - now) };
+    }
+    this.pausedUntil = 0;
+    this.pausedCount = 0;
     if (Array.isArray(body.files)) {
       if (!body.files.every(isFile)) return { kind: "unknown", status: answer.status };
       const before = this.files;

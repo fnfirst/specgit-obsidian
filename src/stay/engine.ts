@@ -65,6 +65,7 @@ export class StayConnected {
   private readonly roomWrites: RoomWrites;
   private readonly ownBlobs: OwnBlobs;
   private readonly conflicts = new Map<string, string>();
+  private readonly githubHeldBase = new Map<string, string | null>();
   private readonly timers = new Map<Timer, { cancel: () => void; at: number }>();
   private readonly heard = new Map<string, () => void>();
   private readonly heardLater = new Set<string>();
@@ -106,6 +107,8 @@ export class StayConnected {
       clearOwnBlobs: (path) => this.ownBlobs.clear(path),
       renameOwnBlobs: (from, to) => this.ownBlobs.renamed(from, to),
       consumeRebasedSent: (path, sha) => this.ownBlobs.consumeRebasedSent(path, sha),
+      hasConflict: (path, looked) => this.conflicts.get(path) === this.conflictKey(looked, path),
+      onResolved: (path) => this.conflictResolved(path),
       current,
     }));
   }
@@ -285,6 +288,7 @@ export class StayConnected {
     this.draftIn?.stop();
     this.draftIn = null;
     this.conflicts.clear();
+    this.githubHeldBase.clear();
     this.ownBlobs.stop();
     for (const cancel of this.heard.values()) cancel();
     this.heard.clear();
@@ -759,6 +763,8 @@ export class StayConnected {
 
   private conflictResolved(path: string): void {
     this.conflicts.delete(path);
+    this.githubHeldBase.delete(path);
+    this.draftIn?.clearConflict(path);
     if (this.state.data.heldWhy?.[path] !== "github") return;
     this.holds.clearEditHold(path);
   }
@@ -832,6 +838,17 @@ export class StayConnected {
     data.held = [...new Set(data.held.filter((key) => keys.has(key)))];
     data.burst = data.burst.filter((key) => keys.has(key));
     const prepared = this.holds.batch(() => {
+      for (const path of [...this.githubHeldBase.keys()]) if (data.heldWhy?.[path] !== "github") this.githubHeldBase.delete(path);
+      for (const [path, why] of Object.entries(data.heldWhy ?? {})) {
+        if (why !== "github") continue;
+        const base = looked.files.get(path)?.base ?? null;
+        const heldBase = this.githubHeldBase.get(path);
+        if (heldBase === undefined) this.githubHeldBase.set(path, base);
+        else if (base !== null && base === looked.repo.get(path) && heldBase !== base) {
+          this.conflictResolved(path);
+          this.inbound?.caughtUp(path, base);
+        }
+      }
       const pruned = this.pruneHeld(looked, new Set(data.committed));
       if (!this.startedOutbound || !this.startedEdits) for (const path of pruned.releasedFlurry) this.releasedAtStart.add(path);
       const seen = data.seen ?? {};
@@ -935,9 +952,9 @@ export class StayConnected {
       if ((result === "committed" && inVault !== false) || result === "held" || result === "conflict") delete this.state.data.typed?.[row.change.path];
       if (result === "committed") {
         this.budget.succeeded();
-        if (inVault === false) {
-          this.deferOutboundUnsaved(row.change.path);
-        } else {
+        if (this.conflicts.delete(row.change.path)) this.draftIn?.clearConflict(row.change.path);
+        if (inVault === false) this.deferOutboundUnsaved(row.change.path);
+        if (inVault !== false || !edit) {
           if (edit) this.pace.saved(row.change.path);
           else data.committed.push(key);
           sent++;
@@ -946,6 +963,7 @@ export class StayConnected {
         this.deletedOnGithub(row.change.path, deletedAt ?? this.ports.now());
       } else if (result === "held") {
         if (edit) {
+          this.githubHeldBase.set(row.change.path, looked.files.get(row.change.path)?.base ?? null);
           if (this.holds.holdEdit(looked, row.change.path, "github")) this.ports.lookAgain();
         } else this.holds.holdNew(looked, key, row.change.path, "github");
       } else if (result === "conflict") {

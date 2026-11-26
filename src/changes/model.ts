@@ -33,6 +33,9 @@ export const DETAIL_TTL_MS = 10 * 60_000;
 const LEARN_GRACE_MS = 30_000;
 const FILL_IN_MS = 1_000;
 export const RETRY_AFTER_FAILED_MS: readonly number[] = [2_000, 4_000, 8_000, 15_000, 30_000];
+const MIN_RATE_LIMIT_MS = 5_000;
+const MAX_RATE_LIMIT_MS = 60 * 60_000;
+const DEFAULT_RATE_LIMIT_MS: readonly number[] = [60_000, 120_000, 240_000, 480_000, 900_000];
 const RETRY_MS = 10_000;
 
 interface Watched {
@@ -110,6 +113,8 @@ export class ChangesModel {
     line: null,
     choices: new Map(),
     heldDeletes: null,
+    retryAfterMs: null,
+    rateLimitedUntil: null,
   };
   private readonly awareness = new Awareness(() => this.now());
   private presenceRetry: number | null = null;
@@ -147,6 +152,7 @@ export class ChangesModel {
   private readonly unreadAsking = new AskAgain();
   private disposed = false;
   private failedLooks = 0;
+  private rateLimitedLooks = 0;
   private refreshing: Promise<void> | null = null;
   private again: { scheduled: boolean } | null = null;
   private readonly lookListeners = new Set<(looked: Looked | null) => void>();
@@ -167,6 +173,11 @@ export class ChangesModel {
     this.listeners.clear();
     this.lookListeners.clear();
     this.draftListeners.clear();
+  }
+
+  private cancelLookTimer(): void {
+    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.timer = null;
   }
 
   private lookLater(ms: number): void {
@@ -534,19 +545,21 @@ export class ChangesModel {
       this.commit = null;
       this.otherFiles = [];
       this.otherAttachments = new Map();
-      this.set({ rows: [], published: [], selection: ALL_SELECTED, phase: "loading", missing: 0, hidden: 0, leftOut: NOTHING_LEFT_OUT, line: null, aware: null, changedHere: [], progressRows: new Map(), choices: new Map(), heldDeletes: null });
+      this.rateLimitedLooks = 0;
+      this.set({ rows: [], published: [], selection: ALL_SELECTED, phase: "loading", missing: 0, hidden: 0, leftOut: NOTHING_LEFT_OUT, line: null, aware: null, changedHere: [], progressRows: new Map(), choices: new Map(), heldDeletes: null, retryAfterMs: null, rateLimitedUntil: null });
     }
     this.place = place;
     if (!this.deps.signedIn()) {
       this.draftsChecked = false;
+      this.rateLimitedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
       this.states = null;
       this.repoFiles = null;
-      return this.set({ phase: "signed-out", rows: [] });
+      return this.set({ phase: "signed-out", rows: [], retryAfterMs: null, rateLimitedUntil: null });
     }
     const everyFile = this.deps.listFiles();
     const listed = everyFile.filter((file) => this.deps.documentFor(file.path) !== null);
-    if (this.current.phase !== "ready" && this.current.phase !== "offline") this.set({ phase: "loading" });
+    if (this.current.phase !== "ready" && this.current.phase !== "offline" && this.current.phase !== "rate-limited") this.set({ phase: "loading" });
     const [scanned, repo, groups, presence] = await Promise.all([
       this.deps.cache.scan(listed, (path) => this.deps.readBytes(path)),
       this.deps.mirror.read(),
@@ -576,18 +589,31 @@ export class ChangesModel {
     }
     if (repo.kind === "not_installed") {
       this.repoFiles = null;
+      this.rateLimitedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
-      return this.set({ phase: "not-installed" });
+      return this.set({ phase: "not-installed", retryAfterMs: null, rateLimitedUntil: null });
+    }
+    if (repo.kind === "rate_limited") {
+      this.repoFiles = null;
+      this.lookListeners.forEach((listener) => listener(null));
+      const fallback = DEFAULT_RATE_LIMIT_MS[Math.min(this.rateLimitedLooks, DEFAULT_RATE_LIMIT_MS.length - 1)] ?? 60_000;
+      const wait = repo.retryAfterMs !== null ? Math.min(Math.max(repo.retryAfterMs, MIN_RATE_LIMIT_MS), MAX_RATE_LIMIT_MS) : fallback;
+      this.rateLimitedLooks += 1;
+      this.cancelLookTimer();
+      this.lookLater(wait);
+      return this.set({ phase: "rate-limited", retryAfterMs: wait, rateLimitedUntil: this.now() + wait });
     }
     if (repo.kind !== "files") {
       this.repoFiles = null;
+      this.rateLimitedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
       const retry = RETRY_AFTER_FAILED_MS[Math.min(this.failedLooks, RETRY_AFTER_FAILED_MS.length - 1)] ?? 0;
       this.failedLooks += 1;
       this.lookLater(retry);
-      return this.set({ phase: "offline" });
+      return this.set({ phase: "offline", retryAfterMs: null, rateLimitedUntil: null });
     }
     this.failedLooks = 0;
+    this.rateLimitedLooks = 0;
     const hidden = [...repo.files.keys()].filter((path) => LISTED_FILE.test(path) && isHiddenPath(path)).length;
     const inVault = new Set(everyFile.map((file) => file.path.toLowerCase()));
     const others = [...repo.files.keys()].filter((path) => isLeftOutKind(path) && !inVault.has(path.toLowerCase()));
@@ -629,7 +655,7 @@ export class ChangesModel {
     if (this.movedFrom(place)) return;
     this.states = states;
     this.repoFiles = repoFiles;
-    this.set({ phase: "ready", rows, missing: this.notHere.length, hidden, leftOut: leftOutKinds(others) });
+    this.set({ phase: "ready", rows, missing: this.notHere.length, hidden, leftOut: leftOutKinds(others), retryAfterMs: null, rateLimitedUntil: null });
     if (unread > 0) {
       const again = this.unreadAsking.after({ unread: true });
       if (again !== null) this.lookLater(again);

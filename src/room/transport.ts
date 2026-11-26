@@ -50,7 +50,7 @@ function tokensFor(ref: DocumentRef, source: TokenSource, first: RoomToken, now:
     try {
       fresh = await source.roomToken(ref, { session: session() });
     } catch (error) {
-      if (error instanceof AuthError && error.code === "room_ended") on.startOver();
+      if (error instanceof AuthError && (error.code === "room_ended" || error.code === "signed_out")) on.startOver();
       if (error instanceof AuthError && error.code === "document_deleted") on.deleted();
       throw error;
     }
@@ -65,6 +65,28 @@ function tokensFor(ref: DocumentRef, source: TokenSource, first: RoomToken, now:
   };
 }
 
+class ManagedProvider extends GuardedProvider {
+  private tokenFailed = false;
+
+  override permissionDeniedHandler(reason: string): void {
+    this.tokenFailed = true;
+    super.permissionDeniedHandler(reason);
+  }
+
+  override async sendToken(): Promise<void> {
+    this.tokenFailed = false;
+    await super.sendToken();
+  }
+
+  override startSync(): void {
+    if (this.tokenFailed) {
+      this.tokenFailed = false;
+      return;
+    }
+    super.startSync();
+  }
+}
+
 class HocuspocusTransport implements Transport {
   refusal: string | null = null;
   startOver = false;
@@ -75,6 +97,7 @@ class HocuspocusTransport implements Transport {
   private budgetRefused = false;
   private rejoining: number | null = null;
   private budgetSettle: number | null = null;
+  private connectOnClose = false;
 
   constructor(
     private readonly provider: GuardedProvider,
@@ -86,6 +109,7 @@ class HocuspocusTransport implements Transport {
   ) {
     provider.on("synced", () => {
       this.rejoins = 0;
+      this.connectOnClose = false;
       this.clearBudgetSettle();
       if (this.budgetRefused || this.budgetRejoins > 0) {
         this.budgetSettle = window.setTimeout(() => {
@@ -102,10 +126,14 @@ class HocuspocusTransport implements Transport {
       });
       this.changed();
     });
-    provider.on("status", () => this.changed());
+    provider.on("status", () => {
+      this.changed();
+      this.connectIfClosed();
+    });
     provider.on("authenticationFailed", ({ reason }: { reason: string }) => this.refused(reason));
     provider.on("authenticated", () => {
       this.refusal = null;
+      this.connectOnClose = false;
       this.changed();
     });
     provider.on("stateless", ({ payload }: { payload: string }) => {
@@ -120,7 +148,8 @@ class HocuspocusTransport implements Transport {
     provider.on("close", () => {
       this.clearBudgetSettle();
       this.changed();
-      if (this.lease.socket.status === WebSocketStatus.Connected) this.rejoin();
+      if (this.connectOnClose) this.connectIfClosed();
+      else if (this.lease.socket.status === WebSocketStatus.Connected) this.rejoin();
     });
     provider.attach();
   }
@@ -208,14 +237,23 @@ class HocuspocusTransport implements Transport {
     this.provider.detach();
   }
 
+  private connectIfClosed(): void {
+    if (!this.connectOnClose || !this.live || this.lease.socket.status !== WebSocketStatus.Disconnected) return;
+    this.connectOnClose = false;
+    void this.lease.socket.connect();
+  }
+
   private rejoin(budget = false): void {
     this.clearBudgetSettle();
     if (!this.live || this.rejoining !== null) return;
     const { socket } = this.lease;
+    this.connectOnClose = false;
     socket.disconnect();
     const attempt = budget ? this.budgetRejoins++ : this.rejoins++;
     this.rejoining = window.setTimeout(() => {
       this.rejoining = null;
+      if (!this.live) return;
+      if (socket.status === WebSocketStatus.Connected) this.connectOnClose = true;
       void socket.connect();
     }, rejoinDelay(attempt));
   }
@@ -227,6 +265,7 @@ class HocuspocusTransport implements Transport {
 
   private stopRejoining(): void {
     this.clearBudgetSettle();
+    this.connectOnClose = false;
     if (this.rejoining !== null) window.clearTimeout(this.rejoining);
     this.rejoining = null;
   }
@@ -238,7 +277,7 @@ export function hocuspocusTransport(sockets: SocketPool, tokens: TokenSource, no
     const lease = sockets.lease(first.url);
     let transport: HocuspocusTransport | null = null;
     const token = tokensFor(ref, tokens, first, now, { readOnly: (readOnly) => transport?.setReadOnly(readOnly), startOver: () => transport?.restart(), deleted: () => transport?.stopForDeleted(), steps: (steps) => transport?.setSteps(steps) }, () => sessionSeedClaim(doc));
-    const provider = new GuardedProvider({ websocketProvider: lease.socket, name: first.room, document: doc, awareness, token });
+    const provider = new ManagedProvider({ websocketProvider: lease.socket, name: first.room, document: doc, awareness, token });
     transport = new HocuspocusTransport(provider, lease, first.room, doc, first.readOnly === true, first.steps ?? null);
     return transport;
   };

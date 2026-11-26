@@ -7,6 +7,7 @@ import {
   heldWords,
   inFlightEntries,
   isSomeoneElses,
+  openedBy,
   reviewStage,
   sameLogin,
   timeAgo,
@@ -191,17 +192,29 @@ export interface GroupItemInput {
 
 export function groupItemOf({ overview, entries, facts = null, rooms, viewer, now, editing }: GroupItemInput): StatusGroup {
   const unit = groupEntry(overview);
-  const own: ReviewFacts = { isDraft: overview.isDraft, state: "open", mergeableState: overview.mergeableState, reviewDecision: null, requestedReviewers: [], authorLogin: null, reviewers: [] };
-  const merged: ReviewFacts = facts ? { ...facts, mergeableState: overview.mergeableState } : own;
+  const overviewAuthor = "authorLogin" in overview && typeof overview.authorLogin === "string" && overview.authorLogin !== "" ? overview.authorLogin : null;
+  const entryAuthors = entries.map((one) => openedBy(one)).filter((login): login is string => login !== null && login !== "");
+  const fallbackAuthor = overviewAuthor ?? entryAuthors[0] ?? null;
+  const own: ReviewFacts = { isDraft: overview.isDraft, state: "open", mergeableState: overview.mergeableState, reviewDecision: null, requestedReviewers: [], authorLogin: fallbackAuthor, reviewers: [] };
+  const awaitingFacts = facts === null && overview.prNumber > 0 && !overview.isDraft;
+  const merged: ReviewFacts | null = facts
+    ? { ...facts, authorLogin: facts.authorLogin ?? fallbackAuthor, mergeableState: overview.mergeableState }
+    : awaitingFacts
+      ? null
+      : own;
   const held = groupHeld(overview);
   const behind = overview.hold === "behind" && !overview.ending;
-  const state = pillOf({ held: held && !behind ? held.words : null, behind, facts: merged });
+  const without = overview.prNumber > 0 && !overview.isDraft ? "in-review" : "draft";
+  const state = pillOf({ changedInBoth: overview.mergeableState === "dirty", held: held && !behind ? held.words : null, behind, facts: merged, without });
   const asksYou = asksYouOf(unit, merged, viewer);
+  const writers = groupWriters(entries);
+  const owners = [merged?.authorLogin ?? null, overviewAuthor, ...entryAuthors, ...writers].filter((login): login is string => login !== null && login !== "");
+  const teammate = viewer !== "" && !asksYou && owners.length > 0 && !owners.some((login) => sameLogin(login, viewer));
   const lastCommitAt = [...entries].map((one) => one.lastCommitAt).sort().at(-1);
-  const people = asksYou && merged.authorLogin ? [merged.authorLogin] : groupWriters(entries);
+  const people = asksYou && merged?.authorLogin ? [merged.authorLogin] : writers;
   const here = new Map<string, StatusPerson>();
   for (const path of overview.paths) for (const one of rooms?.get(path) ?? []) if (!here.has(one.login.toLowerCase())) here.set(one.login.toLowerCase(), one);
-  const check: CheckKind | undefined = asksYou ? "approve" : state === "draft" ? "submit" : state === "ready" ? "publish" : undefined;
+  const check: CheckKind | undefined = teammate ? undefined : asksYou ? "approve" : state === "draft" ? "submit" : state === "ready" ? "publish" : undefined;
   const words = heldWords(overview);
   return {
     kind: "group",
@@ -215,6 +228,7 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
     ...(overview.ending ? { ending: true } : {}),
     people: asYous(people, viewer),
     asksYou,
+    ...(teammate ? { teammate: true } : {}),
     ...(check ? { check } : {}),
     ...(editing ? { editing: true } : {}),
     hasReview: overview.prNumber > 0,
@@ -222,7 +236,7 @@ export function groupItemOf({ overview, entries, facts = null, rooms, viewer, no
     ...(facts?.autoMergeEnabled === true ? { autoPublish: true } : {}),
     ...(facts?.reviewDecision === "approved" ? { approved: true } : {}),
     here: withoutViewer([...here.values()], viewer),
-    ...(asksYou && merged.authorLogin ? { tipPeople: [merged.authorLogin] } : state === "in-review" ? { tipPeople: [...merged.requestedReviewers] } : state === "changes-requested" ? { tipPeople: merged.reviewers.filter((one) => one.state === "changes_requested").map((one) => one.login) } : {}),
+    ...(asksYou && merged?.authorLogin ? { tipPeople: [merged.authorLogin] } : state === "in-review" ? { tipPeople: [...(merged?.requestedReviewers ?? [])] } : state === "changes-requested" ? { tipPeople: (merged?.reviewers ?? []).filter((one) => one.state === "changes_requested").map((one) => one.login) } : {}),
   };
 }
 

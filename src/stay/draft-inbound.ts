@@ -28,6 +28,10 @@ export const UNSAVED_WAITS_MS = [5_000, 10_000, 20_000, 40_000] as const;
 
 export const TRANSIT_MS = 2_000;
 
+const CHOOSE_MATCHED = "This note already matches GitHub. Nothing to resolve.";
+const CHOOSE_BLOCKED = "Save or disconnect this note first, then try Choose what to keep again.";
+const CHOOSE_UNREADABLE = "specgit couldn't read GitHub's version just now. Try again in a moment.";
+
 export { RENAME_HOLD_MS };
 
 export interface DraftContext {
@@ -41,6 +45,8 @@ export interface DraftContext {
   clearOwnBlobs?(path: string): void;
   renameOwnBlobs?(from: string, to: string): void;
   consumeRebasedSent?(path: string, sha: string): boolean;
+  hasConflict?(path: string, looked: Looked): boolean;
+  onResolved?(path: string): void;
   current(): boolean;
 }
 
@@ -148,9 +154,15 @@ export class DraftInbound {
     this.deferredRenameSources = new Set();
   }
 
+  private conflictTag(path: string, blob: string | null): string {
+    if (blob !== null && blob !== "") return blob;
+    return `branch|${this.looked?.drafts?.byPath.get(path)?.branch ?? path}`;
+  }
+
   tellConflict(path: string, blob: string | null): void {
-    if (blob !== null && this.toldConflict.get(path) === blob) return;
-    if (blob !== null) this.toldConflict.set(path, blob);
+    const tag = this.conflictTag(path, blob);
+    if (this.toldConflict.get(path) === tag) return;
+    this.toldConflict.set(path, tag);
     if (this.noticed.has(path)) return;
     this.noticed.add(path);
     if (!this.ctx.ports.aware()) {
@@ -161,7 +173,7 @@ export class DraftInbound {
     this.ctx.ports.notify(DRAFT_SAID.conflict(noteName(path)), { label: CHOICE_WORDS.show, run: () => this.ctx.ports.openStatus?.() }, { lasting: true });
   }
 
-  private clearConflict(path: string): void {
+  clearConflict(path: string): void {
     this.toldConflict.delete(path);
     if (this.noticed.delete(path)) this.ctx.ports.choice?.(path, null);
   }
@@ -194,7 +206,7 @@ export class DraftInbound {
   }
 
   told(path: string, blob: string | null): boolean {
-    return blob !== null && this.toldConflict.get(path) === blob;
+    return this.toldConflict.get(path) === this.conflictTag(path, blob);
   }
 
   async readOne(looked: Looked, path: string): Promise<{ changed: number; rescan: boolean; wake: number | null }> {
@@ -574,7 +586,8 @@ export class DraftInbound {
     }
     const alone = draft && answer.kind === "settled" ? await this.leftAlone(looked, path) : null;
     if (draft && answer.kind === "settled" && (alone === null || alone === "live")) await this.attachments(path, doc, draft, alone === null);
-    if (answer.kind === "settled" || answer.kind === "send" || answer.kind === "none") this.clearConflict(path);
+    if (answer.kind === "settled" || answer.kind === "none") this.clearConflict(path);
+    else if (answer.kind === "send" && draft?.blob !== null && !this.ctx.hasConflict?.(path, looked)) this.clearConflict(path);
     const canDropOffer = (draft !== null && draft.blob !== null) || (draft === null && level);
     const heldMeet = this.isHeldMeet(answer.kind, path, entry);
     const readsDraft = answer.kind === "take" || answer.kind === "create" || answer.kind === "merge" || heldMeet;
@@ -713,17 +726,27 @@ export class DraftInbound {
     return { ok: true, text, changed: true };
   }
 
+  private async readDraft(path: string, doc: DocumentRef, draft: Draft): Promise<Extract<BranchFile, { kind: "file" }> | null> {
+    const together = this.draftOf(draft);
+    if (together === null) this.reads++;
+    const there = together ?? (await this.ctx.ports.draftFile(doc, draft.branch));
+    if (!this.ctx.current()) return null;
+    if (there.kind !== "file") {
+      this.wait(path);
+      return null;
+    }
+    if (this.policyFor(path, draft) === "mine" && draft.blob !== there.sha) {
+      this.wait(path);
+      return null;
+    }
+    return there;
+  }
+
   private async take(path: string, doc: DocumentRef, looked: Looked, draft: Draft): Promise<boolean> {
     const { ports } = this.ctx;
     const entry = looked.files.get(path)!;
-    const together = this.draftOf(draft);
-    if (together === null) this.reads++;
-    const there = together ?? (await ports.draftFile(doc, draft.branch));
-    if (!this.ctx.current()) return false;
-    if (there.kind !== "file") {
-      this.wait(path);
-      return false;
-    }
+    const there = await this.readDraft(path, doc, draft);
+    if (there === null) return false;
     const mine = await ports.vault.read(path);
     if (mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
     const wrote = await this.writeText(path, mine, there.text);
@@ -736,14 +759,8 @@ export class DraftInbound {
 
   private async create(path: string, doc: DocumentRef, draft: Draft): Promise<boolean> {
     const { ports, activity, state } = this.ctx;
-    const together = this.draftOf(draft);
-    if (together === null) this.reads++;
-    const there = together ?? (await ports.draftFile(doc, draft.branch));
-    if (!this.ctx.current()) return false;
-    if (there.kind !== "file") {
-      this.wait(path);
-      return false;
-    }
+    const there = await this.readDraft(path, doc, draft);
+    if (there === null) return false;
     activity.ownWrite(path);
     const made = await ports.vault.create(path, there.text);
     if (made !== "created") {
@@ -786,15 +803,9 @@ export class DraftInbound {
   private async mergeOrClassify(path: string, doc: DocumentRef, looked: Looked, draft: Draft): Promise<boolean> {
     const { ports } = this.ctx;
     const entry = looked.files.get(path)!;
-    if (draft.blob !== null && this.toldConflict.get(path) === draft.blob) return false;
-    const together = this.draftOf(draft);
-    if (together === null) this.reads++;
-    const there = together ?? (await ports.draftFile(doc, draft.branch));
-    if (!this.ctx.current()) return false;
-    if (there.kind !== "file") {
-      this.wait(path);
-      return false;
-    }
+    if (this.told(path, draft.blob)) return false;
+    const there = await this.readDraft(path, doc, draft);
+    if (there === null) return false;
     const mine = await ports.vault.read(path);
     if (!this.ctx.current() || mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
     const base = await this.readBase(path, doc, entry, draft, true);
@@ -836,6 +847,7 @@ export class DraftInbound {
     const main = batched ?? (await ports.gitFile(doc));
     if (!this.ctx.current()) return false;
     if (main.kind === "unreadable") {
+      if (choose) ports.notify(CHOOSE_UNREADABLE);
       this.wait(path);
       return false;
     }
@@ -848,7 +860,10 @@ export class DraftInbound {
       return false;
     }
     const mine = await ports.vault.read(path);
-    if (mine === null || gitBlobShaOfText(mine) !== entry.sha) return false;
+    if (mine === null || (!choose && gitBlobShaOfText(mine) !== entry.sha)) {
+      if (choose && mine === null) ports.notify(CHOOSE_UNREADABLE);
+      return false;
+    }
     let target = main.text;
     if (kind === "end-own") {
       const sentSha = this.endedMemo.get(path)?.sent ?? entry.sent!;
@@ -875,42 +890,69 @@ export class DraftInbound {
     if (kind === "end-own" && discarded) this.holds.holdEnded(path, gitBlobShaOfText(wrote.text));
     this.settled(path);
     this.clearConflict(path);
+    this.ctx.onResolved?.(path);
     if (kind === "restore" && wrote.changed) ports.notify(DRAFT_SAID.discarded(noteName(path)));
+    if (choose && !wrote.changed) ports.notify(CHOOSE_MATCHED);
     if (!wrote.changed) this.rescan = true;
     return wrote.changed;
   }
 
   private settleNow(path: string): Promise<void> {
     this.offers.drop(path, { keepTold: true });
+    if (!this.ctx.current() || this.deciding.has(path)) return Promise.resolve();
     const looked = this.looked;
-    if (!looked || !this.ctx.current() || this.deciding.has(path)) return Promise.resolve();
+    if (!looked) {
+      this.ctx.ports.notify(CHOOSE_UNREADABLE);
+      this.ctx.ports.lookAgain();
+      return Promise.resolve();
+    }
     const draft = looked.drafts?.byPath.get(path);
     const doc = this.ctx.ports.documentFor(path);
-    if (!doc) return Promise.resolve();
-    if (!draft) {
-      if (looked.files.get(path)?.sent === undefined && !this.endedMemo.has(path)) return Promise.resolve();
-      this.deciding.add(path);
-      this.queue = this.queue.then(async () => {
-        try {
-          if (this.ctx.current() && !this.abort.signal.aborted) await this.end(path, doc, looked, "end-own", false, true);
-          this.ctx.ports.lookAgain();
-        } catch {
-          this.ctx.ports.diagnose("a choice between a note and the published version could not be applied");
-        } finally {
-          this.deciding.delete(path);
-        }
-      });
-      return this.queue;
+    if (!doc || (!draft && looked.files.get(path)?.sent === undefined && !this.endedMemo.has(path))) {
+      this.clearConflict(path);
+      this.ctx.onResolved?.(path);
+      this.ctx.ports.notify(CHOOSE_MATCHED);
+      this.ctx.ports.lookAgain();
+      return Promise.resolve();
     }
     this.deciding.add(path);
     this.queue = this.queue.then(async () => {
       const { ports } = this.ctx;
       try {
         if (!this.ctx.current() || this.abort.signal.aborted) return;
+        if (ports.phaseOf(path) !== "local") {
+          ports.notify(CHOOSE_BLOCKED);
+          return;
+        }
+        if (!draft) {
+          await this.end(path, doc, looked, "end-own", false, true);
+          ports.lookAgain();
+          return;
+        }
         const there = await ports.draftFile(doc, draft.branch);
         const mine = await ports.vault.read(path);
-        if (there.kind !== "file" || mine === null || !this.ctx.current()) return;
+        if (!this.ctx.current()) return;
+        if (there.kind === "absent") {
+          this.clearConflict(path);
+          this.ctx.onResolved?.(path);
+          ports.notify(CHOOSE_MATCHED);
+          ports.lookAgain();
+          return;
+        }
+        if (there.kind !== "file" || mine === null) {
+          ports.notify(CHOOSE_UNREADABLE);
+          ports.lookAgain();
+          return;
+        }
         const entry = looked.files.get(path);
+        if (toLf(mine) === toLf(there.text)) {
+          this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), agreed: gitBlobShaOfText(mine) });
+          this.clearConflict(path);
+          this.ctx.onResolved?.(path);
+          ports.notify(CHOOSE_MATCHED);
+          ports.lookAgain();
+          return;
+        }
         const base = await this.readBase(path, doc, entry, draft);
         if (!this.ctx.current()) return;
         const merged = mergeFile(path, base === null ? null : toLf(base), toLf(mine), toLf(there.text), new Budget(400));
@@ -930,9 +972,11 @@ export class DraftInbound {
         const holdsDraft = toLf(wrote.text) === toLf(there.text);
         this.agreeDraft(path, entry, { sent: there.sha, to: draftKey(draft), ...(holdsDraft ? { agreed: gitBlobShaOfText(wrote.text) } : {}) });
         this.clearConflict(path);
+        this.ctx.onResolved?.(path);
         ports.lookAgain();
       } catch {
-        ports.diagnose("a choice between a note and its draft could not be applied");
+        ports.diagnose(draft ? "a choice between a note and its draft could not be applied" : "a choice between a note and the published version could not be applied");
+        ports.notify(CHOOSE_UNREADABLE);
       } finally {
         this.deciding.delete(path);
       }

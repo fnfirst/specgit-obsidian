@@ -525,6 +525,11 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
           {STATUS_OFFLINE}
         </div>
       ) : null}
+      {!model.offline && model.rateLimited ? (
+        <div className="sp-band sp-offline" role="status" data-testid="sp-rate-limited">
+          {model.rateLimited}
+        </div>
+      ) : null}
       {notice ? (
         <div className="sp-band sp-notice" role="status">
           <span>{statusBulkResult(notice.done, notice.did, notice.needs)}</span>
@@ -544,7 +549,15 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
         ) : model.loadFailed ? (
           <>
             {card}
-            {failed}
+            {!model.offline && model.rateLimited ? (
+              <div className="sp-state">
+                <button type="button" className="sp-btn" onClick={() => act({ type: "retry" })}>
+                  {STATUS_RETRY}
+                </button>
+              </div>
+            ) : (
+              failed
+            )}
           </>
         ) : layout.empty ? (
           <>

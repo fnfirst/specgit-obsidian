@@ -42,7 +42,7 @@ export interface Looked {
   drafts?: { byPath: ReadonlyMap<string, Draft>; level: boolean; asOf?: number };
 }
 
-export type ChangesPhase = "signed-out" | "loading" | "ready" | "offline" | "not-installed" | "unmapped";
+export type ChangesPhase = "signed-out" | "loading" | "ready" | "offline" | "rate-limited" | "not-installed" | "unmapped";
 
 export type ChangesSectionId = "changed" | ReviewSectionId;
 
@@ -77,6 +77,8 @@ export interface ChangesState {
   line: AwareLine | null;
   choices: ReadonlyMap<string, NoteChoice>;
   heldDeletes: HeldDeletes | null;
+  retryAfterMs?: number | null;
+  rateLimitedUntil?: number | null;
 }
 
 export interface ChangesDeps {

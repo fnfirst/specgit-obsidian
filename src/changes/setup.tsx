@@ -42,7 +42,7 @@ import { MirrorClient } from "./mirror";
 import type { OwnLinks } from "./own-links";
 import { ReviewEvents } from "./review-events";
 import type { ReviewKey } from "./review-key";
-import { sameAsRepo } from "./same-text";
+import { BLOB_CACHE_MAX, BlobCache, sameAsRepo } from "./same-text";
 import { sentBaseFor, type SentRecord } from "./sent-memory";
 import { CHECK_EVERY_MS, restingSignals, Watch, watchSignature } from "./watch";
 import { ChangesModel } from "./model";
@@ -139,19 +139,27 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     return current;
   };
   const activePath = (): string | null => app.workspace.getActiveFile()?.path ?? null;
-  const fetched = new Map<string, string>();
+  const fetched = new BlobCache(BLOB_CACHE_MAX);
+  const blobKey = (repoName: string, sha: string): string => `${repoName}\n${sha}`;
   const vaultIgnore = new VaultIgnore(ignoreAdapterOf(app.vault));
   const model = new ChangesModel({
     prefetchBlobs: async (reads) => {
-      fetched.clear();
       if (!deps.gitBlobs) return;
-      for (let at = 0; at < reads.length; at += FILES_PER_BATCH) {
-        const run = reads.slice(at, at + FILES_PER_BATCH);
+      const missing: Array<{ doc: DocumentRef; sha: string }> = [];
+      const seen = new Set<string>();
+      for (const read of reads) {
+        const key = blobKey(read.doc.repo, read.sha);
+        if (fetched.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        missing.push(read);
+      }
+      for (let at = 0; at < missing.length; at += FILES_PER_BATCH) {
+        const run = missing.slice(at, at + FILES_PER_BATCH);
         const answer = await deps.gitBlobs(run[0]!.doc.repo, null, run.map(({ doc, sha }) => ({ sha, path: doc.path })), true);
         if (answer.kind !== "answered") return;
-        for (const { sha } of run) {
+        for (const { doc, sha } of run) {
           const read = answer.files.get(sha);
-          if (read?.kind === "text") fetched.set(sha, read.text);
+          if (read?.kind === "text") fetched.set(blobKey(doc.repo, sha), read.text);
         }
       }
     },
@@ -162,7 +170,14 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
             const file = app.vault.getFileByPath(one);
             return file ? app.vault.readBinary(file).catch(() => null) : null;
           },
-          readBlob: async (doc, sha) => fetched.get(sha) ?? deps.gitBlob(doc, sha),
+          readBlob: async (doc, sha) => {
+            const key = blobKey(doc.repo, sha);
+            const hit = fetched.get(key);
+            if (hit !== undefined) return hit;
+            const text = await deps.gitBlob(doc, sha);
+            if (text !== null) fetched.set(key, text);
+            return text;
+          },
         },
         path,
         doc,
@@ -392,6 +407,8 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
 
   let timer: number | undefined;
   const lookSoon = (): void => {
+    const currentState = model.state();
+    if (currentState.phase === "rate-limited" && (currentState.rateLimitedUntil ?? 0) > Date.now()) return;
     window.clearTimeout(timer);
     timer = window.setTimeout(() => void model.refresh(), LOOK_AFTER_MS);
   };
@@ -552,7 +569,14 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
         status.reviewsChanged();
       },
     },
-    contents: (view) => ({ status: <StatusPanelTab controller={status} view={view ?? null} actions={actions} /> }),
+    contents: (view) =>
+      model.state().phase === "rate-limited" && model.vault() === null
+        ? {}
+        : { status: <StatusPanelTab controller={status} view={view ?? null} actions={actions} /> },
     badges: () => ({ comments: { open: 0 } }),
+    rateLimit: () => {
+      const state = model.state();
+      return state.phase === "rate-limited" ? { retryAfterMs: state.retryAfterMs ?? null, until: state.rateLimitedUntil ?? null } : null;
+    },
   };
 }

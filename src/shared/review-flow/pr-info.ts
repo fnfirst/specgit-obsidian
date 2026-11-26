@@ -31,4 +31,5 @@ export interface PrInfo {
   autoMergeEnabled?: boolean;
   requestedReviewers?: string[];
   group?: GroupLabel;
+  emptyDiff?: boolean;
 }

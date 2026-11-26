@@ -1,6 +1,7 @@
 import { eolOf, toLf, withEol } from "../disk/line-endings";
 import { docKey, type DocumentRef } from "../mapping";
 import { reviewIsOpen, type ReviewApi } from "../review/review-api";
+import type { PrInfo } from "../shared/review-flow";
 import { gitBlobShaOfText } from "./blob-sha";
 import { blobShasOf } from "./flow-helpers";
 import type { FlowDeps } from "./flow-deps";
@@ -233,6 +234,40 @@ export class SentMemory {
     return toLf(raw.text);
   }
 
+  private learnFromAnswer(path: string, answer?: Record<string, unknown> | null): void {
+    if (!answer || this.host.model.state().busy) return;
+    const raw = answer.pr as (Partial<PrInfo> & { headRef?: unknown }) | null | undefined;
+    const branch =
+      typeof answer.reviewBranch === "string" && answer.reviewBranch !== ""
+        ? answer.reviewBranch
+        : typeof raw?.headRef === "string" && raw.headRef !== ""
+          ? raw.headRef
+          : null;
+    const existing = this.host.model.row(path)?.review ?? null;
+    const existingPr = existing?.pr;
+    if (existingPr && existingPr.state !== "merged" && existingPr.state !== "closed") return;
+    if (!raw || typeof raw.number !== "number" || raw.number <= 0) {
+      if (branch !== null && (existing === null || !reviewIsOpen(existing))) this.host.model.learn(path, { reviewBranch: branch, pr: null });
+      return;
+    }
+    const state = raw.state === "draft" || raw.state === "open" || raw.state === "merged" || raw.state === "closed" ? raw.state : raw.isDraft === false ? "open" : "draft";
+    const isDraft = typeof raw.isDraft === "boolean" ? raw.isDraft : state === "draft";
+    const authorLogin = typeof raw.authorLogin === "string" && raw.authorLogin !== "" ? raw.authorLogin : this.host.deps.viewerLogin() || undefined;
+    const pr: PrInfo = {
+      number: raw.number,
+      url: typeof raw.url === "string" ? raw.url : "",
+      state,
+      isDraft,
+      ...(authorLogin ? { authorLogin } : {}),
+      ...(Array.isArray(raw.requestedReviewers) ? { requestedReviewers: raw.requestedReviewers.filter((one): one is string => typeof one === "string") } : {}),
+      ...(raw.group ? { group: raw.group } : {}),
+      ...(raw.mergeableState ? { mergeableState: raw.mergeableState } : {}),
+      ...(raw.reviewPolicy ? { reviewPolicy: raw.reviewPolicy } : {}),
+    };
+    const fallbackBranch = existing !== null && reviewIsOpen(existing) ? existing.reviewBranch : null;
+    this.host.model.learn(path, { reviewBranch: branch ?? fallbackBranch, pr });
+  }
+
   async accepted(path: string, text: string, body: string, base: string | null = null, answer?: Record<string, unknown> | null): Promise<boolean> {
     const held = heldBy(answer);
     const returned = returnedBy(answer);
@@ -245,9 +280,15 @@ export class SentMemory {
         this.forget(path);
         this.host.model.learnSent(path, held.sha, to);
       }
+      this.learnFromAnswer(path, answer);
       return true;
     }
     this.rememberLocally(path, text, to, commit);
+    if (this.host.model.sentSha(path) === null && this.host.model.row(path)?.change.kind === "new") {
+      const uploadedSha = (typeof answer?.contentSha === "string" && answer.contentSha !== "" ? answer.contentSha : null) ?? (remembered !== null ? gitBlobShaOfText(toLf(remembered)) : null);
+      if (uploadedSha !== null) this.host.model.learnSent(path, uploadedSha, to);
+    }
+    this.learnFromAnswer(path, answer);
     return false;
   }
 

@@ -51,6 +51,7 @@ export interface CommentsHost {
   signedIn(): boolean;
   me: ThreadsStoreDeps["me"];
   isLive(path: string): boolean;
+  isLocalOnlyNew?(path: string): boolean;
   saveNote(path: string): Promise<void>;
   discardUnsent(quote: string): Promise<boolean>;
   error(title: string, description: string): void;
@@ -319,6 +320,7 @@ export class CommentsHub {
   private readonly notes = new Map<string, NoteComments>();
   private readonly listeners = new Set<() => void>();
   private readonly intents = createLocalIntents();
+  private readonly unmasked = new Set<string>();
   private readonly opener: ReviewOpener<PrInfo>;
   private active: string | null = null;
   private stopPolling: (() => void) | null = null;
@@ -336,6 +338,10 @@ export class CommentsHub {
     this.listeners.forEach((listener) => listener());
   }
 
+  private isLocalNew(path: string): boolean {
+    return !this.unmasked.has(path) && this.host.isLocalOnlyNew?.(path) === true;
+  }
+
   forNote(path: string): NoteComments | null {
     const doc = this.host.documentFor(path);
     const known = this.notes.get(path);
@@ -347,13 +353,27 @@ export class CommentsHub {
     }
     if (!doc) return null;
     const { api } = this.host;
-    const io = api.io(doc, {
+    const baseIo = api.io(doc, {
       run: (write, onPr) => this.opener.run(docKey(doc), write, { isNotOpen: isReviewNotOpen, start: () => api.startReview(doc), onPr }),
     });
+    const io = {
+      ...baseIo,
+      list: (history: boolean) =>
+        this.isLocalNew(path)
+          ? Promise.resolve({ threads: [], revisions: [], historyLoaded: history, prNumber: null })
+          : baseIo.list(history),
+      create: async (input: Parameters<typeof baseIo.create>[0]) => {
+        const thread = await baseIo.create(input);
+        this.unmasked.add(path);
+        queueMicrotask(() => this.wakeActive());
+        return thread;
+      },
+    };
     const note = new NoteComments(path, doc, this.host, new ThreadsStore({ io, me: () => this.host.me(), intents: this.intents, ...(this.host.now ? { now: () => this.host.now!() } : {}) }));
     this.notes.set(path, note);
     note.store.subscribe(() => this.emit());
     note.subscribe(() => this.emit());
+    if (this.isLocalNew(path)) void note.store.reload();
     return note;
   }
 
@@ -363,22 +383,40 @@ export class CommentsHub {
   }
 
   setActive(path: string | null): void {
-    if (path === this.active && (this.stopPolling !== null || path === null)) return;
+    const localNew = path !== null && this.isLocalNew(path);
+    if (path === this.active && (path === null || this.stopPolling !== null || localNew)) return;
     this.stopPolling?.();
     this.stopPolling = null;
     this.active = path;
     this.emit();
-    if (path === null || !this.host.signedIn()) return;
+    if (path === null || !this.host.signedIn() || localNew) return;
     const note = this.forNote(path);
     if (note) this.stopPolling = note.store.startPolling(createPollGateFor(this.host.signals), (run, ms) => this.host.every(run, ms));
   }
 
+  wakeActive(): void {
+    if (this.active !== null && this.stopPolling === null && this.host.signedIn() && !this.isLocalNew(this.active)) {
+      this.setActive(this.active);
+    }
+  }
+
   heard(event: LiveEvent): void {
+    if (this.active !== null) {
+      const doc = this.notes.get(this.active)?.doc ?? this.host.documentFor(this.active);
+      if (doc && concernsDocument(event, doc.path)) {
+        this.unmasked.add(this.active);
+        this.wakeActive();
+        this.notes.get(this.active)?.store.heard(event);
+        return;
+      }
+    }
+    this.wakeActive();
     const note = this.active === null ? undefined : this.notes.get(this.active);
     if (note && concernsDocument(event, note.doc.path)) note.store.heard(event);
   }
 
   catchUp(first = false): void {
+    this.wakeActive();
     if (this.active !== null) this.notes.get(this.active)?.store.catchUp(first);
   }
 
@@ -394,6 +432,7 @@ export class CommentsHub {
     this.stopPolling = null;
     for (const path of this.notes.keys()) this.host.marks.forget(path);
     this.notes.clear();
+    this.unmasked.clear();
     this.intents.clear();
     this.active = null;
     this.emit();
@@ -402,6 +441,7 @@ export class CommentsHub {
 
   private drop(path: string): void {
     this.notes.delete(path);
+    this.unmasked.delete(path);
     this.host.marks.forget(path);
     if (this.active === path) {
       this.active = null;

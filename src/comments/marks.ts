@@ -51,12 +51,15 @@ const marks = StateField.define<MarkState>({
     let { ranges, tracked, active } = value;
     let changed = false;
     if (transaction.docChanged) {
-      ranges = mapped(ranges, transaction.changes);
-      tracked = mapped(tracked, transaction.changes);
-      changed = true;
+      if (ranges.size > 0) {
+        ranges = mapped(ranges, transaction.changes);
+        changed = true;
+      }
+      if (tracked.size > 0) tracked = mapped(tracked, transaction.changes);
     }
     for (const effect of transaction.effects) {
       if (effect.is(setMarks)) {
+        if (effect.value.length === 0 && ranges.size === 0) continue;
         let text: string | null = null;
         const next = new Map<string, Span>();
         for (const thread of effect.value) {
@@ -71,6 +74,7 @@ const marks = StateField.define<MarkState>({
         ranges = next;
         changed = true;
       } else if (effect.is(setActive)) {
+        if (effect.value === active) continue;
         active = effect.value;
         changed = true;
       } else if (effect.is(addMark)) {
@@ -144,6 +148,10 @@ export class CommentMarks {
     const path = pathOf(view);
     const list = path === null ? undefined : this.lists.get(path);
     if (!list || !this.views.has(view)) return;
+    if (list.threads.length === 0 && list.active === null) {
+      const field = view.state.field(marks, false);
+      if (!field || (field.ranges.size === 0 && field.active === null)) return;
+    }
     view.dispatch({ effects: [setMarks.of(list.threads), setActive.of(list.active)] });
   }
 
@@ -162,19 +170,37 @@ export class CommentMarks {
   }
 
   show(path: string, threads: MarkThread[], active: string | null): void {
+    if (threads.length === 0 && active === null) {
+      this.lists.delete(path);
+      for (const view of this.viewsOf(path)) {
+        const field = view.state.field(marks, false);
+        if (field && (field.ranges.size > 0 || field.active !== null)) {
+          view.dispatch({ effects: [setMarks.of([]), setActive.of(null)] });
+        }
+      }
+      return;
+    }
     this.lists.set(path, { threads, active });
     for (const view of this.viewsOf(path)) view.dispatch({ effects: [setMarks.of(threads), setActive.of(active)] });
   }
 
   forget(path: string): void {
     this.lists.delete(path);
-    for (const view of this.viewsOf(path)) view.dispatch({ effects: setMarks.of([]) });
+    for (const view of this.viewsOf(path)) {
+      const field = view.state.field(marks, false);
+      if (field && field.ranges.size === 0 && field.active === null) continue;
+      view.dispatch({ effects: setMarks.of([]) });
+    }
   }
 
   setActive(path: string, id: string | null): void {
     const list = this.lists.get(path);
     if (list) list.active = id;
-    for (const view of this.viewsOf(path)) view.dispatch({ effects: setActive.of(id) });
+    for (const view of this.viewsOf(path)) {
+      const field = view.state.field(marks, false);
+      if (field && field.active === id) continue;
+      view.dispatch({ effects: setActive.of(id) });
+    }
   }
 
   has(path: string, id: string): boolean {

@@ -31,6 +31,10 @@ export const MAX_WAIT_MS = 5 * 60_000;
 export const STUCK_MS = 60_000;
 export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 
+const CHOOSE_MATCHED = "This note already matches GitHub. Nothing to resolve.";
+const CHOOSE_BLOCKED = "Save or disconnect this note first, then try Choose what to keep again.";
+const CHOOSE_UNREADABLE = "specgit couldn't read GitHub's version just now. Try again in a moment.";
+
 const topSegmentKey = (path: string): string => {
   const slash = path.indexOf("/");
   return casePathKey(slash === -1 ? path : path.slice(0, slash));
@@ -77,6 +81,7 @@ export class Inbound {
   private readonly announced = new Map<string, string>();
   private readonly cues = new Map<string, { sha: string; since: number; told: boolean }>();
   private readonly opening = new Set<string>();
+  private readonly settleReason = new Map<string, "matched" | "blocked" | "review">();
   private readonly reviewTold = new Map<string, string>();
   private looked: Looked | null = null;
   private caseIndex = new CasePathIndex();
@@ -132,6 +137,15 @@ export class Inbound {
     this.deferredUnsaved.delete(path);
   }
 
+  caughtUp(path: string, repoSha?: string): void {
+    this.declined.delete(path);
+    if (repoSha !== undefined) {
+      if (this.ctx.state.data.endedOwn?.[path]?.sent === repoSha) delete this.ctx.state.data.endedOwn[path];
+      this.settled(path, repoSha);
+    } else this.clearPending(path);
+    this.ctx.onResolved?.(path);
+  }
+
   unsavedPaths(): string[] {
     return [...this.deferredUnsaved];
   }
@@ -153,7 +167,12 @@ export class Inbound {
     this.caseIndex = vaultCaseIndex(looked, this.ctx.ports.vault);
     this.holds.pruneCaseCollisions(looked, this.caseIndex);
     const said: Said = { updated: [], merged: [], created: [], moved: [], trashed: [], came: [] };
-    const added = [...looked.repo].filter(([path, sha]) => seen[path] !== sha);
+    const rawAdded = [...looked.repo].filter(([path, sha]) => seen[path] !== sha);
+    const added: Array<[string, string]> = [];
+    for (const [path, sha] of rawAdded) {
+      if (looked.files.get(path)?.base === sha) this.caughtUp(path, sha);
+      else added.push([path, sha]);
+    }
     const removed = Object.entries(seen).filter(([path]) => !looked.repo.has(path));
     const active = new Set<string>([...added.map(([path]) => path), ...removed.map(([path]) => path)]);
     for (const path of [...this.deferredUnsaved]) if (!active.has(path)) this.deferredUnsaved.delete(path);
@@ -364,11 +383,17 @@ export class Inbound {
   }
 
   private settleNow(path: string, sha: string): void {
+    if (!this.ctx.current()) return;
     const looked = this.looked;
-    if (!looked || !this.ctx.current()) return;
+    if (!looked) {
+      this.ctx.ports.notify(CHOOSE_UNREADABLE);
+      this.ctx.ports.lookAgain();
+      return;
+    }
     this.waiting.delete(path);
     this.declined.delete(path);
     this.announced.delete(path);
+    this.settleReason.delete(path);
     this.opening.add(path);
     void (async () => {
       const said: Said = { updated: [], merged: [], created: [], moved: [], trashed: [], came: [] };
@@ -377,8 +402,17 @@ export class Inbound {
       this.tell(said);
       this.ctx.state.save();
       this.ctx.ports.lookAgain();
-      if (this.ctx.state.data.seen?.[path] !== sha && !this.deciding.has(path) && !this.declined.has(path)) {
-        this.ctx.ports.notify(`specgit couldn't merge ${noteName(path)} with the changes on GitHub just now. It stays in the Status tab, where you can catch it up.`);
+      const why = this.settleReason.get(path);
+      this.settleReason.delete(path);
+      const didWrite = said.updated.length + said.merged.length + said.created.length + said.moved.length + said.trashed.length > 0;
+      if (why === "blocked") this.ctx.ports.notify(CHOOSE_BLOCKED);
+      else if (why === "matched") this.ctx.ports.notify(CHOOSE_MATCHED);
+      else if (why !== "review") {
+        if (this.ctx.state.data.seen?.[path] !== sha && !this.deciding.has(path) && !this.declined.has(path)) {
+          this.ctx.ports.notify(`specgit couldn't merge ${noteName(path)} with the changes on GitHub just now. It stays in the Status tab, where you can catch it up.`);
+        } else if (!didWrite && !this.deciding.has(path) && !this.declined.has(path)) {
+          this.ctx.ports.notify(CHOOSE_MATCHED);
+        }
       }
       this.opening.delete(path);
     })();
@@ -425,6 +459,7 @@ export class Inbound {
     const { ports } = this.ctx;
     const why = await notWritableBecause({ phaseOf: (one) => ports.phaseOf(one), hasUnsavedText: (one) => ports.vault.hasUnsavedText(one) }, path);
     if (why !== null) {
+      if (this.opening.has(path)) this.settleReason.set(path, "blocked");
       if (why === "typing") this.deferredUnsaved.add(path);
       return this.notFree(path, sha);
     }
@@ -432,7 +467,14 @@ export class Inbound {
     const drafts = this.looked?.drafts;
     const review = drafts?.level && !ports.inGroup(path) ? (drafts.byPath.has(path) ? "open" : "none") : await this.readReview(doc);
     if (review === "none") return true;
-    if (review === "open") this.tellReview(path, sha);
+    if (review === "open") {
+      if (this.opening.has(path)) {
+        this.settleReason.set(path, "review");
+        this.ctx.ports.settleReview(path);
+        return false;
+      }
+      this.tellReview(path, sha);
+    }
     return this.notFree(path, sha);
   }
 
@@ -501,9 +543,13 @@ export class Inbound {
     const { ports } = this.ctx;
     const doc = ports.documentFor(path);
     if (!doc) return this.settled(path, sha);
-    if (!explicit && ports.disconnected(doc)) return;
+    if (!explicit && ports.disconnected(doc)) {
+      if (this.opening.has(path)) this.settleReason.set(path, "blocked");
+      return;
+    }
     const entry = looked.files.get(path);
-    if (entry?.sha === sha) {
+    if (entry?.sha === sha || entry?.base === sha) {
+      if (this.opening.has(path)) this.settleReason.set(path, "matched");
       if (entry.base !== sha) {
         const known = this.texts.get(sha);
         if (known !== undefined) ports.recordBase(path, doc, toLf(known), known);
@@ -511,6 +557,7 @@ export class Inbound {
         entry.base = sha;
       }
       if (this.ctx.state.data.endedOwn?.[path]?.sent === sha) delete this.ctx.state.data.endedOwn[path];
+      if (entry.base === sha) this.ctx.onResolved?.(path);
       return this.settled(path, sha);
     }
     if (!entry && looked.deleted.some((gone) => gone.path === path)) return this.settled(path, sha);
@@ -529,6 +576,7 @@ export class Inbound {
     const main: MainFile = batched !== undefined ? { kind: "file", text: batched, sha } : await this.readMain(doc);
     if (main.kind !== "file" || !this.ctx.current()) return this.wait(path, sha);
     if (entry?.sha === main.sha) {
+      if (this.opening.has(path)) this.settleReason.set(path, "matched");
       if (entry.base !== main.sha) {
         this.keepAsBase(path, doc, main);
         entry.base = main.sha;
@@ -589,13 +637,16 @@ export class Inbound {
     const { ports, activity } = this.ctx;
     activity.ownWrite(path);
     let before = "";
+    let after = main.text;
     const written = await ports.vault.process(path, (current) => {
       before = current;
-      return gitBlobShaOfText(current) === expected ? main.text : null;
+      if (gitBlobShaOfText(current) !== expected) return null;
+      after = withEol(toLf(main.text), eolOf(current));
+      return after;
     });
     if (written !== "written") return this.refusedWrite(path, main.sha, written);
-    await this.bring(path, main.text);
-    this.came(said, path, before, main.text);
+    await this.bring(path, after);
+    this.came(said, path, before, after);
     this.keepAsBase(path, doc, main);
     this.settled(path, main.sha);
     said.updated.push(noteName(path));

@@ -3,6 +3,7 @@ import { MARK_ICON } from "../brand/mark";
 import { type Bearer } from "../auth/bearer";
 import { obsidianTransport } from "../auth/obsidian-transport";
 import type { Dialogs } from "../changes/flow-deps";
+import { coalesceDuringUntitled, isPluginLocalOnlyNew, onLocalNewUpdate, trackFreshLocalNotes } from "../changes/local-new";
 import { openExternalUrl } from "../links";
 import type { DocumentRef } from "../mapping";
 import { type PollSignals, type ThreadsStoreDeps } from "../shared/review-flow";
@@ -89,6 +90,7 @@ export function pageSignals(plugin: Plugin, live?: () => boolean): PollSignals {
 export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsParts {
   const { app } = plugin;
   const { workspace, vault } = app;
+  trackFreshLocalNotes(plugin);
   const marks = new CommentMarks();
   const api = new CommentsApi({ server: deps.server, version: deps.version, auth: deps.auth, transport: obsidianTransport });
 
@@ -112,6 +114,7 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     signedIn: deps.signedIn,
     me: deps.me,
     isLive: (path) => deps.status.phaseOf(path) === "live",
+    isLocalOnlyNew: (path) => isPluginLocalOnlyNew(plugin, path),
     saveNote: async (path) => {
       await markdownViewOf(path)?.save();
       const status = deps.status.get(path);
@@ -172,15 +175,17 @@ export function setUpComments(plugin: Plugin, deps: CommentsSetup): CommentsPart
     hub.setActive(workspace.getActiveFile()?.path ?? null);
     selectionChanged();
   };
-  plugin.registerEvent(workspace.on("active-leaf-change", follow));
-  plugin.registerEvent(workspace.on("file-open", follow));
+  const scheduleFollow = coalesceDuringUntitled(plugin, follow);
+  plugin.registerEvent(workspace.on("active-leaf-change", scheduleFollow));
+  plugin.registerEvent(workspace.on("file-open", scheduleFollow));
   plugin.registerEvent(
     vault.on("rename", (_file, oldPath) => {
       hub.forget(oldPath);
-      follow();
+      scheduleFollow();
     }),
   );
   plugin.registerEvent(vault.on("delete", (file) => hub.forget(file.path)));
+  plugin.register(onLocalNewUpdate(plugin, () => hub.wakeActive()));
   workspace.onLayoutReady(follow);
 
   const comment = (editor: Editor, path: string, offered: Span | null = null, lost?: () => void): void => void startCommentOn(hub, marks.editorFor(editor), path, offered, lost);

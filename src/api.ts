@@ -36,7 +36,7 @@ export class SpecgitApi {
     this.server = normalizeServer(options.server);
   }
 
-  async call(method: "GET" | "POST", path: string, input: { query?: Record<string, string>; body?: unknown; signal?: AbortSignal } = {}): Promise<ApiAnswer> {
+  async call(method: "GET" | "POST", path: string, input: { query?: Record<string, string>; body?: unknown; signal?: AbortSignal; maxRetryAfterMs?: number } = {}): Promise<ApiAnswer> {
     const query = input.query ? `?${new URLSearchParams(input.query).toString()}` : "";
     const response = await withBearer(
       this.options.auth,
@@ -51,7 +51,7 @@ export class SpecgitApi {
       input.signal,
     );
     const answer = parseApiAnswer(response.status, response.text);
-    const retryAfterMs = answer.status === 429 || answer.code === "rate_limited" ? retryAfterFromResponse(response.headers, answer.body) : undefined;
+    const retryAfterMs = answer.status === 429 || answer.code === "rate_limited" ? retryAfterFromResponse(response.headers, answer.body, Date.now(), input.maxRetryAfterMs) : undefined;
     return retryAfterMs === undefined ? answer : { ...answer, retryAfterMs };
   }
 }

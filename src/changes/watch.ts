@@ -30,6 +30,8 @@ export interface WatchDeps {
 export class Watch {
   private wait = CHECK_EVERY_MS;
   private nextAt = 0;
+  private checkWait = CHECK_EVERY_MS;
+  private nextCheckAt = 0;
   private seen = "";
   private checking = false;
   private recheck: "armed" | number | null = null;
@@ -39,6 +41,8 @@ export class Watch {
   unquiet(): void {
     this.wait = CHECK_EVERY_MS;
     this.nextAt = 0;
+    this.checkWait = CHECK_EVERY_MS;
+    this.nextCheckAt = 0;
     this.recheck = this.deps.stay?.() === true ? "armed" : null;
   }
 
@@ -78,11 +82,23 @@ export class Watch {
       return;
     }
     if (this.checking) return;
+    const backoff = this.deps.live() || this.deps.stay?.() === true;
+    if (backoff && now < this.nextCheckAt) {
+      if (now >= this.nextAt) this.triggerLook(now);
+      return;
+    }
     this.checking = true;
     try {
       const moved = await this.deps.moved();
-      if (moved) this.unquiet();
       const after = this.deps.signals.now();
+      if (moved) this.unquiet();
+      else if (backoff) {
+        this.nextCheckAt = after + this.checkWait;
+        this.checkWait = Math.min(this.checkWait * 2, QUIET_MS);
+      } else {
+        this.checkWait = CHECK_EVERY_MS;
+        this.nextCheckAt = 0;
+      }
       if (moved || after >= this.nextAt) this.triggerLook(after);
     } finally {
       this.checking = false;

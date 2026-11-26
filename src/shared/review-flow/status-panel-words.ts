@@ -185,6 +185,12 @@ export const STATUS_FAILED = "Couldn't load.";
 export const STATUS_RETRY = "Try again";
 export const STATUS_OFFLINE = "Offline. Your changes are kept.";
 export const STATUS_SLOW = "Still waiting for GitHub. It's slower than usual.";
+export const STATUS_RATE_LIMITED = "GitHub asked specgit to slow down. Status will refresh in a moment.";
+export const statusRateLimited = (retryAfterMs?: number | null): string => {
+  if (typeof retryAfterMs !== "number" || !Number.isFinite(retryAfterMs) || retryAfterMs < 60_000) return STATUS_RATE_LIMITED;
+  const mins = Math.max(1, Math.round(retryAfterMs / 60_000));
+  return `GitHub asked specgit to slow down. Status will refresh in about ${mins} min.`;
+};
 
 export const statusBulkResult = (done: number, did: "published" | "submitted" | "approved", needs: number): string =>
   needs === 0 ? `${done} ${did}.` : `${done} ${did}. ${needs} ${needs === 1 ? "needs" : "need"} you.`;

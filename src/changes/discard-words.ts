@@ -19,6 +19,8 @@ export function nothingToDiscard(phase: ChangesPhase): { title: string; descript
       return { title: "Sign in first", description: "Sign in to specgit so it can compare your notes with GitHub." };
     case "offline":
       return { title: "Can't check right now", description: "specgit can't reach GitHub, so it can't tell what you've changed. Try again when you're back online." };
+    case "rate-limited":
+      return { title: "Can't check right now", description: "GitHub asked specgit to slow down. Try again in a moment." };
     case "not-installed":
     case "unmapped":
       return { title: "Nothing to compare yet", description: "Choose a repository for this vault first, and give specgit access to it." };

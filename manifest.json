@@ -1,7 +1,7 @@
 {
   "id": "specgit",
   "name": "specgit",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "minAppVersion": "1.11.5",
   "description": "Edit notes live, auto-sync your vault, comment inline, and review or publish to GitHub without thinking about Git. Use specgit on desktop or phone, solo or with a team.",
   "author": "FnFirst",

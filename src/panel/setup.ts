@@ -1,5 +1,6 @@
 import type { Plugin } from "obsidian";
 import { MARK_ICON } from "../brand/mark";
+import { coalesceDuringUntitled, isPluginLocalOnlyNew, onLocalNewUpdate, trackFreshLocalNotes } from "../changes/local-new";
 import { PanelModel, type PanelDeps, type TabId } from "./model";
 import type { PanelActions, PanelComments } from "./panel";
 import { PANEL_TYPE, PanelView } from "./view";
@@ -13,7 +14,11 @@ const OPEN_PANEL = "Open specgit";
 
 export function setUpPanel(plugin: Plugin, deps: PanelDeps, actions: PanelActions, comments: PanelComments): PanelHandle {
   const { workspace } = plugin.app;
-  const model = new PanelModel(deps);
+  trackFreshLocalNotes(plugin);
+  const model = new PanelModel({
+    ...deps,
+    isLocalOnlyNew: deps.isLocalOnlyNew ?? ((path) => isPluginLocalOnlyNew(plugin, path)),
+  });
   plugin.registerView(PANEL_TYPE, (leaf) => new PanelView(leaf, model, actions, comments));
 
   const show = async (): Promise<void> => {
@@ -33,9 +38,12 @@ export function setUpPanel(plugin: Plugin, deps: PanelDeps, actions: PanelAction
   plugin.addRibbonIcon(MARK_ICON, OPEN_PANEL, () => void show());
   plugin.addCommand({ id: "show-panel", name: OPEN_PANEL, icon: MARK_ICON, callback: () => void show() });
 
-  plugin.registerEvent(workspace.on("active-leaf-change", () => model.update()));
-  plugin.registerEvent(workspace.on("file-open", () => model.update()));
-  plugin.register(deps.status.subscribe(() => model.update()));
-  plugin.register(deps.cameIn.subscribe(() => model.update()));
+  const scheduleUpdate = coalesceDuringUntitled(plugin, () => model.update());
+
+  plugin.registerEvent(workspace.on("active-leaf-change", scheduleUpdate));
+  plugin.registerEvent(workspace.on("file-open", scheduleUpdate));
+  plugin.register(deps.status.subscribe(scheduleUpdate));
+  plugin.register(deps.cameIn.subscribe(scheduleUpdate));
+  plugin.register(onLocalNewUpdate(plugin, () => model.askPeople()));
   return { model, reveal };
 }

@@ -1,7 +1,9 @@
-import { APPROVE_IN_SPECGIT, STATUS_CARD, STATUS_CONTROL_TIPS, STATUS_LABELS, STATUS_PINNED, STATUS_REVIEWER_MARK, STATUS_TIPS, STATUS_VIEW_ONLY, statusApproveLabel, statusHere, statusPeopleHere, statusProposeLabel, statusPublishLabel, statusSubmitLabel } from "../review-flow";
+import { APPROVE_IN_SPECGIT, saverWaitingLine, STATUS_CARD, STATUS_CONTROL_TIPS, STATUS_LABELS, STATUS_PINNED, STATUS_REVIEWER_MARK, STATUS_TIPS, STATUS_VIEW_ONLY, statusApproveLabel, statusHere, statusPeopleHere, statusProposeLabel, statusPublishLabel, statusSubmitLabel } from "../review-flow";
 import { CheckIcon, DotsIcon } from "./icons";
 import { buttonsOff, cx, Face, othersOf, Pill, runningLabel, type Ctx } from "./shared";
 import type { PinnedMenuItem, StatusPinned } from "./types";
+
+const RELOAD_WARNINGS = new Set([saverWaitingLine("no_lineage"), saverWaitingLine("uncompared")]);
 
 export type CardButton = "propose" | "submit" | "approve" | "ask-changes" | "publish";
 
@@ -81,7 +83,26 @@ export function PinnedCard({ pinned, ctx, quiet, hasMore, showReason = false, on
         </div>
         {pinned.warning ? (
           <p className="sp-card-warning" role="status" data-testid="sp-card-warning">
-            {pinned.warning}
+            <span>{pinned.warning}</span>
+            {plugin && !ctx.readOnly && RELOAD_WARNINGS.has(pinned.warning) ? (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="sp-link sp-live-connect"
+                  data-testid="sp-card-warning-reload"
+                  disabled={plugin.joining || buttonsOff(ctx)}
+                  onClick={() => {
+                    ctx.tips.hide();
+                    if (plugin.connected) ctx.act({ type: "pinned", action: "disconnect" });
+                    ctx.act({ type: "pinned", action: "connect-live" });
+                    ctx.act({ type: "retry" });
+                  }}
+                >
+                  Reload
+                </button>
+              </>
+            ) : null}
           </p>
         ) : null}
         {showReason && pinned.reason ? (

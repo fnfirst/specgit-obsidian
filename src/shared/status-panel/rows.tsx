@@ -24,7 +24,7 @@ function menuFor(doc: StatusDoc): readonly StatusRowMenuItem[] {
   const withReview: readonly StatusRowMenuItem[] = doc.hasReview ? ["stop-review", "view-on-github"] : [];
   if (doc.teammate) return ["open", ...(doc.bringIn ? (["bring-in"] as const) : []), ...(doc.hasReview ? (["view-on-github"] as const) : [])];
   if (doc.asksYou) return ["open", "show-changes", "view-on-github"];
-  if (doc.propose) return ["open", "show-changes", ...(doc.hasReview ? (["view-on-github"] as const) : [])];
+  if (doc.propose) return ["open", "show-changes", ...withReview];
   return [...COMPARISONS, ...ownMenu(doc, withReview), ...(doc.bringIn ? (["bring-in"] as const) : [])];
 }
 

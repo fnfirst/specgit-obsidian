@@ -56,6 +56,7 @@ export interface StatusGroup extends StatusPeople {
   state: StatusPillState;
   when?: string;
   reason?: string;
+  teammate?: boolean;
   check?: CheckKind;
   hasChanges?: boolean;
   button?: StatusRowButton;
@@ -183,6 +184,7 @@ export interface StatusPanelModel {
   loading?: boolean;
   loadFailed?: boolean;
   offline?: boolean;
+  rateLimited?: string | null;
   busy?: boolean;
   running?: StatusRunning;
   groupsOff?: boolean;

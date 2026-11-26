@@ -26,7 +26,7 @@ const notLiveDraft = (pr: number): string => `Draft, not sent for review yet (pu
 
 function stageState(
   stage: ReviewStage,
-  { block, yourReview, requested, pr, savesAsYouType = true }: { block: PublishBlock | null; yourReview: boolean; requested: readonly string[]; pr: number; savesAsYouType?: boolean },
+  { block, yourReview, requested, pr, savesAsYouType = true, approved = false }: { block: PublishBlock | null; yourReview: boolean; requested: readonly string[]; pr: number; savesAsYouType?: boolean; approved?: boolean },
 ): ReviewState {
   const said = (text: string) => `${text.replace(/\.$/, "")} (pull request #${pr}).`;
   if (yourReview) return { kind: stage, label: "Your review", short: "Your review", icon: "user-check", tone: "info", title: said("Waiting on your review") };
@@ -49,7 +49,7 @@ function stageState(
     case "in_review":
       return requested.length
         ? { kind: stage, label: "In review", short: "In review", icon: "git-pull-request", tone: "muted", title: said(`Asked: ${requested.join(", ")}. Nothing blocks publishing`) }
-        : { kind: stage, label: "Ready to publish", short: "Ready", icon: "rocket", tone: "info", title: said("Nothing blocks publishing") };
+        : { kind: stage, label: "Ready to publish", short: "Ready", icon: "rocket", tone: "info", title: said(approved ? "Approved. Publish when you like" : "Nothing blocks publishing") };
     default: {
       const _exhaustive: never = stage;
       return _exhaustive;
@@ -69,6 +69,9 @@ export function publishedState(branch: string | null): ReviewState {
 }
 
 export const PENDING_REVIEW_LABEL = "Saved, not in review yet";
+export const EMPTY_REVIEW_LABEL = "No changes to publish";
+export const EMPTY_REVIEW_DETAIL = "This review matches the published file, so there is nothing to publish.";
+export const CLOSE_REVIEW_LABEL = "Close review";
 
 const NONE: ReviewState = { kind: "none", label: "Up to date", short: "Up to date", icon: "circle-dashed", tone: "muted", title: "No open review" };
 const PENDING: ReviewState = {
@@ -89,7 +92,7 @@ function docStage(pr: PrInfo) {
 }
 
 export function viewerCanApprove(pr: PrInfo | null, viewerLogin: string): boolean {
-  return pr !== null && pr.state === "open" && waitsOnViewer(docStage(pr), viewerLogin);
+  return pr !== null && pr.state === "open" && !pr.emptyDiff && waitsOnViewer(docStage(pr), viewerLogin);
 }
 
 export function fileReviewState(
@@ -101,7 +104,24 @@ export function fileReviewState(
   if (liveBranch || pr?.state === "merged") return publishedState(liveBranch ?? pr?.baseRef ?? null);
   if (!pr || pr.state === "closed") return options.pending ? PENDING : NONE;
   const doc = docStage(pr);
-  return stageState(doc.stage, { block: doc.block, yourReview: viewerCanApprove(pr, viewerLogin), requested: pr.requestedReviewers ?? [], pr: pr.number, ...options });
+  if (pr.emptyDiff) {
+    return {
+      kind: doc.stage,
+      label: EMPTY_REVIEW_LABEL,
+      short: "No changes",
+      icon: "circle-dashed",
+      tone: "muted",
+      title: EMPTY_REVIEW_DETAIL,
+    };
+  }
+  return stageState(doc.stage, {
+    block: doc.block,
+    yourReview: viewerCanApprove(pr, viewerLogin),
+    requested: pr.requestedReviewers ?? [],
+    pr: pr.number,
+    approved: pr.reviewPolicy?.reviewDecision === "approved",
+    ...options,
+  });
 }
 
 export function entryReviewState(entry: ChangeSetEntry, viewerLogin: string): ReviewState {

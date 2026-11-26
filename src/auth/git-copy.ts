@@ -1,4 +1,5 @@
 import type { DocumentRef } from "../mapping";
+import { BLOB_CACHE_MAX, BlobCache } from "../changes/same-text";
 import { type Bearer, withBearer } from "./bearer";
 import { formatIfNoneMatch, parseEtagSha, type SpecgitBinaryFetch } from "./binary-fetch";
 import { GIT_PROVIDER, NOTE_BRANCH, normalizeServer, VERSION_HEADER } from "./config";
@@ -25,8 +26,6 @@ export interface RenamedTarget {
 }
 
 export type BlobRead = { kind: "text"; text: string } | { kind: "too_large" | "not_text" | "changed" };
-
-const BLOBS_KEPT = 50;
 
 export type BlobsAnswer = { kind: "answered"; files: Map<string, BlobRead> } | { kind: "missing" } | { kind: "outage" };
 
@@ -113,14 +112,14 @@ export class SpecgitGitCopy {
     const body = await this.content(doc, { blob: sha }, signal);
     if (typeof body?.source !== "string") return null;
     this.blobs.set(key, body.source);
-    if (this.blobs.size > BLOBS_KEPT) this.blobs.delete(this.blobs.keys().next().value!);
     return body.source;
   }
-  private readonly blobs = new Map<string, string>();
+  private readonly blobs = new BlobCache(BLOB_CACHE_MAX);
 
   async readBlobs(repo: string, commit: string | null, files: ReadonlyArray<{ sha: string; path: string }>, byBlob = false): Promise<BlobsAnswer> {
     const [owner, name, ...rest] = repo.split("/");
     if (!owner || !name || rest.length > 0) return { kind: "missing" };
+    const oidMode = byBlob || commit === null;
     try {
       const response = await withBearer(this.options.auth, (token) =>
         this.options.transport({
@@ -128,7 +127,7 @@ export class SpecgitGitCopy {
           method: "POST",
           contentType: "application/json",
           headers: { Authorization: `Bearer ${token}`, [VERSION_HEADER]: this.options.version },
-          body: JSON.stringify({ provider: GIT_PROVIDER, owner, repo: name, ...(byBlob ? { byBlob: true } : { commit }), files }),
+          body: JSON.stringify({ provider: GIT_PROVIDER, owner, repo: name, ...(oidMode ? { byBlob: true } : { commit }), files }),
         }),
       );
       if (response.status === 429 || response.status >= 500) return { kind: "outage" };
@@ -138,8 +137,10 @@ export class SpecgitGitCopy {
       for (const one of body.files as unknown[]) {
         const file = one as { sha?: unknown; kind?: unknown; text?: unknown } | null;
         if (typeof file?.sha !== "string") continue;
-        if (file.kind === "text" && typeof file.text === "string") read.set(file.sha, { kind: "text", text: file.text });
-        else if (typeof file.kind === "string" && BLOB_KINDS.has(file.kind)) read.set(file.sha, { kind: file.kind as "too_large" | "not_text" | "changed" });
+        if (file.kind === "text" && typeof file.text === "string") {
+          read.set(file.sha, { kind: "text", text: file.text });
+          this.blobs.set(`${repo}\n${file.sha}`, file.text);
+        } else if (typeof file.kind === "string" && BLOB_KINDS.has(file.kind)) read.set(file.sha, { kind: file.kind as "too_large" | "not_text" | "changed" });
       }
       return { kind: "answered", files: read };
     } catch {

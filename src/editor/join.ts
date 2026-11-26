@@ -1,4 +1,4 @@
-import { Budget, withoutFinalBreaks } from "../disk/diff";
+import { Budget, diffTokens, withoutFinalBreaks } from "../disk/diff";
 import { toLf } from "../disk/line-endings";
 import { reconcile, roomIsUnwritten } from "../disk/reconcile";
 import type { Region } from "../disk/regions";
@@ -27,10 +27,19 @@ function tooLarge(text: string): boolean {
   return text.length > MAX_NOTE_BYTES || (text.length * 3 > MAX_NOTE_BYTES && encoder.encode(text).length > MAX_NOTE_BYTES);
 }
 
+function roomDroppedBase(base: string, room: string, budget: Budget): boolean {
+  const b = withoutFinalBreaks(base);
+  const r = withoutFinalBreaks(room);
+  if (b === r) return false;
+  const hunks = diffTokens(b.split("\n"), r.split("\n"), budget);
+  return budget.over || hunks.some((hunk) => hunk.aTo > hunk.aFrom);
+}
+
 interface Apart {
   readonly base: string | null;
   readonly startedOver: boolean;
   readonly fromGit: boolean;
+  readonly fromStore?: boolean;
   readonly at?: number;
 }
 
@@ -129,19 +138,18 @@ export class Join {
     if (tooLarge(editor) || tooLarge(roomText)) return { kind: "block", why: TOO_LARGE_MESSAGE };
     if (room.readOnly && editor !== "" && roomIsUnwritten(roomText, editor)) return { kind: "block", why: SAID.emptyRoom };
     const emptied = editor === "" && !!this.letOutWith;
+    const differs = !(editor === "" && !emptied) && editor !== roomText && withoutFinalBreaks(editor) !== withoutFinalBreaks(roomText) && !roomIsUnwritten(roomText, editor);
+    const unverifiedRestartBase = apart.fromStore === true && apart.startedOver && apart.base !== null && differs;
     if (
       this.sent === undefined &&
       this.services.sentBase !== undefined &&
-      !(editor === "" && !emptied) &&
-      editor !== roomText &&
-      withoutFinalBreaks(editor) !== withoutFinalBreaks(roomText) &&
-      !roomIsUnwritten(roomText, editor) &&
+      differs &&
       (apart.base === null || apart.fromGit || apart.at !== undefined)
     ) {
       const ref = this.host.ref();
       if (!ref) this.sent = null;
       else {
-        const since = apart.fromGit || apart.base === null ? undefined : apart.at;
+        const since = apart.fromGit || apart.base === null || unverifiedRestartBase ? undefined : apart.at;
         const abort = new AbortController();
         const sync = { asked: false };
         const pending = withDeadline<string | null>(
@@ -166,7 +174,20 @@ export class Join {
         }
       }
     }
-    const effective: Apart = this.sent !== null && this.sent !== undefined ? { base: this.sent, startedOver: false, fromGit: false } : apart;
+    let safeApart: Apart = apart;
+    if ((this.sent === null || this.sent === undefined) && unverifiedRestartBase && apart.base !== null) {
+      if (this.git === undefined) {
+        const recording = this.services.gitBases.underway(this.host.path());
+        void (recording ? this.settle(() => recording) : this.askGit());
+        return WAIT;
+      }
+      const rejectRestartBase =
+        this.git !== null
+          ? withoutFinalBreaks(this.git) !== withoutFinalBreaks(apart.base)
+          : withoutFinalBreaks(editor) === withoutFinalBreaks(apart.base) || roomDroppedBase(apart.base, roomText, new Budget(MERGE_MS));
+      if (rejectRestartBase) safeApart = { base: null, startedOver: true, fromGit: false };
+    }
+    const effective: Apart = this.sent !== null && this.sent !== undefined ? { base: this.sent, startedOver: false, fromGit: false } : safeApart;
     const meeting = { editor, room: roomText, base: effective.base, emptied, git: this.git, baseIsGit: effective.fromGit, readOnly: room.readOnly, source: "room" as const };
     const joined = reconcile(meeting, new Budget(MERGE_MS));
     switch (joined.kind) {
@@ -257,6 +278,6 @@ export class Join {
       return ref && base.doc === docKey(ref) ? { base: base.text, startedOver: false, fromGit: true } : NO_BASE;
     }
     if (base.room !== room.name) return NO_BASE;
-    return { base: base.text, startedOver: !holdsLineage(room.doc, base.lineage), fromGit: false, at: base.at };
+    return { base: base.text, startedOver: !holdsLineage(room.doc, base.lineage), fromGit: false, fromStore: true, at: base.at };
   }
 }

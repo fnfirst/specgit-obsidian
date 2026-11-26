@@ -63,11 +63,26 @@ export interface PanelComments {
   tabs?: PanelTabs;
 }
 
+export interface RateLimitNotice {
+  retryAfterMs: number | null;
+  until: number | null;
+}
+
 export type TabContents = Partial<Record<TabId, ComponentChildren>>;
 export interface PanelTabs {
   contents: (view?: StatusView) => TabContents;
   badges: () => TabBadges;
   subscribe: (listener: () => void) => () => void;
+  rateLimit?: () => RateLimitNotice | null;
+}
+
+function rateLimitWords(notice: RateLimitNotice): string {
+  const ms = notice.until !== null ? Math.max(0, notice.until - Date.now()) : (notice.retryAfterMs ?? 0);
+  if (ms >= 60_000) {
+    const mins = Math.max(1, Math.round(ms / 60_000));
+    return `GitHub asked specgit to slow down. Trying again in about ${mins} min. Your changes are kept.`;
+  }
+  return "GitHub asked specgit to slow down. Trying again in a moment. Your changes are kept.";
 }
 
 export function Panel({ model, actions, badges = NO_BADGES, comments }: { model: PanelModel; actions: PanelActions; badges?: TabBadges; comments: PanelComments }) {
@@ -78,6 +93,7 @@ export function Panel({ model, actions, badges = NO_BADGES, comments }: { model:
   const open = useWatch(comments.env.hub.subscribe, () => comments.env.hub.openCount(note?.path ?? null));
   const mine = comments.tabs;
   const own = useWatch(mine?.subscribe ?? NEVER, () => mine?.badges() ?? badges);
+  const limited = useWatch(mine?.subscribe ?? NEVER, () => mine?.rateLimit?.() ?? null);
   const shown: TabBadges = { ...own, comments: { open } };
   const onboarding = useWatch(actions.onboarding?.subscribe ?? NEVER, () => actions.onboarding?.state() ?? IDLE);
   if (!state.signedIn || !state.mapped) {
@@ -102,6 +118,11 @@ export function Panel({ model, actions, badges = NO_BADGES, comments }: { model:
       <Header state={state} actions={actions} />
       <Tabs ids={ids} tab={tab} tabs={ALL_TABS} select={model.selectTab} badges={shown} />
       <div class={`specgit-panel-body${statusTab ? " specgit-panel-body-status" : ""}`} role="tabpanel" id={`${ids}-panel`} aria-labelledby={`${ids}-tab-${tab}`}>
+        {tab === "status" && limited !== null && (
+          <p class="specgit-said" role="status" data-testid="rate-limit-banner">
+            {rateLimitWords(limited)}
+          </p>
+        )}
         {tab === "status" && note !== null && cameIn !== null && (
           <p class="specgit-said" role="status">
             {cameInWords(cameIn)}

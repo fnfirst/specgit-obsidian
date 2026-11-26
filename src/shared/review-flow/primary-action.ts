@@ -1,7 +1,7 @@
 import type { PrInfo } from "./pr-info";
-import { viewerCanApprove } from "./review-state";
+import { CLOSE_REVIEW_LABEL, viewerCanApprove } from "./review-state";
 
-export type PrimaryKind = "submit" | "publish" | "approve" | "published" | "propose" | "resolve";
+export type PrimaryKind = "submit" | "publish" | "approve" | "published" | "propose" | "resolve" | "discard";
 
 export function resolvePrimary(
   pr: PrInfo | null,
@@ -12,6 +12,9 @@ export function resolvePrimary(
 ): { kind: PrimaryKind; label: string } {
   if (liveBranch || pr?.state === "merged") {
     return { kind: "published", label: "Published" };
+  }
+  if (pr?.emptyDiff && (pr.state === "open" || pr.state === "draft")) {
+    return { kind: "discard", label: `${CLOSE_REVIEW_LABEL}…` };
   }
   if (upstream) {
     return { kind: "propose", label: `Propose to ${upstream.owner}/${upstream.repo}` };
