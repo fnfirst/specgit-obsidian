@@ -71,7 +71,7 @@ export function removalsByBranch(paths: Readonly<Record<string, readonly InFligh
   const found = new Map<string, Map<string, string | null>>();
   const add = (branch: string, from: string, to: string | null): void => {
     const removed = found.get(branch) ?? new Map<string, string | null>();
-    removed.set(from, to);
+    if (to !== null || !removed.has(from)) removed.set(from, to);
     found.set(branch, removed);
   };
   for (const path in paths) {

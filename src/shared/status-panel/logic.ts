@@ -92,6 +92,7 @@ export function layoutOf(model: StatusPanelModel): Layout {
   const openGroup = pinned?.groupId ? model.items.find((item) => item.kind === "group" && item.id === pinned.groupId) : undefined;
   if (openGroup) add(openGroup, true, true);
   else if (pinned) {
+    const matchingDoc = model.items.find((item): item is StatusDoc => item.kind === "doc" && item.id === pinned.id);
     add(
       {
         kind: "doc",
@@ -107,6 +108,7 @@ export function layoutOf(model: StatusPanelModel): Layout {
         lane: pinned.lane,
         hasChanges: pinned.hasChanges,
         hasReview: pinned.hasReview,
+        ...(matchingDoc?.noStopReview ? { noStopReview: true } : {}),
         ...(pinned.draft ? { draft: true } : {}),
         teammate: pinned.teammate,
         openComments: pinned.openComments,

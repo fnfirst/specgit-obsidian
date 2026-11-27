@@ -131,12 +131,15 @@ export interface DocItemInput {
 export function docItemOf({ entry, branch = null, facts = null, here, viewer, now, extra = {} }: DocItemInput): StatusDoc {
   const known = facts ?? null;
   const enriched = known ? withReviewFacts(entry, known) : entry;
-  const asksYou = asksYouOf(entry, known, viewer);
-  const teammate = isSomeoneElses(enriched, viewer) && !asksYou;
-  const without = entry.prNumber > 0 && !entry.isDraft ? "in-review" : "draft";
-  const state = pillOf({ deleted: extra.deleted, edited: extra.edited, changedInBoth: extra.changedInBoth, held: extra.held, behind: extra.behind, facts: known, without });
+  const isDraft = known ? known.isDraft : entry.isDraft;
   const author = enriched.authorLogin;
   const writers = branch?.writers && branch.writers.length > 0 ? branch.writers : author ? [author] : [];
+  const coWroteDraft = isDraft && viewer !== "" && writers.some((login) => sameLogin(login, viewer));
+  const asksYou = asksYouOf(entry, known, viewer);
+  const coWroteTeammateDraft = coWroteDraft && isSomeoneElses(enriched, viewer) && !asksYou;
+  const teammate = isSomeoneElses(enriched, viewer) && !asksYou && !coWroteDraft;
+  const without = entry.prNumber > 0 && !entry.isDraft ? "in-review" : "draft";
+  const state = pillOf({ deleted: extra.deleted, edited: extra.edited, changedInBoth: extra.changedInBoth, held: extra.held, behind: extra.behind, facts: known, without });
   const people = asksYou && author ? [author] : writers;
   const check: CheckKind | undefined = teammate
     ? undefined
@@ -176,7 +179,8 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
     ...(check ? { check } : {}),
     ...(state === "out-of-date" ? { button: "catch-up" as const } : state === "changed-in-both" ? { button: "choose" as const } : {}),
     hasReview: entry.prNumber > 0,
-    ...((known ? known.isDraft : entry.isDraft) ? { draft: true } : {}),
+    ...(coWroteTeammateDraft ? { noStopReview: true } : {}),
+    ...(isDraft ? { draft: true } : {}),
     ...(known?.autoMergeEnabled === true ? { autoPublish: true } : {}),
     ...(known?.reviewDecision === "approved" ? { approved: true } : {}),
     ...(extra.hasChanges ? { hasChanges: true } : {}),

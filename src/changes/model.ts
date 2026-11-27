@@ -1,4 +1,4 @@
-import { ALL_SELECTED, applyPending, AskAgain, CHANGE_GRACE_MS, type ChangeSetEntry, type GroupOverview, type InFlightChange, type InFlightResponse, isGroupBranch, isSelected, type PendingChange, type PublishQuota, stillPending, expectArrival, forgetJoined, freshSelectionMemory, keepSelection, reviewSections, reviewStage, selectableUnits, selectAllKeys, selectionUnits, settleArrivals, type SavesTo, type SelectionMemory, withSelection, selectKeys, selectOnlyKey, type StatusGroup, statusUnits, unitKey } from "../shared/review-flow";
+import { ALL_SELECTED, applyPending, AskAgain, CHANGE_GRACE_MS, type ChangeSetEntry, type GroupOverview, type InFlightChange, type InFlightResponse, isGroupBranch, isSelected, type PendingChange, type PublishQuota, sameLogin, stillPending, expectArrival, forgetJoined, freshSelectionMemory, keepSelection, reviewSections, reviewStage, selectableUnits, selectAllKeys, selectionUnits, settleArrivals, type SavesTo, type SelectionMemory, withSelection, selectKeys, selectOnlyKey, type StatusGroup, statusUnits, unitKey } from "../shared/review-flow";
 import { isHiddenPath, LISTED_FILE } from "../mapping";
 import type { GroupsRead, PresenceRead, ReviewStatus } from "../review/review-api";
 import { Awareness, awareLayout, type AwareLine, type HeldDeletes, type NoteChoice, withChoice } from "./awareness";
@@ -9,7 +9,8 @@ export type { ChangeRow, ChangesDeps, ChangesPhase, ChangesSectionId, ChangesSta
 import type { ChangeRow, ChangesDeps, ChangesState, Looked } from "./model-types";
 
 import { type BatchReview, draftOf, removalsByBranch, reviewFromInFlight, teammateReviews } from "./batch-reviews";
-import type { Draft } from "../stay/draft-state";
+import { draftKey, draftWriter, type Draft } from "../stay/draft-state";
+import { hasOwnOrAgreedDraft } from "../stay/outbound";
 import { changeOf, type LocalChange, type LocalChangeKind, localChanges } from "./plan";
 import type { CopyInFile, CopyInOptions } from "./copy-in";
 import { isAttachmentPath } from "../shared/review-flow";
@@ -575,7 +576,10 @@ export class ChangesModel {
   remember(rows: readonly ChangeRow[]): void {
     for (const row of rows) {
       this.overlay.set(row.change.path, { sha: row.change.kind === "deleted" ? null : row.change.sha, before: row.change.repoSha, sent: this.deps.cache.get(row.change.path)?.sent ?? null });
-      if (row.change.from) this.overlay.set(row.change.from, { sha: null, before: row.change.sha, sent: null });
+      if (row.change.from) {
+        const fromBefore = this.repoFiles?.get(row.change.from) ?? this.deps.cache.deleted().find((gone) => gone.path === row.change.from)?.sha ?? row.change.sha;
+        this.overlay.set(row.change.from, { sha: null, before: fromBefore, sent: null });
+      }
     }
     const paths = new Set(rows.map((row) => row.change.path));
     this.set({ published: [...this.current.published.filter((row) => !paths.has(row.change.path)), ...rows.map((row) => ({ ...row, entry: null, review: null, unit: row.unit }))] });
@@ -748,9 +752,32 @@ export class ChangesModel {
     cache.save();
     const theirs = this.theirReviews();
     if (theirs) this.theirs = theirs;
+    const login = this.deps.viewerLogin?.() ?? "";
+    const renamed = new Map<string, string>();
+    if (drafts) {
+      for (const [to, draft] of drafts.byPath) {
+        if (!draft.removes) continue;
+        const entry = scanned.files.get(to);
+        if (!entry) continue;
+        const key = draftKey(draft);
+        const matchingEntry = entry.sentTo !== undefined && key !== null && entry.sentTo !== key ? undefined : entry;
+        const related =
+          login === "" ||
+          hasOwnOrAgreedDraft(matchingEntry, draft, login) ||
+          sameLogin(draftWriter(draft), login) ||
+          (draft.blob !== null && entry.sha === draft.blob);
+        if (!related) continue;
+        for (const [from, target] of draft.removes) {
+          if (target === to) {
+            renamed.set(to, from);
+            break;
+          }
+        }
+      }
+    }
     const isIgnored = this.deps.isIgnored;
     const leftOut = isIgnored ? (path: string): boolean => !repoFiles.has(path) && (scanned.files.get(path)?.base ?? null) === null && isIgnored(path) : undefined;
-    const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: cache.deleted(), foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs, ...(leftOut ? { leftOut } : {}) });
+    const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: cache.deleted(), foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs, ...(leftOut ? { leftOut } : {}), ...(renamed.size > 0 ? { renamed } : {}) });
     this.notHere = states.missing.copy.flatMap((path) => {
       const doc = this.deps.documentFor(path);
       return doc ? [{ path, doc, sha: repoFiles.get(path) ?? null }] : [];

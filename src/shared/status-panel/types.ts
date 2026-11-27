@@ -32,6 +32,7 @@ export interface StatusDoc extends StatusPeople {
   hasChanges?: boolean;
   button?: StatusRowButton;
   hasReview?: boolean;
+  noStopReview?: boolean;
   draft?: boolean;
   bringIn?: boolean;
   propose?: string;

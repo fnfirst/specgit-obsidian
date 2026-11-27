@@ -119,6 +119,7 @@ export interface LookFacts {
   files: ReadonlyMap<string, CacheEntry>;
   repo: ReadonlyMap<string, string>;
   deleted: readonly Gone[];
+  renamed?: ReadonlyMap<string, string>;
   foreign?: ReadonlyMap<string, string>;
   keptFromMain?: (path: string) => boolean;
   added?: ReadonlySet<string>;
@@ -157,11 +158,31 @@ export function vaultStates(looked: LookFacts): VaultStates {
   const found = new Map<string, VaultFile>();
   const stateOf = (path: string, facts: OnBoth | OnlyHere | OnlyOnGitHub): VaultState => fileState({ ...facts, theirs: looked.theirs?.get(path), live: looked.live?.(path), leftOut: looked.leftOut?.(path) });
   const lost = new Map<string, Gone>();
-  const sources = new Unpaired<string>();
   for (const gone of deleted) {
     if (files.has(gone.path) || !repo.has(gone.path) || lost.has(gone.path)) continue;
     lost.set(gone.path, gone);
-    if (repo.get(gone.path) === gone.sha) sources.add(gone.sha, gone.path);
+  }
+  const explicitFrom = new Map<string, string>();
+  const reservedFrom = new Set<string>();
+  for (const [to, from] of looked.renamed ?? []) {
+    const target = files.get(to);
+    if (
+      to !== from &&
+      target !== undefined &&
+      !repo.has(to) &&
+      looked.foreign?.get(to) !== target.sha &&
+      !looked.leftOut?.(to) &&
+      lost.has(from) &&
+      repo.get(from) === lost.get(from)!.sha &&
+      !reservedFrom.has(from)
+    ) {
+      explicitFrom.set(to, from);
+      reservedFrom.add(from);
+    }
+  }
+  const sources = new Unpaired<string>();
+  for (const gone of lost.values()) {
+    if (!reservedFrom.has(gone.path) && repo.get(gone.path) === gone.sha) sources.add(gone.sha, gone.path);
   }
   const arrivals = new Unpaired<string>();
   for (const [path, sha] of repo) if (!files.has(path) && !lost.has(path)) arrivals.add(sha, path);
@@ -170,10 +191,11 @@ export function vaultStates(looked: LookFacts): VaultStates {
   for (const [path, vault] of files) {
     const repoSha = repo.get(path);
     const foreign = looked.foreign?.get(path);
-    const state = stateOf(path, repoSha !== undefined ? { vault, repoSha, foreign } : { vault, repoSha: null, foreign, renamedFrom: sources.peek(vault.sha), movedTo: arrivals.peek(vault.sha), keptFromMain: looked.keptFromMain?.(path) });
+    const explicit = explicitFrom.get(path);
+    const state = stateOf(path, repoSha !== undefined ? { vault, repoSha, foreign } : { vault, repoSha: null, foreign, renamedFrom: explicit ?? sources.peek(vault.sha), movedTo: arrivals.peek(vault.sha), keptFromMain: looked.keptFromMain?.(path) });
     const file = comparedOf(state);
     if (file?.kind === "here" && file.change === "renamed") {
-      sources.take(vault.sha);
+      if (explicit === undefined) sources.take(vault.sha);
       renamedFrom.add(file.from);
     } else if (file?.kind === "github" && file.change === "moved") {
       arrivals.take(vault.sha);

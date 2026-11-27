@@ -22,7 +22,7 @@ import {
 } from "../shared/status-panel";
 import { type ChangeRow, type ChangesState, draftEntry } from "../changes/model";
 import { writersOf } from "../changes/aware";
-import { type DocumentRef, noteName } from "../mapping";
+import { type DocumentRef, noteName, pathKind } from "../mapping";
 import { placeUnder } from "../changes/vault-state";
 import { phaseOf, type NoteStatus } from "../status";
 
@@ -483,6 +483,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
 
   const pinned = active ? pinnedOf(input, active, activeHold, ownDoc, base.rowByPath, base.groupByPath, base.factsOf, units.rows) : null;
   const repo = input.repo?.trim() ?? "";
+  const scope = !repo ? undefined : openPath !== null && pathKind(openPath) === "board" ? ({ kind: "board" } as const) : ({ kind: "repo", repo } as const);
   const offline = state.phase === "offline";
   const running = state.doing?.kind;
   const model: StatusPanelModel = {
@@ -494,7 +495,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
     ...(state.groupsLocked ? { grouping: { reason: GROUP_PRO_ONLY.reason, link: { label: GROUP_PRO_ONLY.upgrade, href: input.plansUrl } } } : {}),
     ...(!state.groupsOn && !state.groupsLocked ? { groupsOff: true } : {}),
     ...(input.readOnly ? { readOnly: true } : {}),
-    ...(repo ? { scope: { kind: "repo" as const, repo } } : {}),
+    ...(scope ? { scope } : {}),
     ...(pinned ? { pinned } : {}),
     items,
     ...(base.folds.length > 0 ? { folds: base.folds } : {}),

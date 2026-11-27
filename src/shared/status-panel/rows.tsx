@@ -21,7 +21,7 @@ const ROW_MENU_ORDER: readonly StatusRowMenuItem[] = ["open", "show-changes", "s
 const VIEW_ONLY_MENU: readonly StatusRowMenuItem[] = ["open", "show-changes", "see-github", "see-difference", "view-on-github"];
 
 function menuFor(doc: StatusDoc): readonly StatusRowMenuItem[] {
-  const withReview: readonly StatusRowMenuItem[] = doc.hasReview ? ["stop-review", "view-on-github"] : [];
+  const withReview: readonly StatusRowMenuItem[] = doc.hasReview ? [...(doc.noStopReview ? [] : (["stop-review"] as const)), "view-on-github"] : [];
   if (doc.teammate) return ["open", ...(doc.bringIn ? (["bring-in"] as const) : []), ...(doc.hasReview ? (["view-on-github"] as const) : [])];
   if (doc.asksYou) return ["open", "show-changes", "view-on-github"];
   if (doc.propose) return ["open", "show-changes", ...withReview];
