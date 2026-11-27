@@ -77,8 +77,12 @@ export class StayAttachments {
     this.reported.add(path);
     this.timers.get(path)?.();
     this.timers.delete(path);
-    if (!this.retrying.has(path)) this.tries.delete(path);
+    if (!this.retrying.has(path)) {
+      this.tries.delete(path);
+      this.dequeue(path);
+    }
     if (problems.length === 0) {
+      this.dequeue(path);
       const had = this.notes.delete(path);
       this.tries.delete(path);
       this.left.delete(path);
@@ -86,9 +90,13 @@ export class StayAttachments {
       if (had) this.ctx.ports.holdsChanged?.();
       return;
     }
+    const later = problems.some((one) => one.why === ATTACHMENT_LATER);
+    if (!later) {
+      this.tries.delete(path);
+      this.dequeue(path);
+    }
     this.left.set(path, problems);
     this.keep(path);
-    const later = problems.some((one) => one.why === ATTACHMENT_LATER);
     const tried = this.tries.get(path) ?? 0;
     if (later && tried >= ATTACHMENT_BACKOFF_MS.length) {
       this.notes.set(path, ATTACHMENTS_SAID(problems.map((one) => (one.why === ATTACHMENT_LATER ? { ...one, why: ATTACHMENT_HELD } : one))));
@@ -98,6 +106,15 @@ export class StayAttachments {
     this.notes.set(path, ATTACHMENTS_SAID(problems));
     this.ctx.ports.holdsChanged?.();
     if (later && this.ctx.on()) this.timers.set(path, this.ctx.ports.later(() => this.enqueue(path, this.ctx.generation()), ATTACHMENT_BACKOFF_MS[tried]!));
+  }
+
+  private dequeue(path: string): void {
+    const at = this.queue.indexOf(path);
+    if (at >= 0) this.queue.splice(at, 1);
+    if (this.queue.length === 0 && this.wake !== null) {
+      this.wake();
+      this.wake = null;
+    }
   }
 
   private keep(path: string): void {
@@ -156,8 +173,6 @@ export class StayAttachments {
           return;
         }
         this.queue.shift();
-        this.tries.set(path, (this.tries.get(path) ?? 0) + 1);
-        this.keep(path);
         this.retrying.add(path);
         this.reported.delete(path);
         const hooks = {
@@ -166,15 +181,29 @@ export class StayAttachments {
           during: <T,>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null) => this.ctx.activity.during(paths, run, left),
         };
         const sent = await this.ctx.ports.retryAttachments(row, () => this.ctx.current(generation), hooks).catch(() => ({ result: "later" as const, writes: 0 }));
-        if (!this.ctx.current(generation)) return;
+        if (!this.ctx.current(generation)) {
+          this.retrying.delete(path);
+          return;
+        }
         if (sent.writes > 0) this.ctx.budget.spend(sent.writes);
         if (sent.result === "done" && sent.writes > 0) this.ctx.budget.succeeded();
-        this.retried(path, generation, sent.result);
         if (sent.result === "limited") {
+          this.retrying.delete(path);
+          if (!this.reported.has(path) && this.left.has(path) && !this.queue.includes(path)) this.queue.unshift(path);
           this.ctx.budget.limited(sent.retryAfterMs);
           this.scheduleWake(Math.max(0, this.ctx.budget.backoff().until - this.ctx.ports.now()), generation);
           return;
         }
+        if (sent.result === "later" && (this.ctx.ports.offline() || this.ctx.ports.hidden() || this.ctx.ports.personBusy())) {
+          this.retrying.delete(path);
+          if (!this.reported.has(path) && this.left.has(path) && !this.queue.includes(path)) this.queue.unshift(path);
+          this.scheduleWake(ATTACHMENT_BACKOFF_MS[0]!, generation);
+          return;
+        }
+        if (sent.result === "later" && !this.reported.has(path)) {
+          this.tries.set(path, (this.tries.get(path) ?? 0) + 1);
+        }
+        this.retried(path, generation, sent.result);
       }
     } finally {
       this.running = false;

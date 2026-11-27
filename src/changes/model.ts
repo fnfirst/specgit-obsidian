@@ -691,21 +691,28 @@ export class ChangesModel {
         this.current = { ...this.current, selection: this.memory.selection };
       }
     }
-    if (repo.kind === "building") {
-      this.lookLater(3_000);
-      return;
-    }
     if (repo.kind === "not_installed") {
       this.repoFiles = null;
       this.rateLimitedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
       return this.set({ phase: "not-installed", retryAfterMs: null, rateLimitedUntil: null });
     }
-    if (repo.kind === "rate_limited") {
-      this.repoFiles = null;
+    if (repo.kind === "rate_limited" || groups.kind === "rate_limited") {
+      if (repo.kind !== "files" && repo.kind !== "building") this.repoFiles = null;
+      if (repo.kind === "files") this.failedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
-      const waitHint = groups.kind === "rate_limited" ? Math.max(repo.retryAfterMs ?? 0, groups.retryAfterMs ?? 0) || null : repo.retryAfterMs;
+      const repoWait = repo.kind === "rate_limited" ? (repo.retryAfterMs ?? 0) : 0;
+      const groupsWait = groups.kind === "rate_limited" ? (groups.retryAfterMs ?? 0) : 0;
+      const waitHint = Math.max(repoWait, groupsWait) || null;
       this.enterRateLimit(waitHint, {}, groups.kind === "rate_limited" ? "groups" : undefined);
+      return;
+    }
+    if (repo.kind === "building") {
+      this.rateLimitedLooks = 0;
+      if (this.current.phase === "rate-limited" || this.current.retryAfterMs !== null || this.current.rateLimitedUntil !== null) {
+        this.set({ phase: this.states !== null ? "ready" : "loading", retryAfterMs: null, rateLimitedUntil: null });
+      }
+      this.lookLater(3_000);
       return;
     }
     if (repo.kind !== "files") {
@@ -718,11 +725,6 @@ export class ChangesModel {
       return this.set({ phase: "offline", retryAfterMs: null, rateLimitedUntil: null });
     }
     this.failedLooks = 0;
-    if (groups.kind === "rate_limited") {
-      this.lookListeners.forEach((listener) => listener(null));
-      this.enterRateLimit(groups.retryAfterMs, {}, "groups");
-      return;
-    }
     const hidden = [...repo.files.keys()].filter((path) => LISTED_FILE.test(path) && isHiddenPath(path)).length;
     const inVault = new Set(everyFile.map((file) => file.path.toLowerCase()));
     const others = [...repo.files.keys()].filter((path) => isLeftOutKind(path) && !inVault.has(path.toLowerCase()));

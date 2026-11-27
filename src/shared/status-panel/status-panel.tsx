@@ -35,7 +35,7 @@ import { FoldRow } from "./folds";
 import { DRAW_LIMIT, asksBeforeSubmit, checkablesOf, isSoleOpen, layoutOf, loginsOf, selectionOf, type Checkable, type Entry, type Layout } from "./logic";
 import { ConfirmDialog, MenuPopover, placeMenu, type OpenMenu } from "./overlays";
 import { PINNED_MENU_LABEL, PinnedCard, cardButtons, type CardButton } from "./pinned";
-import { GroupCard, Row, groupMenuItems, groupMenuLabel, memberMenuId, rowMenuItems, rowMenuLabel } from "./rows";
+import { GroupCard, Row, groupMenuItems, groupMenuLabel, isViewOnlyGroupMenuItem, isViewOnlyRowMenuItem, memberMenuId, rowMenuItems, rowMenuLabel } from "./rows";
 import { boxesWait, buttonsOff, cx, runningLabel, type Ctx } from "./shared";
 import { SubmitStep } from "./submit-step";
 import { TipCard, safeTipHref, useTips, type TipContent } from "./tips";
@@ -50,7 +50,7 @@ const CHIP_LANES = ["approve", "publish", "drafts"] as const;
 
 export function cardMenuItemsFor(
   layout: Pick<Layout, "pinned" | "entries">,
-  options: { noun: StatusNoun; readOnly: boolean; cardOnly: boolean; singleOpen: boolean },
+  options: { noun: StatusNoun; readOnly: boolean; cardOnly: boolean; singleOpen: boolean; busy?: boolean },
   callbacks: {
     onPinned: (action: PinnedMenuItem) => void;
     onRow: (id: string, action: StatusRowMenuItem) => void;
@@ -78,12 +78,32 @@ export function cardMenuItemsFor(
     const row = openEntry.item;
     derived = rowMenuItems(row, { noun: options.noun, readOnly: options.readOnly })
       .filter((item) => (keepGitHub || item !== "view-on-github") && !ownStep(item) && !ownNames.has(item))
-      .map((item): PanelMenuItem => ({ label: rowMenuLabel(item), run: () => callbacks.onRow(row.id, item) }));
+      .map((item): PanelMenuItem => {
+        const mutating = !isViewOnlyRowMenuItem(item);
+        return {
+          label: rowMenuLabel(item),
+          ...(options.busy && mutating ? { disabled: true } : {}),
+          run: () => {
+            if (options.busy && mutating) return;
+            callbacks.onRow(row.id, item);
+          },
+        };
+      });
   } else if (openEntry?.item.kind === "group") {
     const group = openEntry.item;
     derived = groupMenuItems(group, { readOnly: options.readOnly })
       .filter((item) => GROUP_CARD_ITEMS.includes(item) && !ownNames.has(item))
-      .map((item): PanelMenuItem => ({ label: groupMenuLabel(item), run: () => callbacks.onGroup(group.id, item) }));
+      .map((item): PanelMenuItem => {
+        const mutating = !isViewOnlyGroupMenuItem(item);
+        return {
+          label: groupMenuLabel(item),
+          ...(options.busy && mutating ? { disabled: true } : {}),
+          run: () => {
+            if (options.busy && mutating) return;
+            callbacks.onGroup(group.id, item);
+          },
+        };
+      });
   }
   return [...before, ...derived, ...after];
 }
@@ -315,22 +335,53 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     [host],
   );
 
+  const off = buttonsOff({ offline: !!model.offline, busy: !!model.busy });
+  const offRef = useRef(off);
+  offRef.current = off;
+
   const runStepItem = useCallback(
-    (item: string, id: string, documents: number, other: () => void) => (item === "submit-only" ? setStep({ ids: [id], documents }) : item === "publish-only" ? act({ type: "publish", ids: [id] }) : other()),
+    (item: string, id: string, documents: number, other: () => void) => {
+      if (offRef.current) return;
+      if (item === "submit-only") setStep({ ids: [id], documents });
+      else if (item === "publish-only") act({ type: "publish", ids: [id] });
+      else other();
+    },
     [act],
   );
   const itemsFor = useCallback(
     (id: string): PanelMenuItem[] => {
       const row = layout.entries.find((entry) => entry.item.id === id)?.item;
       if (row?.kind === "doc") {
-        return rowMenuItems(row, { noun, readOnly: !!model.readOnly }).map((item) => ({ label: rowMenuLabel(item), run: () => runStepItem(item, id, 1, () => act({ type: "row", id, action: item })) }));
+        return rowMenuItems(row, { noun, readOnly: !!model.readOnly }).map((item) => {
+          const mutating = !isViewOnlyRowMenuItem(item);
+          return {
+            label: rowMenuLabel(item),
+            ...(off && mutating ? { disabled: true } : {}),
+            run: () => {
+              if (mutating && offRef.current) return;
+              if (mutating) runStepItem(item, id, 1, () => act({ type: "row", id, action: item }));
+              else act({ type: "row", id, action: item });
+            },
+          };
+        });
       }
       if (row?.kind === "group") {
-        return groupMenuItems(row, { readOnly: !!model.readOnly }).map((item: StatusGroupMenuItem) => ({ label: groupMenuLabel(item), run: () => runStepItem(item, id, Math.max(1, row.members.length), () => act({ type: "group", id, action: item })) }));
+        return groupMenuItems(row, { readOnly: !!model.readOnly }).map((item: StatusGroupMenuItem) => {
+          const mutating = !isViewOnlyGroupMenuItem(item);
+          return {
+            label: groupMenuLabel(item),
+            ...(off && mutating ? { disabled: true } : {}),
+            run: () => {
+              if (mutating && offRef.current) return;
+              if (mutating) runStepItem(item, id, Math.max(1, row.members.length), () => act({ type: "group", id, action: item }));
+              else act({ type: "group", id, action: item });
+            },
+          };
+        });
       }
       return [];
     },
-    [act, layout, model.readOnly, noun, runStepItem],
+    [act, layout, model.readOnly, noun, off, runStepItem],
   );
 
   const ctx: Ctx = {
@@ -352,12 +403,29 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     tips,
     menuFor: (id, anchor) => openMenu(itemsFor(id), anchor, id),
     openItems: (items, anchor, id) => openMenu(items, anchor, id),
-    memberMenuFor: (group, member, anchor) => openMenu(model.readOnly ? [] : [{ label: GROUP_CARD.takeOut, run: () => act({ type: "take-out", group, id: member }) }], anchor, memberMenuId(member)),
+    memberMenuFor: (group, member, anchor) =>
+      openMenu(
+        model.readOnly
+          ? []
+          : [
+              {
+                label: GROUP_CARD.takeOut,
+                ...(off ? { disabled: true } : {}),
+                run: () => {
+                  if (offRef.current) return;
+                  act({ type: "take-out", group, id: member });
+                },
+              },
+            ],
+        anchor,
+        memberMenuId(member),
+      ),
     act,
   };
 
   const things: readonly Checkable[] = selection.checked;
   const submitFlow = useCallback(async () => {
+    if (offRef.current) return;
     if (asksBeforeSubmit(things)) {
       const count = things.length;
       const canGroup = !model.groupsOff && !model.grouping;
@@ -365,6 +433,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
         title: STATUS_SEPARATE.title(count),
         choices: [...(canGroup ? [{ id: "group", label: STATUS_SEPARATE.group }] : []), { id: "submit", label: STATUS_SEPARATE.submit(count), primary: true }],
       });
+      if (offRef.current) return;
       if (choice === "group") {
         const ids = things.filter((one) => !one.isGroup).map((one) => one.id);
         const answer = await onAction({ type: "group-together", ids });
@@ -377,6 +446,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   }, [act, ask, model.groupsOff, model.grouping, selection.documents, things]);
 
   const onCardButton = (button: CardButton) => {
+    if (offRef.current) return;
     const id = layout.pinned?.id ?? "";
     if (button === "submit") setStep({ ids: [id], documents: 1 });
     else if (button === "approve") act({ type: "approve", ids: [id] });
@@ -387,11 +457,21 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
 
   const cardMenu = cardMenuItemsFor(
     layout,
-    { noun, readOnly: !!model.readOnly, cardOnly, singleOpen },
+    { noun, readOnly: !!model.readOnly, cardOnly, singleOpen, busy: off },
     {
       onPinned: (action) => act({ type: "pinned", action }),
-      onRow: (id, action) => runStepItem(action, id, 1, () => act({ type: "row", id, action })),
-      onGroup: (id, action) => act({ type: "group", id, action }),
+      onRow: (id, action) => {
+        if (!isViewOnlyRowMenuItem(action)) {
+          if (offRef.current) return;
+          runStepItem(action, id, 1, () => act({ type: "row", id, action }));
+        } else {
+          act({ type: "row", id, action });
+        }
+      },
+      onGroup: (id, action) => {
+        if (!isViewOnlyGroupMenuItem(action) && offRef.current) return;
+        act({ type: "group", id, action });
+      },
     },
   );
   const onCardMore = (anchor: HTMLElement) => openMenu(cardMenu, anchor, "pinned");
@@ -449,11 +529,27 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const onGroupButton = (anchor: HTMLElement) => {
     if (!groupButton) return;
     if (groupButton.kind === "dim") return model.grouping?.retry ? void act({ type: "retry" }) : tips.toggle(anchor, "bar:group", dimGroup);
+    if (offRef.current) return;
     if (groupButton.kind === "menu") {
       const ids = selection.drafts.map((one) => one.id);
       tips.hide();
       openMenu(
-        [...selection.groups.map((one) => ({ label: one.name, run: () => act({ type: "add-to-group", ids, group: one.id }) })), { label: STATUS_BAR.newGroup, run: () => act({ type: "add-to-group", ids, group: null }) }],
+        [
+          ...selection.groups.map((one) => ({
+            label: one.name,
+            run: () => {
+              if (offRef.current) return;
+              act({ type: "add-to-group", ids, group: one.id });
+            },
+          })),
+          {
+            label: STATUS_BAR.newGroup,
+            run: () => {
+              if (offRef.current) return;
+              act({ type: "add-to-group", ids, group: null });
+            },
+          },
+        ],
         anchor,
         "bar",
       );

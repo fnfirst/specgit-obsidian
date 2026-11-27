@@ -40,7 +40,7 @@ import { tiedTo } from "./tie";
 import { NOTE_BRANCH } from "../auth/config";
 import { GitWatch } from "./git-watch";
 import { StayConnected } from "./engine";
-import type { Draft, StayDrafts } from "./draft-state";
+import { type Draft, follows, type StayDrafts } from "./draft-state";
 import { WriteBudget } from "./limits";
 import { StayState } from "./state";
 import type { AutoCommitOutcome, DraftBase, StayPorts } from "./types";
@@ -402,6 +402,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     now: () => Date.now(),
     enabled: () => deps.settings().stayConnected,
     signedIn: deps.signedIn,
+    activePath: () => app.workspace?.getActiveFile?.()?.path ?? null,
     documentFor: mapped,
     phaseOf: (path) => deps.status.phaseOf(path),
     disconnected: (doc) => deps.connections.isDisconnected(doc),
@@ -566,6 +567,23 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     plugin.registerEvent(app.workspace.on("active-leaf-change", () => engine?.panesChanged()));
     plugin.registerEvent(app.workspace.on("layout-change", () => engine?.panesChanged()));
   });
+  if (typeof app.workspace?.on === "function" && typeof plugin.registerEvent === "function") {
+    plugin.registerEvent(
+      app.workspace.on("file-open", (file) => {
+        if (!file?.path || !deps.settings().stayConnected || !deps.signedIn()) return;
+        const doc = mapped(file.path);
+        if (!doc || typeof deps.model.draftInfo !== "function") return;
+        const vaultPath = deps.vaultPath(doc.path);
+        const info = deps.model.draftInfo(vaultPath);
+        if (info.draft !== null && !info.holdsDraft && info.draft.blob !== info.sent) {
+          const policy = engine?.policyFor(vaultPath, info.draft) ?? deps.settings().stayDrafts;
+          if (follows(info.draft, deps.login(), { sent: info.sent, sentTo: info.sentTo }, policy)) {
+            engine?.heardDraft(vaultPath, 0);
+          }
+        }
+      }),
+    );
+  }
 
   let wasHidden = false;
   const hasCanvasLeaf = (): boolean => app.workspace.getLeavesOfType("canvas").length > 0;

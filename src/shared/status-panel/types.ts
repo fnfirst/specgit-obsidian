@@ -212,6 +212,7 @@ export interface StatusPanelModel {
 export interface PanelMenuItem {
   label: string;
   danger?: boolean;
+  disabled?: boolean;
   run: () => void;
 }
 

@@ -44,6 +44,7 @@ export interface StayPorts {
   now(): number;
   enabled(): boolean;
   signedIn(): boolean;
+  activePath?(): string | null;
   documentFor(path: string): DocumentRef | null;
   phaseOf(path: string): NotePhase;
   disconnected(doc: DocumentRef): boolean;

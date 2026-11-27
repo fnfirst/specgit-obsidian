@@ -24,7 +24,7 @@ export function placeMenu(root: HTMLElement | null, anchor: HTMLElement, count: 
 export function MenuPopover({ menu, onClose }: { menu: OpenMenu; onClose: () => void }) {
   const list = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    list.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    (list.current?.querySelector<HTMLElement>("[role=menuitem]:not(:disabled)") ?? list.current?.querySelector<HTMLElement>("[role=menuitem]"))?.focus();
     const onDown = (event: Event) => {
       if (!list.current?.contains(event.target as Node | null)) onClose();
     };
@@ -32,7 +32,8 @@ export function MenuPopover({ menu, onClose }: { menu: OpenMenu; onClose: () => 
     return () => window.removeEventListener("pointerdown", onDown, true);
   }, [onClose]);
   const move = (by: number) => {
-    const all = Array.from(list.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? []);
+    const enabled = Array.from(list.current?.querySelectorAll<HTMLElement>("[role=menuitem]:not(:disabled)") ?? []);
+    const all = enabled.length > 0 ? enabled : Array.from(list.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? []);
     const at = all.indexOf(list.current?.ownerDocument.activeElement as HTMLElement);
     all[(at + by + all.length) % all.length]?.focus();
   };
@@ -58,8 +59,10 @@ export function MenuPopover({ menu, onClose }: { menu: OpenMenu; onClose: () => 
           key={item.label}
           type="button"
           role="menuitem"
+          disabled={item.disabled}
           className={item.danger ? "sp-menu-item sp-danger" : "sp-menu-item"}
           onClick={() => {
+            if (item.disabled) return;
             onClose();
             item.run();
           }}

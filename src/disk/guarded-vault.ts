@@ -46,7 +46,10 @@ export interface GuardedVault {
 const DISPLAY_ONLY_VIEWS: ReadonlySet<string> = new Set(["backlink", "outgoing-link", "outline", "file-properties", "localgraph"]);
 
 interface CanvasNodeLike {
+  id?: unknown;
   text?: unknown;
+  filePath?: unknown;
+  file?: { path?: unknown } | null;
   child?: {
     dirty?: unknown;
     editMode?: {
@@ -241,6 +244,85 @@ function readViewData(view: PaneView): string | null {
   }
 }
 
+function matchesCanvasDiskBeforeFileRename(view: PaneView, data: string, disk: string): boolean {
+  const byId = new Map<string, { currentPath: string; diskPath: string }>();
+  const unmutatedIds = new Set<string>();
+  const byCurrentPath = new Map<string, string>();
+  const rawNodes = view.canvas?.nodes;
+  const entries: Array<[string | null, CanvasNodeLike]> =
+    rawNodes instanceof Map
+      ? [...rawNodes.entries()].map(([k, v]) => [typeof k === "string" && k !== "" ? k : null, v as CanvasNodeLike])
+      : canvasNodes(rawNodes).map((v) => [null, v]);
+  for (const [mapId, node] of entries) {
+    const id = typeof node?.id === "string" && node.id !== "" ? node.id : mapId;
+    const diskPath = typeof node?.filePath === "string" && node.filePath !== "" ? node.filePath : null;
+    const currentPath = typeof node?.file?.path === "string" && node.file.path !== "" ? node.file.path : null;
+    if (diskPath !== null && currentPath !== null) {
+      if (diskPath !== currentPath) {
+        if (id !== null) byId.set(id, { currentPath, diskPath });
+        byCurrentPath.set(currentPath, diskPath);
+      } else if (id !== null) {
+        unmutatedIds.add(id);
+      }
+    }
+  }
+  if (byCurrentPath.size === 0) return false;
+  try {
+    const parsed = JSON.parse(stripBom(data)) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+    const nodes = (parsed as { nodes?: unknown }).nodes;
+    if (!Array.isArray(nodes)) return false;
+    let changed = false;
+    for (const raw of nodes) {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+      const u = raw as Record<string, unknown>;
+      if (u.type !== "file" || typeof u.file !== "string") continue;
+      const nodeId = typeof u.id === "string" && u.id !== "" ? u.id : null;
+      if (nodeId !== null && byId.has(nodeId)) {
+        const pair = byId.get(nodeId)!;
+        if (u.file === pair.currentPath) {
+          u.file = pair.diskPath;
+          changed = true;
+        }
+      } else if (nodeId === null || !unmutatedIds.has(nodeId)) {
+        const diskPath = byCurrentPath.get(u.file);
+        if (diskPath !== undefined) {
+          u.file = diskPath;
+          changed = true;
+        }
+      }
+    }
+    return changed && sameCanvasText(JSON.stringify(parsed), disk);
+  } catch {
+    return false;
+  }
+}
+
+function suppressCanvasRenameRewrite(app: App, from: string, to: string): void {
+  try {
+    const instance = (
+      app as {
+        internalPlugins?: {
+          getPluginById?: (id: string) => { instance?: { renames?: unknown; requestProcessRename?: { cancel?: () => unknown } } } | null;
+        };
+      }
+    ).internalPlugins?.getPluginById?.("canvas")?.instance;
+    if (!Array.isArray(instance?.renames)) return;
+    for (let i = instance.renames.length - 1; i >= 0; i--) {
+      const entry: unknown = instance.renames[i];
+      if (Array.isArray(entry) && entry[0] === from && entry[1] === to) {
+        instance.renames.splice(i, 1);
+        break;
+      }
+    }
+    if (instance.renames.length === 0 && typeof instance.requestProcessRename?.cancel === "function") {
+      instance.requestProcessRename.cancel();
+    }
+  } catch {
+    void 0;
+  }
+}
+
 function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
   if (view.editor !== undefined) return stripBom(view.editor.getValue()) !== stripBom(toLf(disk));
   const type = view.getViewType();
@@ -248,7 +330,7 @@ function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
   if (type === "canvas") {
     if (hasDirtyCanvasCard(view)) return true;
     const data = readViewData(view);
-    if (data !== null && toLf(data) !== toLf(disk) && !sameCanvasText(data, disk)) return true;
+    if (data !== null && toLf(data) !== toLf(disk) && !sameCanvasText(data, disk) && !matchesCanvasDiskBeforeFileRename(view, data, disk)) return true;
     if (confirmed) return false;
     return data === null || view.canvas?.isDragging === true || editingElements(view.containerEl).some(isEditingNodeActive);
   }
@@ -335,6 +417,7 @@ export function guardedVault(app: App): GuardedVault {
       try {
         await ensureFolder(to);
         await vault.rename(file, to);
+        suppressCanvasRenameRewrite(app, from, to);
         return "renamed";
       } catch {
         return vault.getAbstractFileByPath(to) || hasVaultCaseCollision(vault, to, from) ? "exists" : "failed";

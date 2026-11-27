@@ -1,8 +1,30 @@
-import { EditorView } from "@codemirror/view";
-import { editorInfoField, type Plugin, type TAbstractFile } from "obsidian";
+import { Platform, type Plugin, type TAbstractFile } from "obsidian";
 import type { GroupsRead } from "../review/review-api";
 import { watchWindows } from "../windows";
+import {
+  UNTITLED_PRE_TITLE_MAX_MS,
+  cmContentElementOf,
+  consumeBufferedBeforeInput,
+  currentDoc,
+  flushPreTitleOnFocus,
+  flushPreTitleToEditor,
+  flushRescuedChars,
+  focusedInlineTitle,
+  handlePreTitleBeforeInput,
+  handlePreTitleKeyDown,
+  inlineTitleElementOf,
+  isBlockedPreTitleFocusTarget,
+  isInlineTitleElement,
+  isRescueTargetActive,
+  isSyntheticTitleEnter,
+  popLastCodePoint,
+  settlePreTitleOnFileOpen,
+  type PreTitleRescueState,
+  type TitleRescueState,
+} from "./title-rescue";
 import type { VaultStates } from "./vault-state";
+
+export { UNTITLED_PRE_TITLE_MAX_MS };
 
 export interface LocalNewInput {
   path: string;
@@ -37,16 +59,6 @@ interface FreshEntry {
   opened?: boolean;
 }
 
-interface TitleRescueState {
-  el: HTMLElement;
-  leafEl: Element | null;
-  expectedPath: string | null;
-  win: Window | null;
-  pendingBodyChars: string;
-  expiresAt: number;
-  skipBeforeInput: { kind: "insertText" | "deleteContentBackward"; data?: string; at: number } | null;
-}
-
 interface PluginLocalTracker {
   fresh: Map<string, FreshEntry>;
   locallyCreatedByLower: Map<string, FreshEntry>;
@@ -63,6 +75,7 @@ interface PluginLocalTracker {
   titleFocusStartedAt: number;
   dismissedTitleEl: HTMLElement | null;
   rescue: TitleRescueState | null;
+  preTitle: PreTitleRescueState | null;
   activePath: () => string | null;
 }
 
@@ -84,37 +97,6 @@ const stateLowerCache = new WeakMap<VaultStates, ReadonlyMap<string, readonly st
 const trackersByPlugin = new WeakMap<Plugin, PluginLocalTracker>();
 const activeTrackers = new Set<PluginLocalTracker>();
 const quietEndListeners = new Set<() => void>();
-
-function inlineTitleElementOf(target: unknown): HTMLElement | null {
-  if (!target || typeof target !== "object") return null;
-  const el = target as { classList?: { contains?: (name: string) => boolean }; closest?: (selector: string) => unknown };
-  if (typeof el.classList?.contains === "function" && el.classList.contains("inline-title")) return target as HTMLElement;
-  const found = typeof el.closest === "function" ? el.closest(".inline-title") : null;
-  return found && typeof found === "object" ? (found as HTMLElement) : null;
-}
-
-function isInlineTitleElement(target: unknown): boolean {
-  return inlineTitleElementOf(target) !== null;
-}
-
-function cmContentElementOf(target: unknown): HTMLElement | null {
-  if (!target || typeof target !== "object") return null;
-  const el = target as { classList?: { contains?: (name: string) => boolean }; closest?: (selector: string) => unknown };
-  if (typeof el.classList?.contains === "function" && el.classList.contains("cm-content")) return target as HTMLElement;
-  const found = typeof el.closest === "function" ? el.closest(".cm-content") : null;
-  return found && typeof found === "object" ? (found as HTMLElement) : null;
-}
-
-function currentDoc(): Document | null {
-  if (typeof activeDocument !== "undefined") return activeDocument;
-  if (typeof window !== "undefined") return window.document;
-  return null;
-}
-
-function focusedInlineTitle(): HTMLElement | null {
-  const active = currentDoc()?.activeElement ?? null;
-  return inlineTitleElementOf(active);
-}
 
 function notifyQuietEnd(): void {
   for (const listener of [...quietEndListeners]) listener();
@@ -208,36 +190,6 @@ function trackedFreshEntry(lower: string, currentPlace: string): FreshEntry | nu
   return null;
 }
 
-function isRescueTargetActive(rescue: TitleRescueState | null, target: EventTarget | null, now: number): rescue is TitleRescueState {
-  if (!rescue || now >= rescue.expiresAt) return false;
-  const titleEl = inlineTitleElementOf(target);
-  if (titleEl !== rescue.el) return false;
-  const doc = rescue.el.ownerDocument ?? currentDoc();
-  const active = doc?.activeElement ?? null;
-  return active === null || active === rescue.el || rescue.el.contains(active);
-}
-
-function flushRescuedChars(plugin: Plugin, cmContent: HTMLElement, chars: string, expectedPath: string | null): void {
-  const activeEditor = (plugin.app?.workspace as { activeEditor?: { editor?: { cm?: unknown; replaceSelection?: (text: string) => void } } } | undefined)?.activeEditor?.editor;
-  const view = EditorView.findFromDOM(cmContent) ?? (activeEditor?.cm instanceof EditorView ? activeEditor.cm : null);
-  if (view) {
-    if (view.state.readOnly) return;
-    if (expectedPath !== null) {
-      const viewPath = view.state.field(editorInfoField, false)?.file?.path ?? null;
-      if (viewPath !== null && viewPath.toLowerCase() !== expectedPath.toLowerCase()) return;
-    }
-    const { from, to, head } = view.state.selection.main;
-    const anchor = Math.min(from, head);
-    view.dispatch({
-      userEvent: "input.type",
-      changes: { from, to, insert: chars },
-      selection: { anchor: anchor + chars.length },
-    });
-    return;
-  }
-  if (typeof activeEditor?.replaceSelection === "function") activeEditor.replaceSelection(chars);
-}
-
 export function trackFreshLocalNotes(plugin: Plugin): void {
   if (trackersByPlugin.has(plugin)) return;
   const workspace = plugin.app?.workspace;
@@ -257,6 +209,7 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     titleFocusStartedAt: 0,
     dismissedTitleEl: null,
     rescue: null,
+    preTitle: null,
     activePath: () => (workspace && typeof workspace.getActiveFile === "function" ? (workspace.getActiveFile()?.path ?? null) : null),
   };
   trackersByPlugin.set(plugin, tracker);
@@ -291,6 +244,12 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     armQuietTimer();
   };
 
+  const seedPostEnter = (at: number): void => {
+    tracker.lastArmedAt = at;
+    tracker.postEnterUntil = Math.max(tracker.postEnterUntil, at + UNTITLED_POST_ENTER_MS);
+    armQuietTimer();
+  };
+
   const onFocusIn = (event: Event): void => {
     if (disposed) return;
     const now = Date.now();
@@ -299,14 +258,27 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       tracker.focusedTitleEl = titleEl;
       tracker.dismissedTitleEl = null;
       if (tracker.rescue && tracker.rescue.el !== titleEl) tracker.rescue = null;
+      if (tracker.preTitle !== null) {
+        flushPreTitleOnFocus(tracker, titleEl, now, UNTITLED_RESCUE_MAX_MS, () => disposed, isUntitledPath, seedPostEnter);
+      }
       return;
+    }
+    const cmContent = cmContentElementOf(event.target);
+    if (tracker.preTitle !== null) {
+      if (cmContent !== null) {
+        const pre = tracker.preTitle;
+        const activeNow = tracker.activePath();
+        const sameOrigin = cmContent === pre.originCmEl && (activeNow === pre.originPath || (activeNow !== null && !isUntitledPath(activeNow)));
+        if (!sameOrigin) flushPreTitleToEditor(plugin, tracker, cmContent, now, () => disposed, isUntitledPath);
+      } else if (isBlockedPreTitleFocusTarget(event.target)) {
+        tracker.preTitle = null;
+      }
     }
     if (tracker.rescue === null) return;
     if (now >= tracker.rescue.expiresAt) {
       tracker.rescue = null;
       return;
     }
-    const cmContent = cmContentElementOf(event.target);
     if (cmContent === null) {
       tracker.rescue = null;
       return;
@@ -355,15 +327,34 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
   };
 
   const onCaptureKeyDown = (event: Event): void => {
-    if (disposed) return;
+    if (disposed || isSyntheticTitleEnter(event)) return;
     const ke = event as KeyboardEvent;
     const now = Date.now();
     const key = typeof ke.key === "string" ? ke.key : "";
-    if ((ke.metaKey || ke.ctrlKey) && !ke.altKey && key.toLowerCase() === "n") {
+    const isMac = Boolean(Platform.isMacOS);
+    const isModN = (isMac ? ke.metaKey && !ke.ctrlKey : ke.ctrlKey || ke.metaKey) && !ke.altKey && key.toLowerCase() === "n";
+    if (isModN) {
       tracker.rescue = null;
       armCreateQuiet(now);
+      const doc = (event.target as Node | null)?.ownerDocument ?? currentDoc();
+      if (!ke.shiftKey && !ke.isComposing && !doc?.querySelector?.(".modal-container, .prompt")) {
+        tracker.preTitle = {
+          expiresAt: now + UNTITLED_PRE_TITLE_MAX_MS,
+          win: doc?.defaultView ?? (typeof window !== "undefined" ? window : null),
+          originTitleEl: focusedInlineTitle() ?? inlineTitleElementOf(doc?.activeElement ?? null) ?? inlineTitleElementOf(event.target),
+          originCmEl: cmContentElementOf(doc?.activeElement ?? null) ?? cmContentElementOf(event.target),
+          originPath: tracker.activePath(),
+          pendingTitleChars: "",
+          pendingBodyChars: "",
+          submitted: false,
+          skipBeforeInput: null,
+        };
+      } else {
+        tracker.preTitle = null;
+      }
       return;
     }
+    if (tracker.preTitle !== null && handlePreTitleKeyDown(tracker, event, ke, key, now)) return;
     if (tracker.rescue && now >= tracker.rescue.expiresAt) {
       tracker.rescue = null;
       return;
@@ -382,9 +373,7 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     }
     if (key === "Backspace") {
       ke.preventDefault();
-      if (tracker.rescue.pendingBodyChars.length > 0) {
-        tracker.rescue.pendingBodyChars = Array.from(tracker.rescue.pendingBodyChars).slice(0, -1).join("");
-      }
+      tracker.rescue.pendingBodyChars = popLastCodePoint(tracker.rescue.pendingBodyChars);
       tracker.rescue.skipBeforeInput = { kind: "deleteContentBackward", at: now };
       return;
     }
@@ -398,37 +387,32 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
   const onBeforeInput = (event: Event): void => {
     if (disposed) return;
     const now = Date.now();
+    if (tracker.preTitle !== null && handlePreTitleBeforeInput(tracker, event, now)) return;
     if (tracker.rescue && now >= tracker.rescue.expiresAt) {
       tracker.rescue = null;
       return;
     }
     if (!isRescueTargetActive(tracker.rescue, event.target, now)) return;
-    const ie = event as InputEvent;
-    if (ie.inputType === "insertText" && typeof ie.data === "string" && ie.data.length > 0) {
-      ie.preventDefault();
-      if (tracker.rescue.skipBeforeInput?.kind === "insertText" && tracker.rescue.skipBeforeInput.data === ie.data && now - tracker.rescue.skipBeforeInput.at <= 16) {
-        tracker.rescue.skipBeforeInput = null;
-        return;
-      }
-      tracker.rescue.skipBeforeInput = null;
-      tracker.rescue.pendingBodyChars += ie.data;
-      return;
-    }
-    if (ie.inputType === "deleteContentBackward") {
-      ie.preventDefault();
-      if (tracker.rescue.skipBeforeInput?.kind === "deleteContentBackward" && now - tracker.rescue.skipBeforeInput.at <= 16) {
-        tracker.rescue.skipBeforeInput = null;
-        return;
-      }
-      tracker.rescue.skipBeforeInput = null;
-      if (tracker.rescue.pendingBodyChars.length > 0) {
-        tracker.rescue.pendingBodyChars = Array.from(tracker.rescue.pendingBodyChars).slice(0, -1).join("");
-      }
-    }
+    const rescue = tracker.rescue;
+    consumeBufferedBeforeInput(
+      rescue,
+      event as InputEvent,
+      now,
+      true,
+      (data) => {
+        rescue.pendingBodyChars += data;
+      },
+      () => {
+        rescue.pendingBodyChars = popLastCodePoint(rescue.pendingBodyChars);
+      },
+    );
   };
 
   const onPointerDown = (): void => {
-    if (!disposed) tracker.rescue = null;
+    if (!disposed) {
+      tracker.rescue = null;
+      tracker.preTitle = null;
+    }
   };
 
   const onBubbleKeyDown = (event: Event): void => {
@@ -440,6 +424,11 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     const now = Date.now();
     tracker.lastArmedAt = now;
     tracker.postEnterUntil = Math.max(tracker.postEnterUntil, now + UNTITLED_POST_ENTER_MS);
+    const doc = titleEl.ownerDocument ?? currentDoc();
+    if (doc?.activeElement && !isInlineTitleElement(doc.activeElement)) {
+      armQuietTimer();
+      return;
+    }
     const sameRescue = tracker.rescue && tracker.rescue.el === titleEl && now < tracker.rescue.expiresAt ? tracker.rescue : null;
     const leafEl = typeof titleEl.closest === "function" ? titleEl.closest(".workspace-leaf") : null;
     tracker.rescue = {
@@ -512,6 +501,7 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       tracker.titleFocusStartedAt = 0;
       tracker.dismissedTitleEl = null;
       tracker.rescue = null;
+      tracker.preTitle = null;
     });
   }
   const vault = plugin.app?.vault;
@@ -615,7 +605,13 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       entry.opened = true;
       armCreateQuiet(Date.now());
     };
-    keep(workspace.on("file-open", (file) => noteFreshOpen(file?.path ?? tracker.activePath())));
+    keep(
+      workspace.on("file-open", (file) => {
+        const opened = file?.path ?? tracker.activePath();
+        noteFreshOpen(opened);
+        settlePreTitleOnFileOpen(plugin, tracker, opened, Date.now(), UNTITLED_RESCUE_MAX_MS, () => disposed, isUntitledPath, seedPostEnter);
+      }),
+    );
     keep(workspace.on("active-leaf-change", () => noteFreshOpen(tracker.activePath())));
   }
   if (workspace && typeof workspace.onLayoutReady === "function") {

@@ -151,17 +151,19 @@ export const boxesWait = (ctx: Pick<Ctx, "busy" | "running">): boolean => ctx.bu
 
 export const runningLabel = (ctx: Pick<Ctx, "busy" | "running">, step: StatusRunning, label: string): string => (ctx.busy && ctx.running === step ? STATUS_RUNNING[step] : label);
 
-export function MoreButton({ id, name, ctx, open }: { id: string; name: string; ctx: Ctx; open?: (anchor: HTMLElement) => void }) {
+export function MoreButton({ id, name, ctx, disabled, open }: { id: string; name: string; ctx: Ctx; disabled?: boolean; open?: (anchor: HTMLElement) => void }) {
   return (
     <button
       type="button"
       className="sp-more"
+      disabled={disabled}
       aria-label={STATUS_LABELS.more(name)}
       aria-haspopup="menu"
       aria-expanded={ctx.openMenuId === id}
       data-sp-menu={id}
       {...ctx.tips.bind(`${id}:more`, STATUS_CONTROL_TIPS.more)}
       onClick={(event) => {
+        if (disabled) return;
         ctx.tips.hide();
         (open ?? ((anchor: HTMLElement) => ctx.menuFor(id, anchor)))(event.currentTarget);
       }}

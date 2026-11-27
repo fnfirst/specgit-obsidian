@@ -95,6 +95,8 @@ export function groupMenuItems(group: Pick<StatusGroup, "state" | "hasReview" | 
 }
 export const memberMenuId = (member: string): string => `member:${member}`;
 export const groupMenuLabel = (item: StatusGroupMenuItem): string => STATUS_GROUP_MENU[item];
+export const isViewOnlyRowMenuItem = (item: StatusRowMenuItem): boolean => VIEW_ONLY_MENU.includes(item);
+export const isViewOnlyGroupMenuItem = (item: StatusGroupMenuItem): boolean => item === "view-on-github";
 
 export function RowButton({ button, id, ctx, group, ending }: { button: StatusRowButton; id: string; ctx: Ctx; group?: boolean; ending?: boolean }) {
   const label = STATUS_ROW_BUTTONS[button];
@@ -387,7 +389,7 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
               <button type="button" className="sp-name-link" onClick={() => ctx.act({ type: "row", id: member.id, action: "open" })}>
                 {member.name}
               </button>
-              {!ctx.readOnly ? <MoreButton id={memberMenuId(member.id)} name={member.name} ctx={ctx} open={(anchor) => ctx.memberMenuFor(group.id, member.id, anchor)} /> : null}
+              {!ctx.readOnly ? <MoreButton id={memberMenuId(member.id)} name={member.name} ctx={ctx} disabled={buttonsOff(ctx)} open={(anchor) => ctx.memberMenuFor(group.id, member.id, anchor)} /> : null}
             </li>
           ))}
           {rest > 0 ? (

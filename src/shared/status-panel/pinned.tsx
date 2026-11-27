@@ -84,17 +84,18 @@ export function PinnedCard({ pinned, ctx, quiet, hasMore, showReason = false, on
         {pinned.warning ? (
           <p className="sp-card-warning" role="status" data-testid="sp-card-warning">
             <span>{pinned.warning}</span>
-            {plugin && !ctx.readOnly && RELOAD_WARNINGS.has(pinned.warning) ? (
+            {!ctx.readOnly && RELOAD_WARNINGS.has(pinned.warning) ? (
               <>
                 {" "}
                 <button
                   type="button"
                   className="sp-link sp-live-connect"
                   data-testid="sp-card-warning-reload"
-                  disabled={plugin.joining || buttonsOff(ctx)}
+                  disabled={Boolean(plugin?.joining) || buttonsOff(ctx)}
                   onClick={() => {
+                    if (plugin?.joining || buttonsOff(ctx)) return;
                     ctx.tips.hide();
-                    if (plugin.connected) ctx.act({ type: "pinned", action: "disconnect" });
+                    if (plugin?.connected) ctx.act({ type: "pinned", action: "disconnect" });
                     ctx.act({ type: "pinned", action: "connect-live" });
                     ctx.act({ type: "retry" });
                   }}

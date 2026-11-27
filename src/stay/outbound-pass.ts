@@ -4,7 +4,7 @@ import { agreedOf, type CacheEntry } from "../changes/cache";
 import type { ChangeRow, Looked } from "../changes/model";
 import { unchangedHere } from "../changes/unchanged-here";
 import { hasBom, stripBom, toLf, withBomAndEol } from "../disk/line-endings";
-import { type DocumentRef, noteName } from "../mapping";
+import { type DocumentRef, noteName, pathKind } from "../mapping";
 import { GROUP_NOT_ON_WORDS, GROUP_PLAN_WORDS } from "../shared/review-flow";
 import type { Activity } from "./activity";
 import { type Case, draftCase, type Draft, type Ended, type FileFacts, follows, isClean, type LeftAlone, type StayDrafts } from "./draft-state";
@@ -238,12 +238,24 @@ export const isSkippableDraftMerge = (
   return kind === "merge" && entry !== undefined && !isEditHeld(path, entry.sha) && cleanMerges.get(path) === `${entry.sha}|${draftBlob ?? ""}`;
 };
 
+export const prioritizeDraftPaths = (paths: Iterable<string>, activePath?: string | null): string[] => {
+  const active: string[] = [];
+  const structured: string[] = [];
+  const rest: string[] = [];
+  for (const path of paths) {
+    if (activePath != null && path === activePath) active.push(path);
+    else if (pathKind(path) !== "note") structured.push(path);
+    else rest.push(path);
+  }
+  return [...active, ...structured, ...rest];
+};
+
 export interface AdmitDraftReadsEnv {
   looked: Looked;
   paths: ReadonlySet<string>;
   drafts: NonNullable<Looked["drafts"]>;
   skip: ReadonlySet<string>;
-  ports: Pick<StayPorts, "documentFor" | "inGroup" | "login">;
+  ports: Pick<StayPorts, "documentFor" | "inGroup" | "login" | "activePath">;
   transitMs: number;
   draftsPerPass: number;
   textsPerPass: number;
@@ -264,7 +276,7 @@ export const admitDraftReads = async (env: AdmitDraftReadsEnv): Promise<{ asked:
   const deferred = new Set<string>();
   const seen = new Set<string>();
   let admitted = 0;
-  for (const path of paths) {
+  for (const path of prioritizeDraftPaths(paths, ports.activePath?.() ?? null)) {
     if (skip.has(path)) continue;
     const draft = drafts.byPath.get(path);
     const doc = ports.documentFor(path);

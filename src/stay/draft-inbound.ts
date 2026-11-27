@@ -16,7 +16,7 @@ import type { End } from "./ends";
 import { caseCollisionWords, StayHolds, vaultCaseIndex } from "./holds";
 import { FIRST_WAIT_MS, MAX_WAIT_MS, READS_PER_PASS, TEXTS_PER_PASS as MAIN_TEXTS_PER_PASS } from "./inbound";
 import { changeKey } from "./outbound";
-import { admitDraftReads, backfillAgreed, computeBusyBeforeDraftRun, endedMemoOf, excludeRenameLooked, fallbackHeardDraft, fileFactsOf, finalizeDraftBusy, isFreshLocalUntitled, isSkippableDraftMerge, matchesDraftBlobOnDisk, readDraftMergeBase, snapshotDraftBusy, stepBackoff, writeDraftText, yieldQuiet } from "./outbound-pass";
+import { admitDraftReads, backfillAgreed, computeBusyBeforeDraftRun, endedMemoOf, excludeRenameLooked, fallbackHeardDraft, fileFactsOf, finalizeDraftBusy, isFreshLocalUntitled, isSkippableDraftMerge, matchesDraftBlobOnDisk, prioritizeDraftPaths, readDraftMergeBase, snapshotDraftBusy, stepBackoff, writeDraftText, yieldQuiet } from "./outbound-pass";
 import type { StayState } from "./state";
 import type { StayPorts } from "./types";
 import { BackoffWaits, WakeClock } from "./wait";
@@ -84,7 +84,8 @@ export class DraftInbound {
   private readonly cleanMerges = new Map<string, string>();
   private readonly noticed = new Set<string>();
   private readonly offers: TeammateOffers;
-  private readonly attachmentsFor = new Map<string, string>();
+  private readonly attachmentsFor = new Map<string, { blob: string; replaced: boolean }>();
+  private readonly attachmentWaits = new Map<string, { strikes: number; until: number }>();
   private readonly endedMemo: ReturnType<typeof endedMemoOf>;
   private readyToSend = new Set<string>();
   pending(path: string): boolean {
@@ -160,6 +161,8 @@ export class DraftInbound {
     for (const path of [...this.noticed]) this.clearConflict(path);
     this.toldConflict.clear();
     this.cleanMerges.clear();
+    this.attachmentsFor.clear();
+    this.attachmentWaits.clear();
     this.unsaved.clear();
     this.deferredUnsaved.clear();
     this.crlfMiss.clear();
@@ -321,9 +324,10 @@ export class DraftInbound {
     for (const path of [...this.unlevel.keys()]) if (!paths.has(path)) this.unlevel.delete(path);
     for (const path of [...this.crlfMiss.keys()]) if (!paths.has(path)) this.crlfMiss.delete(path);
     for (const path of [...this.cleanMerges.keys()]) if (!paths.has(path)) this.cleanMerges.delete(path);
+    for (const path of [...this.attachmentWaits.keys()]) if (!paths.has(path)) this.attachmentWaits.delete(path);
     for (const path of [...this.deferredUnsaved]) if (!paths.has(path) && !renamed.heldFrom.has(path)) this.clearUnsaved(path);
     for (const path of [...this.unsaved.keys()]) if (!paths.has(path) && !renamed.heldFrom.has(path)) this.unsaved.delete(path);
-    for (const path of paths) {
+    for (const path of prioritizeDraftPaths(paths, this.ctx.ports.activePath?.() ?? null)) {
       if (!this.ctx.current()) break;
       if (skip.has(path)) continue;
       if (await this.one(looked, path, drafts.byPath.get(path) ?? null, drafts.level)) changed++;
@@ -684,15 +688,24 @@ export class DraftInbound {
 
   private async attachments(path: string, doc: DocumentRef, draft: Draft, replace = true): Promise<void> {
     const { ports } = this.ctx;
-    if (!ports.bringAttachments || draft.blob === null || this.attachmentsFor.get(path) === draft.blob) return;
+    const done = this.attachmentsFor.get(path);
+    if (!ports.bringAttachments || draft.blob === null || (done?.blob === draft.blob && (done.replaced || !replace))) return;
     const text = await ports.vault.read(path);
     if (text === null || !this.ctx.current()) return;
-    this.attachmentsFor.set(path, draft.blob);
+    let completed = false;
     try {
-      await ports.bringAttachments(doc, draft.branch, path, text, (words) => ports.attachmentRow?.(path, words), { replace });
+      await ports.bringAttachments(doc, draft.branch, path, text, (words) => ((completed = true), ports.attachmentRow?.(path, words)), { replace });
     } catch {
       ports.diagnose("the attachments of a draft could not be brought in");
     }
+    if (!this.ctx.current()) return;
+    if (completed) {
+      this.attachmentWaits.delete(path);
+      this.attachmentsFor.set(path, { blob: draft.blob, replaced: replace || (done?.blob === draft.blob && done.replaced) });
+      return;
+    }
+    const until = stepBackoff(this.attachmentWaits, path, ports.now(), UNLEVEL_ENDED_WAITS_MS);
+    if (until !== null) this.wake.until(until, ports.now());
   }
 
   noteInitial(looked: Looked): void {
