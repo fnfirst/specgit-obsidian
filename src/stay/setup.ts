@@ -13,6 +13,8 @@ import { showChanges } from "../review/modals";
 import { type DocumentRef, fileFor, isHiddenPath, normalizeFolder, underFolder } from "../mapping";
 import { bringInDraft, bringInNewer, type BroughtDraft, type BroughtNewer } from "../changes/bring-in";
 import { copiedWords, copyIn, FILES_PER_BATCH, type CopyInFile, type CopyInOptions, type CopyInPorts, type CopyInResult } from "../changes/copy-in";
+import { deferDuringUntitled, untitledCreateRemainingMs } from "../changes/local-new";
+import { registerPluginOwnWrites } from "../changes/setup";
 
 import { endOf, readReviewEnds } from "./ends";
 import { fileAttachmentLinks } from "../changes/attachment-links";
@@ -32,7 +34,7 @@ import type { ChangeRow, Looked } from "../changes/model";
 import type { Dialogs } from "../changes/flow-deps";
 import type { ReviewRequest } from "../editor/services";
 import { recordMainBase } from "../changes/main-base";
-import { Activity } from "./activity";
+import { Activity, ACTIVITY } from "./activity";
 import { locateGit } from "./git-desktop";
 import { tiedTo } from "./tie";
 import { NOTE_BRANCH } from "../auth/config";
@@ -117,20 +119,82 @@ async function readDraftBase(
 
 export const PLACE_SETTLES_MS = 1_000;
 
+export class TrackedActivity extends Activity {
+  private readonly ownUntil = new Map<string, number>();
+  private readonly writingDepth = new Map<string, number>();
+
+  constructor(private readonly clock: () => number = Date.now) {
+    super(clock);
+  }
+
+  override ownWrite(...paths: string[]): void {
+    const until = this.clock() + ACTIVITY.ownMs;
+    for (const path of paths) this.ownUntil.set(path, until);
+    super.ownWrite(...paths);
+  }
+
+  override async during<T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T> {
+    for (const path of paths) this.writingDepth.set(path, (this.writingDepth.get(path) ?? 0) + 1);
+    let happened = left === undefined;
+    try {
+      return await super.during(paths, run, (result) => {
+        const shas = left?.(result) ?? null;
+        if (left !== undefined) happened = shas !== null;
+        return shas;
+      });
+    } finally {
+      const until = this.clock() + ACTIVITY.ownMs;
+      for (const path of paths) {
+        const next = (this.writingDepth.get(path) ?? 1) - 1;
+        if (next > 0) this.writingDepth.set(path, next);
+        else this.writingDepth.delete(path);
+        if (happened) this.ownUntil.set(path, Math.max(this.ownUntil.get(path) ?? 0, until));
+      }
+    }
+  }
+
+  override notWritten(...paths: string[]): void {
+    for (const path of paths) this.ownUntil.delete(path);
+    super.notWritten(...paths);
+  }
+
+  isOwnWrite(path: string): boolean {
+    if ((this.writingDepth.get(path) ?? 0) > 0) return true;
+    const until = this.ownUntil.get(path);
+    if (until === undefined) return false;
+    if (until > this.clock()) return true;
+    this.ownUntil.delete(path);
+    return false;
+  }
+}
+
 export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   const { app } = plugin;
   const localState: LocalState = { load: (name) => app.loadLocalStorage(name) as unknown, save: (name, value) => app.saveLocalStorage(name, value) };
-  const activity = new Activity();
+  const activity = new TrackedActivity();
+  plugin.register(registerPluginOwnWrites(plugin, (path) => activity.isOwnWrite(path)));
+  const quietWaitMs = (): number => untitledCreateRemainingMs(plugin);
+  const deferredCheckpoint = deferDuringUntitled(plugin, () => deps.model.checkpoint());
   const vault = guardedVault(app);
   const place = (): string => `${deps.settings().repo}\n${normalizeFolder(deps.settings().folder)}`;
   const identity = (): string => `${place()}\n${deps.login()}`;
   const mapped = (path: string): DocumentRef | null => fileFor(deps.settings(), path);
   let lookTimer: number | undefined;
+  let unloaded = false;
+  const runLookAgain = (): void => {
+    lookTimer = undefined;
+    if (unloaded) return;
+    const quietLeft = quietWaitMs();
+    if (quietLeft > 0) {
+      lookTimer = window.setTimeout(runLookAgain, quietLeft + 50);
+      return;
+    }
+    void deps.model.refresh();
+  };
   const lookAgain = (): void => {
     window.clearTimeout(lookTimer);
-    lookTimer = window.setTimeout(() => void deps.model.refresh(), 400);
+    lookTimer = window.setTimeout(runLookAgain, 400);
   };
-  let unloaded = false;
   plugin.register(() => {
     unloaded = true;
     window.clearTimeout(lookTimer);
@@ -191,11 +255,12 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
           createBinaryStream: guardedBinaryCreateStream(app),
           agreed: (repoPath, sha) => deps.attachmentMemory?.().agree(repoPath, sha),
           recordBase: (file, _text, sha) => deps.model.copiedFrom(file.path, sha),
-          checkpoint: () => deps.model.checkpoint(),
+          checkpoint: () => (quietWaitMs() > 0 && !unloaded ? deferredCheckpoint() : deps.model.checkpoint()),
           vaultPaths: () => app.vault.getFiles().map((file) => file.path),
           notWritten: (path) => activity.notWritten(path),
           during: (paths, run, left) => activity.during(paths, run, left),
           blockedFor: () => WriteBudget.open(localState, deps.login()).waitFor(0),
+          quietWaitMs,
           pause: (ms) => new Promise((resume) => window.setTimeout(resume, ms)),
           clock: () => performance.now(),
           current: () => mine.wanted.some((wanted) => wanted()),
@@ -473,9 +538,9 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     if (!always) engineIdentity = at;
     const settings = { repo: deps.settings().repo, folder: deps.settings().folder };
     const tied = tiedTo(allowed, at, identity, (path) => fileFor(settings, path), activity);
-    const state = new StayState(place(), localState);
+    const state = new StayState(place(), localState, undefined, undefined, quietWaitMs);
     const serverTakes = (): number => (deps.model.state().groups.some((row) => row.group?.overview.ending !== undefined && row.group.overview.ending.stopped === undefined) ? ENDING_WRITES_PER_HOUR : 0);
-    return new StayConnected(tied, state, activity, WriteBudget.open(localState, deps.login(), Date.now, serverTakes));
+    return new StayConnected(tied, state, activity, WriteBudget.open(localState, deps.login(), Date.now, serverTakes), { quietWaitMs });
   };
 
   const touched = (path: string, deferRead = false): void => activity.touched(path, deferRead);

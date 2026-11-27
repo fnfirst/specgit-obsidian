@@ -89,7 +89,11 @@ export function applyChange(response: InFlightResponse, change: InFlightChange):
       const overview = groups?.[branch];
       if (groups && overview) {
         if (change.ended) delete groups[branch];
-        else groups[branch] = { ...overview, paths: overview.paths.filter((path) => !returned.has(path)), ...(change.ending ? { ending: change.ending } : {}) };
+        else {
+          const remainingPaths = overview.paths.filter((path) => !returned.has(path));
+          if (remainingPaths.length === 0 && !change.ending) delete groups[branch];
+          else groups[branch] = { ...overview, paths: remainingPaths, ...(change.ending ? { ending: change.ending } : {}) };
+        }
       }
       const paths: InFlightMap = {};
       for (const [path, entries] of Object.entries(response.paths)) {

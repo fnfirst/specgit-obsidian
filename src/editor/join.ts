@@ -77,11 +77,16 @@ export class Join {
   private sentAbort: AbortController | null = null;
   private settling = false;
   private letOutWith: string | null = null;
+  private joiningFrom: string | null = null;
 
   constructor(
     private readonly services: EditorServices,
     private readonly host: JoinHost,
   ) {}
+
+  enterJoining(editableText: string | null): void {
+    this.joiningFrom = editableText === null ? null : toLf(editableText);
+  }
 
   private cancelSent(): void {
     this.sent = undefined;
@@ -109,6 +114,7 @@ export class Join {
   forget(): void {
     this.apart = null;
     this.either = null;
+    this.joiningFrom = null;
     this.cancelGit();
     this.cancelSent();
   }
@@ -118,6 +124,7 @@ export class Join {
   }
 
   leave(): void {
+    this.joiningFrom = null;
     this.cancelGit();
     this.cancelSent();
   }
@@ -126,6 +133,7 @@ export class Join {
     this.apart = null;
     this.either = null;
     this.letOutWith = null;
+    this.joiningFrom = null;
     this.cancelGit();
     this.cancelSent();
   }
@@ -137,10 +145,12 @@ export class Join {
     const roomText = toLf(room.text.toJSON());
     if (tooLarge(editor) || tooLarge(roomText)) return { kind: "block", why: TOO_LARGE_MESSAGE };
     if (room.readOnly && editor !== "" && roomIsUnwritten(roomText, editor)) return { kind: "block", why: SAID.emptyRoom };
-    const emptied = editor === "" && !!this.letOutWith;
+    const emptied = editor === "" && (!!this.letOutWith || (this.joiningFrom !== null && this.joiningFrom !== ""));
     const differs = !(editor === "" && !emptied) && editor !== roomText && withoutFinalBreaks(editor) !== withoutFinalBreaks(roomText) && !roomIsUnwritten(roomText, editor);
+    const joiningMatchedRoom = apart.base === null && this.joiningFrom !== null && withoutFinalBreaks(roomText) === withoutFinalBreaks(this.joiningFrom);
     const unverifiedRestartBase = apart.fromStore === true && apart.startedOver && apart.base !== null && differs;
     if (
+      !joiningMatchedRoom &&
       this.sent === undefined &&
       this.services.sentBase !== undefined &&
       differs &&
@@ -186,6 +196,22 @@ export class Join {
           ? withoutFinalBreaks(this.git) !== withoutFinalBreaks(apart.base)
           : withoutFinalBreaks(editor) === withoutFinalBreaks(apart.base) || roomDroppedBase(apart.base, roomText, new Budget(MERGE_MS));
       if (rejectRestartBase) safeApart = { base: null, startedOver: true, fromGit: false };
+    }
+    if (joiningMatchedRoom) {
+      safeApart = { base: roomText, startedOver: false, fromGit: false };
+    } else if (
+      safeApart.base === null &&
+      (this.sent === null || this.sent === undefined) &&
+      this.joiningFrom !== null &&
+      roomText !== "" &&
+      withoutFinalBreaks(this.joiningFrom).startsWith(withoutFinalBreaks(roomText))
+    ) {
+      if (this.git === undefined) {
+        const recording = this.services.gitBases.underway(this.host.path());
+        void (recording ? this.settle(() => recording) : this.askGit());
+        return WAIT;
+      }
+      if (this.git === null) safeApart = { base: roomText, startedOver: false, fromGit: false };
     }
     const effective: Apart = this.sent !== null && this.sent !== undefined ? { base: this.sent, startedOver: false, fromGit: false } : safeApart;
     const meeting = { editor, room: roomText, base: effective.base, emptied, git: this.git, baseIsGit: effective.fromGit, readOnly: room.readOnly, source: "room" as const };

@@ -1,4 +1,5 @@
-import type { Plugin, TAbstractFile } from "obsidian";
+import { EditorView } from "@codemirror/view";
+import { editorInfoField, type Plugin, type TAbstractFile } from "obsidian";
 import type { GroupsRead } from "../review/review-api";
 import { watchWindows } from "../windows";
 import type { VaultStates } from "./vault-state";
@@ -22,6 +23,12 @@ export interface LocalNewModel {
   isLocalOnlyNew(path: string): boolean;
   placeNow(): string;
   onLooked(listener: (looked: unknown) => void): () => void;
+  isOwnWrite?(path: string): boolean;
+  hasRepoFile?(path: string): boolean;
+  hasForeignDraft?(path: string): boolean;
+  hasUnagreedRemoteDraft?(path: string): boolean;
+  noteLocalCreate?(path: string): void;
+  noteLocalRename?(oldPath: string, newPath: string): void;
 }
 
 interface FreshEntry {
@@ -30,23 +37,46 @@ interface FreshEntry {
   opened?: boolean;
 }
 
+interface TitleRescueState {
+  el: HTMLElement;
+  leafEl: Element | null;
+  expectedPath: string | null;
+  win: Window | null;
+  pendingBodyChars: string;
+  expiresAt: number;
+  skipBeforeInput: { kind: "insertText" | "deleteContentBackward"; data?: string; at: number } | null;
+}
+
 interface PluginLocalTracker {
   fresh: Map<string, FreshEntry>;
+  locallyCreatedByLower: Map<string, FreshEntry>;
   model: LocalNewModel | null;
   listeners: Set<() => void>;
   createListeners: Set<(path: string) => void>;
   boundModel: boolean;
   lastUntitledCreateAt: number;
+  lastArmedAt: number;
+  quietUntil: number;
+  postEnterUntil: number;
+  quietTimer: number | null;
+  focusedTitleEl: HTMLElement | null;
   titleFocusStartedAt: number;
-  titleDismissed: boolean;
+  dismissedTitleEl: HTMLElement | null;
+  rescue: TitleRescueState | null;
   activePath: () => string | null;
 }
 
-const UNTITLED_NOTE = /(?:^|\/)Untitled(?: \d+)?\.md$/i;
+const UNTITLED_NOTE = /(?:^|\/)Untitled(?: \d+)?\.(?:md|canvas|base)$/i;
+const CANVAS_EXT = /\.canvas$/i;
 const MAX_FRESH_LOCAL = 200;
-export const UNTITLED_QUIET_MS = 600;
+const MAX_LOCALLY_CREATED = 500;
+export const UNTITLED_QUIET_MS = 1_000;
+export const UNTITLED_RENAME_QUIET_MS = 750;
+export const UNTITLED_POST_ENTER_MS = 1_200;
+export const UNTITLED_RESCUE_MAX_MS = 1_500;
 export const UNTITLED_TITLE_MAX_MS = 2_500;
 const UNTITLED_TITLE_POLL_MS = 120;
+const utf8Encoder = new TextEncoder();
 
 const repoLowerCache = new WeakMap<ReadonlyMap<string, string>, ReadonlySet<string>>();
 const flightLowerCache = new WeakMap<object, { place: string; set: ReadonlySet<string> }>();
@@ -55,11 +85,24 @@ const trackersByPlugin = new WeakMap<Plugin, PluginLocalTracker>();
 const activeTrackers = new Set<PluginLocalTracker>();
 const quietEndListeners = new Set<() => void>();
 
-function isInlineTitleElement(target: unknown): boolean {
-  if (!target || typeof target !== "object") return false;
+function inlineTitleElementOf(target: unknown): HTMLElement | null {
+  if (!target || typeof target !== "object") return null;
   const el = target as { classList?: { contains?: (name: string) => boolean }; closest?: (selector: string) => unknown };
-  if (typeof el.classList?.contains === "function" && el.classList.contains("inline-title")) return true;
-  return typeof el.closest === "function" && el.closest(".inline-title") !== null;
+  if (typeof el.classList?.contains === "function" && el.classList.contains("inline-title")) return target as HTMLElement;
+  const found = typeof el.closest === "function" ? el.closest(".inline-title") : null;
+  return found && typeof found === "object" ? (found as HTMLElement) : null;
+}
+
+function isInlineTitleElement(target: unknown): boolean {
+  return inlineTitleElementOf(target) !== null;
+}
+
+function cmContentElementOf(target: unknown): HTMLElement | null {
+  if (!target || typeof target !== "object") return null;
+  const el = target as { classList?: { contains?: (name: string) => boolean }; closest?: (selector: string) => unknown };
+  if (typeof el.classList?.contains === "function" && el.classList.contains("cm-content")) return target as HTMLElement;
+  const found = typeof el.closest === "function" ? el.closest(".cm-content") : null;
+  return found && typeof found === "object" ? (found as HTMLElement) : null;
 }
 
 function currentDoc(): Document | null {
@@ -68,9 +111,9 @@ function currentDoc(): Document | null {
   return null;
 }
 
-function focusedInlineTitle(): Element | null {
+function focusedInlineTitle(): HTMLElement | null {
   const active = currentDoc()?.activeElement ?? null;
-  return isInlineTitleElement(active) ? active : null;
+  return inlineTitleElementOf(active);
 }
 
 function notifyQuietEnd(): void {
@@ -78,11 +121,13 @@ function notifyQuietEnd(): void {
 }
 
 function isFreshUntitledTitleFocused(tracker: PluginLocalTracker, now: number): boolean {
-  if (tracker.titleDismissed || focusedInlineTitle() === null) return false;
+  const current = focusedInlineTitle();
+  if (current === null || current === tracker.dismissedTitleEl) return false;
+  if (tracker.focusedTitleEl === null) tracker.focusedTitleEl = current;
   const active = tracker.activePath();
-  if (active !== null) return isUntitledNotePath(active) && tracker.fresh.has(active.toLowerCase());
+  if (active !== null) return isUntitledPath(active) && tracker.fresh.has(active.toLowerCase());
   for (const entry of tracker.fresh.values()) {
-    if (isUntitledNotePath(entry.path) && (tracker.lastUntitledCreateAt === 0 || now - tracker.lastUntitledCreateAt < UNTITLED_TITLE_MAX_MS)) return true;
+    if (isUntitledPath(entry.path) && (tracker.lastUntitledCreateAt === 0 || now - tracker.lastUntitledCreateAt < UNTITLED_TITLE_MAX_MS)) return true;
   }
   return false;
 }
@@ -92,15 +137,29 @@ export function onUntitledQuietEnd(listener: () => void): () => void {
   return () => void quietEndListeners.delete(listener);
 }
 
-export function isUntitledNotePath(path: string): boolean {
+export function isUntitledPath(path: string): boolean {
   return UNTITLED_NOTE.test(path);
+}
+
+export const isUntitledNotePath = isUntitledPath;
+
+export function isBlankUntitledContent(path: string, textOrSize: string | number): boolean {
+  if (!UNTITLED_NOTE.test(path)) return false;
+  const canvas = CANVAS_EXT.test(path);
+  if (typeof textOrSize === "number") {
+    if (!Number.isFinite(textOrSize) || textOrSize < 0) return false;
+    return canvas ? textOrSize <= 32 : textOrSize === 0;
+  }
+  if (!canvas) return textOrSize.trim() === "";
+  if (utf8Encoder.encode(textOrSize).byteLength > 32) return false;
+  const compact = textOrSize.replace(/\s+/g, "");
+  return compact === "" || compact === "{}" || compact === '{"nodes":[],"edges":[]}' || compact === '{"edges":[],"nodes":[]}';
 }
 
 function isEmptyUntitledFile(file: TAbstractFile): boolean {
   if (!file || typeof file.path !== "string" || "children" in file) return false;
-  if (!UNTITLED_NOTE.test(file.path)) return false;
   const size = (file as { stat?: { size?: number } }).stat?.size ?? 0;
-  return size === 0;
+  return isBlankUntitledContent(file.path, size);
 }
 
 function recordFresh(tracker: PluginLocalTracker, path: string): void {
@@ -114,6 +173,33 @@ function recordFresh(tracker: PluginLocalTracker, path: string): void {
   tracker.fresh.set(lower, { path, place });
 }
 
+function recordLocallyCreated(tracker: PluginLocalTracker, path: string): void {
+  const lower = path.toLowerCase();
+  tracker.locallyCreatedByLower.delete(lower);
+  while (tracker.locallyCreatedByLower.size >= MAX_LOCALLY_CREATED) {
+    const oldestKey = tracker.locallyCreatedByLower.keys().next().value;
+    if (oldestKey === undefined) break;
+    tracker.locallyCreatedByLower.delete(oldestKey);
+  }
+  const place = tracker.model ? tracker.model.placeNow() : null;
+  tracker.locallyCreatedByLower.set(lower, { path, place });
+}
+
+function deleteLocallyCreated(tracker: PluginLocalTracker, path: string): void {
+  tracker.locallyCreatedByLower.delete(path.toLowerCase());
+}
+
+function hasLocallyCreated(tracker: PluginLocalTracker, path: string): boolean {
+  const entry = tracker.locallyCreatedByLower.get(path.toLowerCase());
+  if (!entry) return false;
+  if (tracker.model !== null && entry.place !== null && entry.place !== tracker.model.placeNow()) return false;
+  return true;
+}
+
+function resetTrackerCreated(tracker: PluginLocalTracker): void {
+  tracker.locallyCreatedByLower.clear();
+}
+
 function trackedFreshEntry(lower: string, currentPlace: string): FreshEntry | null {
   for (const tracker of activeTrackers) {
     const recorded = tracker.fresh.get(lower);
@@ -122,43 +208,252 @@ function trackedFreshEntry(lower: string, currentPlace: string): FreshEntry | nu
   return null;
 }
 
+function isRescueTargetActive(rescue: TitleRescueState | null, target: EventTarget | null, now: number): rescue is TitleRescueState {
+  if (!rescue || now >= rescue.expiresAt) return false;
+  const titleEl = inlineTitleElementOf(target);
+  if (titleEl !== rescue.el) return false;
+  const doc = rescue.el.ownerDocument ?? currentDoc();
+  const active = doc?.activeElement ?? null;
+  return active === null || active === rescue.el || rescue.el.contains(active);
+}
+
+function flushRescuedChars(plugin: Plugin, cmContent: HTMLElement, chars: string, expectedPath: string | null): void {
+  const activeEditor = (plugin.app?.workspace as { activeEditor?: { editor?: { cm?: unknown; replaceSelection?: (text: string) => void } } } | undefined)?.activeEditor?.editor;
+  const view = EditorView.findFromDOM(cmContent) ?? (activeEditor?.cm instanceof EditorView ? activeEditor.cm : null);
+  if (view) {
+    if (view.state.readOnly) return;
+    if (expectedPath !== null) {
+      const viewPath = view.state.field(editorInfoField, false)?.file?.path ?? null;
+      if (viewPath !== null && viewPath.toLowerCase() !== expectedPath.toLowerCase()) return;
+    }
+    const { from, to, head } = view.state.selection.main;
+    const anchor = Math.min(from, head);
+    view.dispatch({
+      userEvent: "input.type",
+      changes: { from, to, insert: chars },
+      selection: { anchor: anchor + chars.length },
+    });
+    return;
+  }
+  if (typeof activeEditor?.replaceSelection === "function") activeEditor.replaceSelection(chars);
+}
+
 export function trackFreshLocalNotes(plugin: Plugin): void {
   if (trackersByPlugin.has(plugin)) return;
   const workspace = plugin.app?.workspace;
   const tracker: PluginLocalTracker = {
     fresh: new Map(),
+    locallyCreatedByLower: new Map(),
     model: null,
     listeners: new Set(),
     createListeners: new Set(),
     boundModel: false,
     lastUntitledCreateAt: 0,
+    lastArmedAt: 0,
+    quietUntil: 0,
+    postEnterUntil: 0,
+    quietTimer: null,
+    focusedTitleEl: null,
     titleFocusStartedAt: 0,
-    titleDismissed: false,
+    dismissedTitleEl: null,
+    rescue: null,
     activePath: () => (workspace && typeof workspace.getActiveFile === "function" ? (workspace.getActiveFile()?.path ?? null) : null),
   };
   trackersByPlugin.set(plugin, tracker);
   activeTrackers.add(tracker);
   let disposed = false;
+
+  const clearQuietTimer = (): void => {
+    if (tracker.quietTimer === null || typeof window === "undefined") return;
+    window.clearTimeout(tracker.quietTimer);
+    tracker.quietTimer = null;
+  };
+
+  const armQuietTimer = (): void => {
+    if (disposed || typeof window === "undefined" || typeof window.setTimeout !== "function") return;
+    clearQuietTimer();
+    const wait = untitledCreateRemainingMs(plugin);
+    if (wait <= 0) return;
+    tracker.quietTimer = window.setTimeout(() => {
+      tracker.quietTimer = null;
+      if (disposed) return;
+      const nextWait = untitledCreateRemainingMs(plugin);
+      if (nextWait > 0) armQuietTimer();
+      else notifyQuietEnd();
+    }, wait);
+  };
+
+  const armCreateQuiet = (now: number): void => {
+    tracker.lastUntitledCreateAt = now;
+    tracker.lastArmedAt = now;
+    tracker.quietUntil = Math.max(tracker.quietUntil, now + UNTITLED_QUIET_MS);
+    tracker.dismissedTitleEl = null;
+    armQuietTimer();
+  };
+
   const onFocusIn = (event: Event): void => {
-    if (!disposed && isInlineTitleElement(event.target)) tracker.titleDismissed = false;
-  };
-  const endTitleQuiet = (): void => {
     if (disposed) return;
-    const hadQuiet = tracker.titleFocusStartedAt > 0 || tracker.lastUntitledCreateAt > 0;
-    tracker.titleFocusStartedAt = 0;
-    tracker.titleDismissed = true;
-    tracker.lastUntitledCreateAt = 0;
-    if (hadQuiet) notifyQuietEnd();
+    const now = Date.now();
+    const titleEl = inlineTitleElementOf(event.target);
+    if (titleEl !== null) {
+      tracker.focusedTitleEl = titleEl;
+      tracker.dismissedTitleEl = null;
+      if (tracker.rescue && tracker.rescue.el !== titleEl) tracker.rescue = null;
+      return;
+    }
+    if (tracker.rescue === null) return;
+    if (now >= tracker.rescue.expiresAt) {
+      tracker.rescue = null;
+      return;
+    }
+    const cmContent = cmContentElementOf(event.target);
+    if (cmContent === null) {
+      tracker.rescue = null;
+      return;
+    }
+    const targetWin = cmContent.ownerDocument?.defaultView ?? null;
+    if (tracker.rescue.win !== null && targetWin !== null && targetWin !== tracker.rescue.win) {
+      tracker.rescue = null;
+      return;
+    }
+    const cmLeaf = typeof cmContent.closest === "function" ? cmContent.closest(".workspace-leaf") : null;
+    if (tracker.rescue.leafEl !== null && cmLeaf !== tracker.rescue.leafEl) {
+      tracker.rescue = null;
+      return;
+    }
+    const expectedPath = tracker.rescue.expectedPath;
+    const activeNow = tracker.activePath();
+    if (expectedPath !== null && (activeNow === null || activeNow.toLowerCase() !== expectedPath.toLowerCase())) {
+      tracker.rescue = null;
+      return;
+    }
+    const pending = tracker.rescue.pendingBodyChars;
+    tracker.rescue = null;
+    if (pending.length > 0) {
+      queueMicrotask(() => {
+        if (disposed) return;
+        const activeAtFlush = tracker.activePath();
+        if (expectedPath !== null && (activeAtFlush === null || activeAtFlush.toLowerCase() !== expectedPath.toLowerCase())) return;
+        flushRescuedChars(plugin, cmContent, pending, expectedPath);
+      });
+    }
   };
+
   const onFocusOut = (event: Event): void => {
-    if (disposed || !isInlineTitleElement(event.target)) return;
+    if (disposed) return;
+    const targetTitle = inlineTitleElementOf(event.target);
+    if (targetTitle === null) return;
+    if (tracker.focusedTitleEl !== null && targetTitle !== tracker.focusedTitleEl) return;
     if (isInlineTitleElement((event as FocusEvent).relatedTarget)) return;
-    endTitleQuiet();
+    tracker.focusedTitleEl = null;
+    tracker.titleFocusStartedAt = 0;
+    tracker.dismissedTitleEl = targetTitle;
+    if (untitledCreateRemainingMs(plugin) === 0) {
+      clearQuietTimer();
+      notifyQuietEnd();
+    }
   };
-  const onKeyDown = (event: Event): void => {
-    if (disposed || (event as KeyboardEvent).key !== "Enter" || !isInlineTitleElement(event.target)) return;
-    endTitleQuiet();
+
+  const onCaptureKeyDown = (event: Event): void => {
+    if (disposed) return;
+    const ke = event as KeyboardEvent;
+    const now = Date.now();
+    const key = typeof ke.key === "string" ? ke.key : "";
+    if ((ke.metaKey || ke.ctrlKey) && !ke.altKey && key.toLowerCase() === "n") {
+      tracker.rescue = null;
+      armCreateQuiet(now);
+      return;
+    }
+    if (tracker.rescue && now >= tracker.rescue.expiresAt) {
+      tracker.rescue = null;
+      return;
+    }
+    if (!isRescueTargetActive(tracker.rescue, event.target, now)) return;
+    if (key === "Escape") {
+      tracker.rescue = null;
+      return;
+    }
+    if (ke.ctrlKey || ke.metaKey || ke.altKey || ke.isComposing || key === "Process") return;
+    if (key === "Enter" && !ke.shiftKey) {
+      ke.preventDefault();
+      ke.stopImmediatePropagation();
+      tracker.rescue.pendingBodyChars += "\n";
+      return;
+    }
+    if (key === "Backspace") {
+      ke.preventDefault();
+      if (tracker.rescue.pendingBodyChars.length > 0) {
+        tracker.rescue.pendingBodyChars = Array.from(tracker.rescue.pendingBodyChars).slice(0, -1).join("");
+      }
+      tracker.rescue.skipBeforeInput = { kind: "deleteContentBackward", at: now };
+      return;
+    }
+    if (key.length === 1) {
+      ke.preventDefault();
+      tracker.rescue.pendingBodyChars += key;
+      tracker.rescue.skipBeforeInput = { kind: "insertText", data: key, at: now };
+    }
   };
+
+  const onBeforeInput = (event: Event): void => {
+    if (disposed) return;
+    const now = Date.now();
+    if (tracker.rescue && now >= tracker.rescue.expiresAt) {
+      tracker.rescue = null;
+      return;
+    }
+    if (!isRescueTargetActive(tracker.rescue, event.target, now)) return;
+    const ie = event as InputEvent;
+    if (ie.inputType === "insertText" && typeof ie.data === "string" && ie.data.length > 0) {
+      ie.preventDefault();
+      if (tracker.rescue.skipBeforeInput?.kind === "insertText" && tracker.rescue.skipBeforeInput.data === ie.data && now - tracker.rescue.skipBeforeInput.at <= 16) {
+        tracker.rescue.skipBeforeInput = null;
+        return;
+      }
+      tracker.rescue.skipBeforeInput = null;
+      tracker.rescue.pendingBodyChars += ie.data;
+      return;
+    }
+    if (ie.inputType === "deleteContentBackward") {
+      ie.preventDefault();
+      if (tracker.rescue.skipBeforeInput?.kind === "deleteContentBackward" && now - tracker.rescue.skipBeforeInput.at <= 16) {
+        tracker.rescue.skipBeforeInput = null;
+        return;
+      }
+      tracker.rescue.skipBeforeInput = null;
+      if (tracker.rescue.pendingBodyChars.length > 0) {
+        tracker.rescue.pendingBodyChars = Array.from(tracker.rescue.pendingBodyChars).slice(0, -1).join("");
+      }
+    }
+  };
+
+  const onPointerDown = (): void => {
+    if (!disposed) tracker.rescue = null;
+  };
+
+  const onBubbleKeyDown = (event: Event): void => {
+    if (disposed) return;
+    const ke = event as KeyboardEvent;
+    if (ke.key !== "Enter" || ke.ctrlKey || ke.metaKey || ke.altKey || ke.shiftKey || ke.isComposing) return;
+    const titleEl = inlineTitleElementOf(event.target);
+    if (titleEl === null) return;
+    const now = Date.now();
+    tracker.lastArmedAt = now;
+    tracker.postEnterUntil = Math.max(tracker.postEnterUntil, now + UNTITLED_POST_ENTER_MS);
+    const sameRescue = tracker.rescue && tracker.rescue.el === titleEl && now < tracker.rescue.expiresAt ? tracker.rescue : null;
+    const leafEl = typeof titleEl.closest === "function" ? titleEl.closest(".workspace-leaf") : null;
+    tracker.rescue = {
+      el: titleEl,
+      leafEl,
+      expectedPath: sameRescue ? sameRescue.expectedPath : tracker.activePath(),
+      win: titleEl.ownerDocument?.defaultView ?? (typeof window !== "undefined" ? window : null),
+      pendingBodyChars: sameRescue ? sameRescue.pendingBodyChars : "",
+      expiresAt: now + UNTITLED_RESCUE_MAX_MS,
+      skipBeforeInput: null,
+    };
+    armQuietTimer();
+  };
+
   const canWatchWindows =
     typeof window !== "undefined" &&
     workspace !== undefined &&
@@ -172,7 +467,10 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       if (!win.document || typeof win.document.addEventListener !== "function") return;
       on(win.document, "focusin", onFocusIn, { capture: true });
       on(win.document, "focusout", onFocusOut);
-      on(win.document, "keydown", onKeyDown);
+      on(win.document, "mousedown", onPointerDown, { capture: true });
+      on(win.document, "keydown", onCaptureKeyDown, { capture: true });
+      on(win.document, "beforeinput", onBeforeInput, { capture: true });
+      on(win.document, "keydown", onBubbleKeyDown);
     });
   } else {
     const maybeDoc = currentDoc();
@@ -180,27 +478,40 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     if (dom) {
       dom.addEventListener("focusin", onFocusIn, true);
       dom.addEventListener("focusout", onFocusOut);
-      dom.addEventListener("keydown", onKeyDown);
+      dom.addEventListener("mousedown", onPointerDown, true);
+      dom.addEventListener("keydown", onCaptureKeyDown, true);
+      dom.addEventListener("beforeinput", onBeforeInput, true);
+      dom.addEventListener("keydown", onBubbleKeyDown);
       stopDom = () => {
         dom.removeEventListener("focusin", onFocusIn, true);
         dom.removeEventListener("focusout", onFocusOut);
-        dom.removeEventListener("keydown", onKeyDown);
+        dom.removeEventListener("mousedown", onPointerDown, true);
+        dom.removeEventListener("keydown", onCaptureKeyDown, true);
+        dom.removeEventListener("beforeinput", onBeforeInput, true);
+        dom.removeEventListener("keydown", onBubbleKeyDown);
       };
     }
   }
   if (typeof plugin.register === "function") {
     plugin.register(() => {
       disposed = true;
+      clearQuietTimer();
       stopDom?.();
       stopDom = null;
       activeTrackers.delete(tracker);
       tracker.fresh.clear();
+      resetTrackerCreated(tracker);
       tracker.listeners.clear();
       tracker.createListeners.clear();
       tracker.model = null;
       tracker.lastUntitledCreateAt = 0;
+      tracker.lastArmedAt = 0;
+      tracker.quietUntil = 0;
+      tracker.postEnterUntil = 0;
+      tracker.focusedTitleEl = null;
       tracker.titleFocusStartedAt = 0;
-      tracker.titleDismissed = false;
+      tracker.dismissedTitleEl = null;
+      tracker.rescue = null;
     });
   }
   const vault = plugin.app?.vault;
@@ -211,23 +522,69 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
   };
   keep(
     vault.on("create", (file) => {
-      if (disposed || !ready || !isEmptyUntitledFile(file)) return;
-      tracker.lastUntitledCreateAt = Date.now();
+      if (disposed || !ready || !file || typeof file.path !== "string" || "children" in file) return;
+      tracker.model?.noteLocalCreate?.(file.path);
+      const blankUntitled = isEmptyUntitledFile(file);
+      if (
+        tracker.model?.isOwnWrite?.(file.path) !== true &&
+        tracker.model?.hasRepoFile?.(file.path) !== true &&
+        tracker.model?.hasForeignDraft?.(file.path) !== true &&
+        (blankUntitled || tracker.model?.hasUnagreedRemoteDraft?.(file.path) !== true)
+      ) {
+        recordLocallyCreated(tracker, file.path);
+      }
+      if (!blankUntitled) return;
       tracker.titleFocusStartedAt = 0;
-      tracker.titleDismissed = false;
+      armCreateQuiet(Date.now());
       recordFresh(tracker, file.path);
+      if (CANVAS_EXT.test(file.path) && ((file as { stat?: { size?: number } }).stat?.size ?? 0) > 0 && typeof (vault as { read?: unknown }).read === "function") {
+        void (vault as { read: (target: unknown) => Promise<string> })
+          .read(file)
+          .then((text) => {
+            if (!disposed && typeof text === "string" && !isBlankUntitledContent(file.path, text)) tracker.fresh.delete(file.path.toLowerCase());
+          })
+          .catch(() => undefined);
+      }
       for (const listener of tracker.createListeners) listener(file.path);
     }),
   );
   keep(
     vault.on("rename", (file, oldPath) => {
-      if (disposed || typeof oldPath !== "string" || !file || typeof file.path !== "string") return;
+      if (disposed || typeof oldPath !== "string" || !file || typeof file.path !== "string" || "children" in file) return;
+      tracker.model?.noteLocalRename?.(oldPath, file.path);
+      if (tracker.rescue && tracker.rescue.expectedPath !== null && tracker.rescue.expectedPath.toLowerCase() === oldPath.toLowerCase()) {
+        tracker.rescue.expectedPath = file.path;
+      }
       const oldLower = oldPath.toLowerCase();
       const recorded = tracker.fresh.get(oldLower);
-      if (recorded === undefined) return;
+      const hadLocallyCreated = hasLocallyCreated(tracker, oldPath) || recorded !== undefined;
+      deleteLocallyCreated(tracker, oldPath);
+      if (
+        hadLocallyCreated &&
+        tracker.model?.isOwnWrite?.(file.path) !== true &&
+        tracker.model?.hasRepoFile?.(file.path) !== true &&
+        tracker.model?.hasForeignDraft?.(file.path) !== true &&
+        tracker.model?.hasUnagreedRemoteDraft?.(file.path) !== true
+      ) {
+        recordLocallyCreated(tracker, file.path);
+      }
+      if (recorded === undefined) {
+        if (hadLocallyCreated && isUntitledPath(oldPath)) {
+          const now = Date.now();
+          tracker.lastArmedAt = now;
+          tracker.quietUntil = Math.max(tracker.quietUntil, now + UNTITLED_RENAME_QUIET_MS);
+          armQuietTimer();
+        }
+        return;
+      }
+      const now = Date.now();
       tracker.titleFocusStartedAt = 0;
-      tracker.titleDismissed = true;
-      tracker.lastUntitledCreateAt = Date.now();
+      tracker.dismissedTitleEl = tracker.focusedTitleEl;
+      tracker.focusedTitleEl = null;
+      tracker.lastUntitledCreateAt = now;
+      tracker.lastArmedAt = now;
+      tracker.quietUntil = Math.max(tracker.quietUntil, now + UNTITLED_RENAME_QUIET_MS);
+      armQuietTimer();
       tracker.fresh.delete(oldLower);
       tracker.fresh.set(file.path.toLowerCase(), { path: file.path, place: recorded.place, opened: true });
     }),
@@ -235,6 +592,10 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
   keep(
     vault.on("delete", (file) => {
       if (!disposed && file && typeof file.path === "string") {
+        if (tracker.rescue && tracker.rescue.expectedPath !== null && tracker.rescue.expectedPath.toLowerCase() === file.path.toLowerCase()) {
+          tracker.rescue = null;
+        }
+        deleteLocallyCreated(tracker, file.path);
         if (tracker.fresh.delete(file.path.toLowerCase()) && tracker.fresh.size === 0) {
           tracker.titleFocusStartedAt = 0;
         }
@@ -243,12 +604,16 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
   );
   if (workspace && typeof workspace.on === "function") {
     const noteFreshOpen = (path: string | null): void => {
-      if (disposed || path === null || !isUntitledNotePath(path)) return;
+      if (disposed) return;
+      if (tracker.rescue !== null) {
+        const expected = tracker.rescue.expectedPath;
+        if (expected === null || path === null || path.toLowerCase() !== expected.toLowerCase()) tracker.rescue = null;
+      }
+      if (path === null || !isUntitledPath(path)) return;
       const entry = tracker.fresh.get(path.toLowerCase());
       if (entry === undefined || entry.opened) return;
       entry.opened = true;
-      tracker.lastUntitledCreateAt = Math.max(tracker.lastUntitledCreateAt, Date.now());
-      tracker.titleDismissed = false;
+      armCreateQuiet(Date.now());
     };
     keep(workspace.on("file-open", (file) => noteFreshOpen(file?.path ?? tracker.activePath())));
     keep(workspace.on("active-leaf-change", () => noteFreshOpen(tracker.activePath())));
@@ -269,6 +634,9 @@ export function bindLocalNewModel(plugin: Plugin, model: LocalNewModel): void {
   for (const entry of tracker.fresh.values()) {
     if (entry.place === null) entry.place = currentPlace;
   }
+  for (const entry of tracker.locallyCreatedByLower.values()) {
+    if (entry.place === null) entry.place = currentPlace;
+  }
   if (tracker.boundModel) return;
   tracker.boundModel = true;
   if (typeof model.onLooked === "function") {
@@ -277,6 +645,11 @@ export function bindLocalNewModel(plugin: Plugin, model: LocalNewModel): void {
         const place = model.placeNow();
         for (const [lower, entry] of [...tracker.fresh]) {
           if ((entry.place !== null && entry.place !== place) || !model.isLocalOnlyNew(entry.path)) tracker.fresh.delete(lower);
+        }
+        for (const [, entry] of [...tracker.locallyCreatedByLower]) {
+          if ((entry.place !== null && entry.place !== place) || model.hasRepoFile?.(entry.path) === true || model.hasForeignDraft?.(entry.path) === true) {
+            deleteLocallyCreated(tracker, entry.path);
+          }
         }
       }
       for (const listener of tracker.listeners) listener();
@@ -302,7 +675,7 @@ export function onFreshUntitledCreate(plugin: Plugin, listener: (path: string) =
 }
 
 export function isFreshUntitled(plugin: Plugin, path: string): boolean {
-  if (!isUntitledNotePath(path)) return false;
+  if (!isUntitledPath(path)) return false;
   const tracker = trackersByPlugin.get(plugin);
   if (!tracker) return false;
   const recorded = tracker.fresh.get(path.toLowerCase());
@@ -321,8 +694,27 @@ export function forgetFreshUntitledIf(plugin: Plugin, match: (path: string) => b
   const tracker = trackersByPlugin.get(plugin);
   if (!tracker) return;
   for (const [lower, entry] of [...tracker.fresh]) {
-    if (isUntitledNotePath(entry.path) && match(entry.path)) tracker.fresh.delete(lower);
+    if (isUntitledPath(entry.path) && match(entry.path)) tracker.fresh.delete(lower);
   }
+}
+
+export function isLocallyCreated(plugin: Plugin, path: string): boolean {
+  const tracker = trackersByPlugin.get(plugin);
+  return tracker ? hasLocallyCreated(tracker, path) : false;
+}
+
+export function forgetLocallyCreated(plugin: Plugin, path: string): void {
+  const tracker = trackersByPlugin.get(plugin);
+  if (tracker) deleteLocallyCreated(tracker, path);
+}
+
+export function resetLocallyCreated(plugin?: Plugin): void {
+  if (plugin) {
+    const tracker = trackersByPlugin.get(plugin);
+    if (tracker) resetTrackerCreated(tracker);
+    return;
+  }
+  for (const tracker of activeTrackers) resetTrackerCreated(tracker);
 }
 
 export function isPluginLocalOnlyNew(plugin: Plugin, path: string): boolean {
@@ -335,10 +727,8 @@ export function isPluginLocalOnlyNew(plugin: Plugin, path: string): boolean {
 export function untitledCreateRemainingMs(plugin?: Plugin, now = Date.now()): number {
   const remainingOf = (tracker: PluginLocalTracker): number => {
     let wait = 0;
-    if (tracker.lastUntitledCreateAt > 0 && now >= tracker.lastUntitledCreateAt) {
-      const elapsed = now - tracker.lastUntitledCreateAt;
-      if (elapsed < UNTITLED_QUIET_MS) wait = UNTITLED_QUIET_MS - elapsed;
-    }
+    if (tracker.quietUntil > now) wait = Math.max(wait, tracker.quietUntil - now);
+    if (tracker.postEnterUntil > now) wait = Math.max(wait, tracker.postEnterUntil - now);
     if (isFreshUntitledTitleFocused(tracker, now)) {
       if (tracker.titleFocusStartedAt === 0 || now < tracker.titleFocusStartedAt) tracker.titleFocusStartedAt = now;
       const titleLeft = UNTITLED_TITLE_MAX_MS - (now - tracker.titleFocusStartedAt);
@@ -359,6 +749,8 @@ export function untitledCreateRemainingMs(plugin?: Plugin, now = Date.now()): nu
   }
   return max;
 }
+
+export const untitledQuietRemainingMs = untitledCreateRemainingMs;
 
 export function coalesceDuringUntitled(plugin: Plugin, run: () => void, mode: "raf" | "timeout" | "microtask" = "raf"): () => void {
   trackFreshLocalNotes(plugin);
@@ -458,7 +850,7 @@ export function deferDuringUntitled(plugin: Plugin, run: () => void): () => void
   return deferred.trigger;
 }
 
-function repoLowerSet(repoFiles: ReadonlyMap<string, string>): ReadonlySet<string> {
+export function repoLowerSet(repoFiles: ReadonlyMap<string, string>): ReadonlySet<string> {
   const cached = repoLowerCache.get(repoFiles);
   if (cached !== undefined) return cached;
   const set = new Set<string>();
@@ -499,7 +891,7 @@ export function isLocalOnlyNew(input: LocalNewInput): boolean {
   const lower = path.toLowerCase();
   const cached = cache.get(path);
   const fresh = trackedFreshEntry(lower, currentPlace);
-  if (isUntitledNotePath(path) && fresh !== null) {
+  if (isUntitledPath(path) && fresh !== null) {
     if (cached !== undefined && cached.sent !== undefined) return false;
     for (const [overPath, over] of overlay) if (overPath.toLowerCase() === lower && over.sha !== null) return false;
     return true;

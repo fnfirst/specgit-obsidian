@@ -24,7 +24,7 @@ function readRecord(storage: LocalState, key: string): BudgetRecord {
 }
 
 export const BURST_FILES = 20;
-export const WRITES_PER_MINUTE = 60;
+export const WRITES_PER_MINUTE = 100;
 export const GITHUB_WRITES_PER_HOUR = 500;
 export const PERSON_RESERVE = 100;
 export const WRITES_PER_HOUR = GITHUB_WRITES_PER_HOUR - PERSON_RESERVE;

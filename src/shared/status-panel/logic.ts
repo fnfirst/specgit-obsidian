@@ -149,7 +149,7 @@ export function checkablesOf(layout: Layout, chip: StatusChipKey): Map<string, C
       id: item.id,
       name: item.name,
       kind,
-      documents: item.kind === "group" ? item.members.length : 1,
+      documents: item.kind === "group" ? Math.max(1, item.members.length) : 1,
       isGroup: item.kind === "group",
       isDraft: item.kind === "doc" && (item.state === "draft" || item.state === "edited"),
       hasChanges: !!item.hasChanges,

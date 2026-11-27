@@ -39,6 +39,7 @@ import {
   unitLabel,
   unitsWords,
   asksBeforeSeparate,
+  isGroupBranch,
   newSeparateReviews,
   SEPARATE_ASK,
   ATTACHMENT_WORDS,
@@ -109,6 +110,8 @@ export interface SubmitPlan {
 
 export class ChangesFlows {
   private readonly uploaded = new Map<string, string | null>();
+  private readonly pendingCloseRetries = new Set<string>();
+  private retryingCloses = false;
 
   private readonly deps: FlowDeps;
   private lostAnswers = 0;
@@ -186,6 +189,21 @@ export class ChangesFlows {
       sendOnce: (row, options) => this.sendOnce(row, options),
       sendAttachmentsAlone: (row, deps) => this.sendAttachmentsAlone(row, deps, false, { onlyMine: true, branch: row.review?.reviewBranch ?? null }),
     });
+    this.deps.model.onLooked((looked) => {
+      if (looked && this.pendingCloseRetries.size > 0) void this.retryPendingDraftCloses();
+    });
+  }
+
+  private async retryPendingDraftCloses(): Promise<void> {
+    if (this.retryingCloses || this.pendingCloseRetries.size === 0) return;
+    this.retryingCloses = true;
+    try {
+      for (const newPath of [...this.pendingCloseRetries]) {
+        await this.closeSupersededDraft(newPath, this.deps);
+      }
+    } finally {
+      this.retryingCloses = false;
+    }
   }
 
   private watched(review: ReviewApi, model: ChangesModel): ReviewApi {
@@ -399,6 +417,7 @@ export class ChangesFlows {
         return { ok: true, expectMain, unchanged: true };
       }
       const inVault = await memory.accepted(change.path, text, outgoing, merged && main.kind === "file" && !options.toReview ? main.sha : levelledWith, saved.body);
+      await this.closeSupersededDraft(change.path, deps);
       const said = !lenient && problems.length > 0 ? { attachments: ATTACHMENTS_SAID(problems) } : {};
       return inVault ? { ok: true, expectMain, ...said } : { ok: true, expectMain, inVault: false, ...said };
     }
@@ -471,6 +490,77 @@ export class ChangesFlows {
       sent(attachment, typeof (uploaded.body as { reviewBranch?: unknown }).reviewBranch === "string" ? (uploaded.body as { reviewBranch: string }).reviewBranch : branch, sha);
     }
     return null;
+  }
+
+  private async closeSupersededDraft(newPath: string, deps: FlowDeps): Promise<void> {
+    const oldPath = deps.model.draftRenamedFrom(newPath);
+    if (!oldPath || oldPath === newPath) {
+      this.pendingCloseRetries.delete(newPath);
+      return;
+    }
+    if (deps.vault.exists(oldPath) || (await deps.readText(oldPath)) !== null || deps.model.hasRepoFile(oldPath)) {
+      this.pendingCloseRetries.delete(newPath);
+      deps.model.forgetDraftRename(newPath);
+      return;
+    }
+    const oldDoc = deps.documentFor(oldPath);
+    if (!oldDoc) {
+      this.pendingCloseRetries.delete(newPath);
+      deps.model.forgetDraftRename(newPath);
+      return;
+    }
+    const oldMain = await deps.gitFile(oldDoc);
+    if (oldMain.kind === "unreadable") {
+      this.pendingCloseRetries.add(newPath);
+      return;
+    }
+    if (oldMain.kind === "file") {
+      this.pendingCloseRetries.delete(newPath);
+      deps.model.forgetDraftRename(newPath);
+      return;
+    }
+    const status = await deps.review.status(oldDoc);
+    if (status === null) {
+      this.pendingCloseRetries.add(newPath);
+      return;
+    }
+    if (!reviewIsOpen(status) || !status.reviewBranch) {
+      this.pendingCloseRetries.delete(newPath);
+      this.memory.forget(oldPath);
+      deps.model.learnSent(oldPath, null);
+      deps.model.forgetDraftRename(newPath);
+      deps.model.clearInFlightPath(oldPath);
+      return;
+    }
+    const viewer = deps.viewerLogin();
+    const ownDraft =
+      !isGroupBranch(status.reviewBranch) &&
+      !status.pr?.group &&
+      status.pr?.isDraft !== false &&
+      !isAnotherAuthor(status.pr?.authorLogin ?? null, viewer);
+    if (!ownDraft) {
+      this.pendingCloseRetries.delete(newPath);
+      deps.model.forgetDraftRename(newPath);
+      return;
+    }
+    const expectPr = status.pr && status.pr.number > 0 ? status.pr.number : undefined;
+    const closed = await deps.review.abandon(oldDoc, undefined, expectPr);
+    if (!closed.ok && closed.status !== 404) {
+      if (closed.status === 0 || closed.status === 429 || closed.status >= 500) {
+        this.pendingCloseRetries.add(newPath);
+        return;
+      }
+      this.pendingCloseRetries.delete(newPath);
+      deps.model.forgetDraftRename(newPath);
+      return;
+    }
+    this.pendingCloseRetries.delete(newPath);
+    this.uploaded.clear();
+    this.memory.forget(oldPath);
+    deps.model.learnSent(oldPath, null);
+    deps.model.learn(oldPath, { reviewBranch: null, pr: null });
+    deps.model.forgetDraftRename(newPath);
+    deps.model.clearInFlightPath(oldPath, status.reviewBranch, expectPr ?? null);
   }
 
   private async alreadyThere(path: string, doc: DocumentRef, existing: NonNullable<Awaited<ReturnType<ReviewApi["status"]>>>, text: string, memory: SentMemory = this.memory): Promise<Sent> {

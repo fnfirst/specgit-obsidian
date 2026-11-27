@@ -119,7 +119,10 @@ export const ASK_CHANGES_FAILED = "Couldn't send that";
 export const abandonGroupConfirm = (name: string, files: number, noun: Noun = "document") =>
   ({
     title: `Stop the review of ${name}?`,
-    description: `The draft edits of its ${files} ${files === 1 ? noun : `${noun}s`} will be permanently discarded, and the review closes. Comments started in it are marked resolved. The published ${files === 1 ? noun : `${noun}s`} are not affected.`,
+    description:
+      files <= 0
+        ? `The draft edits in this group will be permanently discarded, and the review closes. Comments started in it are marked resolved. The published ${noun}s are not affected.`
+        : `The draft edits of its ${files} ${files === 1 ? noun : `${noun}s`} will be permanently discarded, and the review closes. Comments started in it are marked resolved. The published ${files === 1 ? noun : `${noun}s`} are not affected.`,
     confirm: "Stop the review",
   }) as const;
 export const ABANDONED: Words = { title: "Review abandoned", description: "The draft was discarded." };

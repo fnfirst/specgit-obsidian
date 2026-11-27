@@ -34,6 +34,7 @@ export interface CopyInPorts {
   notWritten(path: string): void;
   during<T>(paths: string[], run: () => Promise<T>, left?: (result: T) => Readonly<Record<string, string>> | null): Promise<T>;
   blockedFor(): number;
+  quietWaitMs?(): number;
   pause(ms: number): Promise<void>;
   clock(): number;
   current(): boolean;
@@ -59,6 +60,15 @@ export const COPY_SLICE_MS = 12;
 export const PROGRESS_EVERY_MS = 250;
 export const CHECKPOINT_EVERY_MS = 5_000;
 
+async function yieldForQuiet(ports: Pick<CopyInPorts, "current" | "quietWaitMs" | "pause">, onPaused?: () => void): Promise<void> {
+  for (let spins = 0; spins < 32 && ports.current(); spins++) {
+    const waitMs = ports.quietWaitMs?.() ?? 0;
+    if (waitMs <= 0) return;
+    await ports.pause(waitMs);
+    onPaused?.();
+  }
+}
+
 export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], skipped: readonly string[] = [], options: CopyInOptions = {}): Promise<CopyInResult> {
   const result: CopyInResult = { created: 0, attachments: 0, existed: 0, gone: 0, left: 0, unreadable: [], skipped: [...skipped], leftOut: leftOutKinds(options.others ?? []), stopped: null };
   const commit = options.commit ?? null;
@@ -67,7 +77,7 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
   let told = Number.NEGATIVE_INFINITY;
   let savedAt = ports.clock();
   const checkpoint = (final = false): void => {
-    if (!final && ports.clock() - savedAt < CHECKPOINT_EVERY_MS) return;
+    if (!final && ((ports.quietWaitMs?.() ?? 0) > 0 || ports.clock() - savedAt < CHECKPOINT_EVERY_MS)) return;
     ports.checkpoint?.();
     savedAt = ports.clock();
   };
@@ -109,6 +119,9 @@ export async function copyIn(ports: CopyInPorts, files: readonly CopyInFile[], s
       result.gone++;
       return "done";
     }
+    await yieldForQuiet(ports, () => {
+      sliceStart = ports.clock();
+    });
     if (!ports.current()) {
       there.delete(key);
       result.stopped = "unloaded";
@@ -281,6 +294,8 @@ async function landCopiedAttachment(ports: CopyInPorts, path: string, read: Atta
     await read.stream.cancel().catch(() => undefined);
     return { status: "failed" };
   }
+  await yieldForQuiet(ports);
+  if (!ports.current()) return { status: "failed" };
   let entered = false;
   const commit: CommitScope = (run) => {
     entered = true;

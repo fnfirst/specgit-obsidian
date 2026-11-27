@@ -99,6 +99,7 @@ export class FileCache {
   private entries = new Map<string, CacheEntry>();
   private removed = new Map<string, Gone>();
   private foreign = new Map<string, string>();
+  private readonly draftRenamedFrom = new Map<string, string>();
   private readonly copied = new Map<string, { sha: string; at: number }>();
   private readonly activeScans = new Set<Set<string>>();
   private dirty = false;
@@ -120,18 +121,22 @@ export class FileCache {
   private load(): void {
     try {
       const stored = this.state.load(this.key);
-      const record = typeof stored === "object" && stored !== null ? (stored as { files?: unknown; removed?: unknown; foreign?: unknown; copied?: unknown }) : {};
+      const record = typeof stored === "object" && stored !== null ? (stored as { files?: unknown; removed?: unknown; foreign?: unknown; copied?: unknown; draftRenames?: unknown }) : {};
       for (const [path, kept] of Object.entries((typeof record.copied === "object" && record.copied !== null ? record.copied : {}) as Record<string, unknown>)) {
         if (Array.isArray(kept) && typeof kept[0] === "string" && typeof kept[1] === "number") this.copied.set(path, { sha: kept[0], at: kept[1] });
       }
       for (const [path, entry] of Object.entries((record.files ?? {}) as Record<string, unknown>)) if (isEntry(entry)) this.entries.set(path, entry);
       for (const [path, sha] of Object.entries((typeof record.foreign === "object" && record.foreign !== null ? record.foreign : {}) as Record<string, unknown>)) if (typeof sha === "string") this.foreign.set(path, sha);
+      for (const [newPath, oldPath] of Object.entries((typeof record.draftRenames === "object" && record.draftRenames !== null ? record.draftRenames : {}) as Record<string, unknown>)) {
+        if (typeof oldPath === "string" && oldPath !== "" && oldPath !== newPath) this.draftRenamedFrom.set(newPath, oldPath);
+      }
       for (const gone of Array.isArray(record.removed) ? (record.removed as unknown[]) : []) {
         const candidate = gone as Partial<Gone> | null;
         if (candidate && typeof candidate.path === "string" && typeof candidate.sha === "string") this.removed.set(candidate.path, { path: candidate.path, sha: candidate.sha, base: candidate.base ?? null });
       }
       capMap(this.foreign, MAX_FOREIGN);
       capMap(this.removed, MAX_REMOVED);
+      capMap(this.draftRenamedFrom, MAX_REMOVED);
     } catch {
       void 0;
     }
@@ -152,7 +157,7 @@ export class FileCache {
     }
     if (!this.dirty) return;
     try {
-      this.state.save(this.key, { files: Object.fromEntries(this.entries), removed: [...this.removed.values()], ...(this.foreign.size > 0 ? { foreign: Object.fromEntries(this.foreign) } : {}), ...(this.copied.size > 0 ? { copied: Object.fromEntries([...this.copied].map(([path, one]) => [path, [one.sha, one.at]])) } : {}) });
+      this.state.save(this.key, { files: Object.fromEntries(this.entries), removed: [...this.removed.values()], ...(this.foreign.size > 0 ? { foreign: Object.fromEntries(this.foreign) } : {}), ...(this.copied.size > 0 ? { copied: Object.fromEntries([...this.copied].map(([path, one]) => [path, [one.sha, one.at]])) } : {}), ...(this.draftRenamedFrom.size > 0 ? { draftRenames: Object.fromEntries(this.draftRenamedFrom) } : {}) });
       this.dirty = false;
     } catch {
       void 0;
@@ -263,6 +268,12 @@ export class FileCache {
         this.removed.set(path, lost);
         gone.push(lost);
       }
+      for (const [newPath, oldPath] of [...this.draftRenamedFrom]) {
+        if (present.has(oldPath) || (!present.has(newPath) && !scanDropped.has(newPath))) {
+          this.draftRenamedFrom.delete(newPath);
+          this.dirty = true;
+        }
+      }
       capMap(this.removed, MAX_REMOVED);
       this.entries = files;
       for (const [path, sha] of [...this.foreign]) {
@@ -288,6 +299,65 @@ export class FileCache {
   copiedFrom(path: string, sha: string): void {
     this.copied.set(path, { sha, at: this.now() });
     this.dirty = true;
+  }
+
+  isCopied(path: string): boolean {
+    return this.copied.has(path);
+  }
+
+  private applyDraftRename(oldPath: string, newPath: string): void {
+    if (oldPath === newPath) return;
+    const rootSource = this.draftRenamedFrom.get(oldPath) ?? oldPath;
+    this.draftRenamedFrom.delete(oldPath);
+    if (rootSource === newPath) {
+      this.dirty = true;
+      return;
+    }
+    for (const [target, source] of [...this.draftRenamedFrom]) {
+      if (target === rootSource || source === newPath) this.draftRenamedFrom.delete(target);
+    }
+    this.draftRenamedFrom.delete(newPath);
+    this.draftRenamedFrom.set(newPath, rootSource);
+    capMap(this.draftRenamedFrom, MAX_REMOVED);
+    this.dirty = true;
+  }
+
+  recordDraftRename(oldPath: string, newPath: string): void {
+    this.applyDraftRename(oldPath, newPath);
+    this.save();
+  }
+
+  clearDraftRenamesFrom(oldPath: string): void {
+    let changed = false;
+    for (const [target, source] of [...this.draftRenamedFrom]) {
+      if (source === oldPath) {
+        this.draftRenamedFrom.delete(target);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.dirty = true;
+    this.save();
+  }
+
+  draftRenameSource(newPath: string): string | null {
+    return this.draftRenamedFrom.get(newPath) ?? null;
+  }
+
+  draftRenameTargets(): ReadonlyMap<string, string> {
+    return this.draftRenamedFrom;
+  }
+
+  isSupersededDraftSource(oldPath: string): boolean {
+    for (const source of this.draftRenamedFrom.values()) if (source === oldPath) return true;
+    return false;
+  }
+
+  forgetDraftRename(newPath: string): boolean {
+    if (!this.draftRenamedFrom.delete(newPath)) return false;
+    this.dirty = true;
+    this.save();
+    return true;
   }
 
   matched(path: string, sha: string): void {
@@ -329,9 +399,15 @@ export class FileCache {
       else if (repoSha !== undefined || inFlight.has(path)) this.setLocalOnly(path, false);
       else if (draftsKnown && entry.base === null && entry.sent === undefined) this.setLocalOnly(path, true);
     }
+    for (const [newPath, oldSource] of [...this.draftRenamedFrom]) {
+      if (repo.has(oldSource)) {
+        this.draftRenamedFrom.delete(newPath);
+        this.dirty = true;
+      }
+    }
     if (draftsKnown) {
       for (const gone of [...this.removed.values()]) {
-        if (gone.base === null && !repo.has(gone.path) && !inFlight.has(gone.path)) this.settled(gone.path);
+        if (gone.base === null && !repo.has(gone.path) && !inFlight.has(gone.path) && !this.isSupersededDraftSource(gone.path)) this.settled(gone.path);
       }
     }
   }

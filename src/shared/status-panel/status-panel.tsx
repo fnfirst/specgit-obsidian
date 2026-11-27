@@ -22,6 +22,7 @@ import {
   githubStatusTone,
   statusBulkResult,
   statusDiscard,
+  statusScopeHeading,
   statusShowMore,
   statusApproveLabel,
   statusPublishLabel,
@@ -325,7 +326,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
         return rowMenuItems(row, { noun, readOnly: !!model.readOnly }).map((item) => ({ label: rowMenuLabel(item), run: () => runStepItem(item, id, 1, () => act({ type: "row", id, action: item })) }));
       }
       if (row?.kind === "group") {
-        return groupMenuItems(row, { readOnly: !!model.readOnly }).map((item: StatusGroupMenuItem) => ({ label: groupMenuLabel(item), run: () => runStepItem(item, id, row.members.length, () => act({ type: "group", id, action: item })) }));
+        return groupMenuItems(row, { readOnly: !!model.readOnly }).map((item: StatusGroupMenuItem) => ({ label: groupMenuLabel(item), run: () => runStepItem(item, id, Math.max(1, row.members.length), () => act({ type: "group", id, action: item })) }));
       }
       return [];
     },
@@ -547,6 +548,7 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
   const quiet = !hideList && checked.size > 0;
   const hasOpenRow = !hideList && !model.loading && !model.loadFailed && layout.all.some((entry) => entry.open && entry.item.kind === "doc");
   const card = layout.pinned ? <PinnedCard pinned={layout.pinned} ctx={ctx} quiet={quiet} hasMore={cardMenu.length > 0} showReason={!hasOpenRow} onButton={onCardButton} onMore={onCardMore} /> : null;
+  const scopeHeading = layout.pinned && (layout.all.length > 0 || layout.live.length > 0) ? statusScopeHeading(model.scope) : null;
   const failed = (
     <div className="sp-state">
       <p>{STATUS_FAILED}</p>
@@ -610,6 +612,11 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
         ) : (
           <>
             {card}
+            {scopeHeading ? (
+              <h3 className="sp-scope-heading" data-testid="sp-scope-heading" title={scopeHeading}>
+                {scopeHeading}
+              </h3>
+            ) : null}
             {chips.length > 1 ? (
             <div className="sp-chip-row" role="group" aria-label={STATUS_TITLE}>
               {chips.map((one) => {

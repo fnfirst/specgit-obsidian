@@ -24,6 +24,27 @@ const counted = (count: number, noun: StatusNoun): string => `${count} ${statusP
 
 export const STATUS_TITLE = "Status";
 
+export type StatusListScope = { readonly kind: "repo"; readonly repo: string } | { readonly kind: "board" };
+
+export const STATUS_ACTIVE_ON_BOARD = "Active on this board";
+
+export function statusActiveInRepo(repo: string): string | null {
+  if (typeof repo !== "string") return null;
+  const raw = repo.trim();
+  const trimmed = raw.replace(/\/+$/, "");
+  if (raw.endsWith("/") && !trimmed.includes("/")) return null;
+  const slash = trimmed.lastIndexOf("/");
+  const short = (slash >= 0 ? trimmed.slice(slash + 1) : trimmed).trim();
+  return short ? `Active in ${short}` : null;
+}
+
+export function statusScopeHeading(scope?: StatusListScope | null): string | null {
+  if (!scope || typeof scope !== "object") return null;
+  if (scope.kind === "board") return STATUS_ACTIVE_ON_BOARD;
+  if (scope.kind === "repo") return statusActiveInRepo(scope.repo);
+  return null;
+}
+
 export const STATUS_CHIPS = {
   all: "All",
   live: "Live",

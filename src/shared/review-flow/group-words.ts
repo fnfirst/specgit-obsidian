@@ -8,7 +8,10 @@ export const groupNames = (group: GroupLabel): string => `${group.name}, ${files
 
 export const groupPublishWords = (group: GroupLabel): { title: string; description: string } => ({
   title: `Publish ${group.name}?`,
-  description: `This publishes ${group.files === 1 ? "the 1 file" : `all ${group.files} files`} in the group together and makes your changes the official version everyone sees.`,
+  description:
+    group.files <= 0
+      ? `This publishes ${group.name} and makes your changes the official version everyone sees.`
+      : `This publishes ${group.files === 1 ? "the 1 file" : `all ${group.files} files`} in the group together and makes your changes the official version everyone sees.`,
 });
 
 export const GROUP_BUSY_WORDS = {

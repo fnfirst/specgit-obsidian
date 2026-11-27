@@ -340,6 +340,7 @@ function GroupNameInput({ group, ctx }: { group: Pick<StatusGroup, "id" | "name"
 
 export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: Lane }) {
   const group = entry.item as StatusGroup;
+  const hasMembers = group.members.length > 0;
   const [open, setOpen] = useState(ctx.openGroups.has(group.id));
   const [all, setAll] = useState(false);
   const shown = all ? group.members.length : DRAW_LIMIT;
@@ -355,9 +356,11 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
       <div className={cx("sp-row sp-group-row", button && "sp-row-two")}>
         <div className={cx("sp-line", group.editing && "sp-row-editing")}>
           <Check item={group} ctx={ctx} />
-          <button type="button" className={cx("sp-twisty", open && "sp-twisty-open")} aria-expanded={open} aria-controls={listId} aria-label={count} onClick={() => setOpen(!open)}>
-            <ChevronIcon />
-          </button>
+          {hasMembers ? (
+            <button type="button" className={cx("sp-twisty", open && "sp-twisty-open")} aria-expanded={open} aria-controls={listId} aria-label={count} onClick={() => setOpen(!open)}>
+              <ChevronIcon />
+            </button>
+          ) : null}
           {group.editing ? (
             <GroupNameInput group={group} ctx={ctx} />
           ) : (
@@ -365,7 +368,7 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
               <span className="sp-name" title={group.name}>
                 {group.name}
               </span>
-              <span className="sp-group-count">{group.members.length}</span>
+              {hasMembers ? <span className="sp-group-count">{group.members.length}</span> : null}
             </>
           )}
           {pillRepeatsChip(lane, group.state) ? null : (
@@ -377,7 +380,7 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
         </div>
         {button ? <div className={cx("sp-line sp-line-2", !boxed && "sp-line-flush")}>{button}</div> : null}
       </div>
-      {open ? (
+      {open && hasMembers ? (
         <ul className={cx("sp-members", !boxed && "sp-members-flush")} id={listId} aria-label={STATUS_LABELS.files(group.name)}>
           {group.members.slice(0, shown).map((member) => (
             <li key={member.id} className="sp-member">

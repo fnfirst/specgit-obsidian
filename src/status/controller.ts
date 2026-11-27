@@ -821,6 +821,7 @@ export class StatusController {
     const activeComments = path !== null ? this.env.openComments(path) : 0;
     const readOnly = model.readOnly();
     const plansUrl = this.env.plansUrl();
+    const repo = this.env.repo();
     const joinKey = this.joinKeyOf(vaultBase);
     this.lastViewMeta = [stay ? "1" : "0", paused ? "1" : "0", hold ?? "", joinKey].join("\0");
     const place = this.env.place();
@@ -832,7 +833,7 @@ export class StatusController {
     const githubStatus = this.env.githubStatus?.snapshot() ?? null;
     const activePeople = liveCapable && phaseOf(status) === "local" && (view?.state.people ?? 0) > 0 ? view!.state.people! : 0;
     const activeLearned = path !== null && model.isLearned?.(path) === true;
-    const key: unknown[] = [vaultBase, this.version, path, liveCapable, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, activeLearned, this.checked, this.notice, githubStatus, this.reviewers, readOnly, plansUrl, joinKey];
+    const key: unknown[] = [vaultBase, this.version, path, liveCapable, behind, statusSignature(status), activePeople, saverSignature(saver), stay, paused, hold, showChanges, unchangedSignature(unchanged), activeComments, activeLearned, this.checked, this.notice, githubStatus, this.reviewers, readOnly, plansUrl, joinKey, repo];
     if (this.built && this.built.key.length === key.length && this.built.key.every((one, at) => one === key[at])) {
       this.lastView = view;
       return this.built.value;
@@ -840,6 +841,7 @@ export class StatusController {
     const value = panelModelFromVault(vaultBase, {
       state,
       viewer,
+      repo,
       unchanged: (one) => (one === path ? unchanged : model.unchangedRow(one)),
       plansUrl,
       holdOf: (one) => (one === path ? hold : model.holdOf(one)),

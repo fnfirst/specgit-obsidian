@@ -152,6 +152,7 @@ export class StayState {
     private readonly state: LocalState,
     private readonly schedule: StaySaveScheduler = defaultSchedule,
     private readonly debounceMs: number = STAY_SAVE_DEBOUNCE_MS,
+    private readonly quietWaitMs: () => number = () => 0,
   ) {
     this.key = `specgit-stay-${hashText(place)}`;
     try {
@@ -188,10 +189,17 @@ export class StayState {
     if (this.dead) return;
     this.dirty = true;
     if (this.pendingSave !== null) return;
-    this.pendingSave = this.schedule(() => {
+    const fire = (): void => {
       this.pendingSave = null;
+      if (this.dead || !this.dirty) return;
+      const wait = this.quietWaitMs();
+      if (wait > 0) {
+        this.pendingSave = this.schedule(fire, wait + 50);
+        return;
+      }
       this.flush();
-    }, this.debounceMs);
+    };
+    this.pendingSave = this.schedule(fire, this.debounceMs);
   }
 
   flush(markDirty = false): void {

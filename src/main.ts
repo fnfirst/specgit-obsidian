@@ -8,7 +8,7 @@ import { NOTE_BRANCH } from "./auth/config";
 import { Board } from "./board";
 import { SpecgitApi } from "./api";
 import { obsidianDialogs } from "./changes/dialogs";
-import { deferDuringUntitled, forgetFreshUntitled, forgetFreshUntitledIf, isFreshUntitled, onFreshUntitledCreate, trackFreshLocalNotes } from "./changes/local-new";
+import { bindLocalNewModel, deferDuringUntitled, forgetFreshUntitled, forgetFreshUntitledIf, forgetLocallyCreated, isFreshUntitled, isLocallyCreated, onFreshUntitledCreate, resetLocallyCreated, trackFreshLocalNotes } from "./changes/local-new";
 import { listRepository } from "./changes/mirror-listing";
 import { OwnLinks } from "./changes/own-links";
 import { setUpChanges } from "./changes/setup";
@@ -171,6 +171,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
 
     let repoShaOf = (_path: string): string | null => null;
     let isLocalOnlyNew = (_path: string): boolean => false;
+    let canTypeWhileJoining = (_path: string): boolean => false;
     let mainMoved = (_path: string): boolean => false;
     let draftBy = (_path: string): Promise<string | null> => Promise.resolve(null);
     let liveJoined = (_path: string): void => undefined;
@@ -185,6 +186,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       liveEditor({
         reading,
         isLocalOnlyNew: (path) => isLocalOnlyNew(path),
+        canTypeWhileJoining: (path) => canTypeWhileJoining(path),
         onLayout: (listener) => {
           const active = this.app.workspace.on("active-leaf-change", listener);
           const layout = this.app.workspace.on("layout-change", listener);
@@ -375,6 +377,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       changes.live.catchUp(!reconnected);
     });
 
+    bindLocalNewModel(this, changes.model);
     repoShaOf = (path) => changes.model.vault()?.files.get(path)?.repoSha ?? null;
     clearFreshSent = (path) => changes.model.learnSent(path, null);
     isLocalOnlyNew = (path) => {
@@ -383,6 +386,16 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         return false;
       }
       return changes.model.isLocalOnlyNew(path);
+    };
+    canTypeWhileJoining = (path) => {
+      const locallyCreated = isLocallyCreated(this, path);
+      if (disk.bases.read(path).status !== "none") {
+        if (isFreshUntitled(this, path)) forgetFreshUntitled(this, path);
+        if (locallyCreated) forgetLocallyCreated(this, path);
+        return false;
+      }
+      if (this.config.stayDrafts === "mine" && this.config.login === "" && !locallyCreated) return false;
+      return changes.model.canTypeWhileJoining(path, locallyCreated);
     };
     isDeferredLocalNew = (doc) => {
       const key = docKey(doc);
@@ -454,6 +467,7 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
     liveJoined = (path) => {
       disk.bases.flushForget(path);
       forgetFreshUntitled(this, path);
+      forgetLocallyCreated(this, path);
       changes.liveFiles.joined(path);
     };
     sentBase = (path, doc, since, signal) => changes.sentBase(path, doc, since, signal);
@@ -489,9 +503,9 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
       const doc = documentFor(this.config, path);
       if (!doc || !auth.isSignedIn()) return;
       disk.bases.flushForget(path);
-      forgetFreshUntitled(this, path);
       await ensureOpen(this, path);
       connections.choose(doc, true);
+      forgetFreshUntitled(this, path);
     };
     unsent = async () => {
       if (changes.model.state().phase !== "ready") await changes.model.refresh();
@@ -605,12 +619,14 @@ export default class SpecgitPlugin extends Plugin implements SettingsHost {
         if (event.kind === "signed_in") {
           void account.beginSignIn().catch(() => undefined);
           if (event.over) {
+            resetLocallyCreated(this);
             connections.reset();
             rooms.reset();
           }
           rooms.retryFailed(0);
           gitBases.resume();
         } else if (event.kind === "signed_out") {
+          resetLocallyCreated(this);
           connections.reset();
           rooms.reset();
           void account.forgetLogin().catch(() => undefined);

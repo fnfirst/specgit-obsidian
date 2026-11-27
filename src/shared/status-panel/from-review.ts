@@ -265,7 +265,7 @@ export function itemsFromInFlight({ inFlight, facts, rooms, viewer, now, exclude
   const entries = inFlightEntries(inFlight, viewer, inFlight.base);
   const branches = new Map<string, InFlightBranch>();
   for (const { path, entry } of draftWorkItems(inFlight.paths, viewer, inFlight.base)) if (!branches.has(path)) branches.set(path, entry);
-  const overviews = Object.entries(inFlight.groups ?? {}).filter(([, overview]) => overview.paths.length > 0);
+  const overviews = Object.entries(inFlight.groups ?? {}).filter(([, overview]) => overview.paths.length > 0 || overview.prNumber > 0);
   const grouped = new Set(overviews.flatMap(([, overview]) => overview.paths));
   const items: StatusItem[] = [];
   const listed = new Set<string>();

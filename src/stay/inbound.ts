@@ -16,6 +16,7 @@ import { CasePathIndex, casePathKey, type DocumentRef, noteName } from "../mappi
 import type { Activity } from "./activity";
 import { caseCollisionWords, StayHolds, vaultCaseIndex } from "./holds";
 import { BURST_FILES } from "./limits";
+import { yieldQuiet } from "./outbound-pass";
 import { CHOICE_WORDS, DRAFT_SAID } from "./words";
 import type { StayState } from "./state";
 import type { StayPorts } from "./types";
@@ -49,6 +50,7 @@ export interface InboundContext {
   isOwnBlob?(path: string, sha: string): boolean;
   onSettled?(path: string, sha: string | null): void;
   onRebasedSent?(path: string, sha: string): void;
+  quietWaitMs?: () => number;
   current(): boolean;
   onResolved?: (path: string) => void;
 }
@@ -648,6 +650,8 @@ export class Inbound {
 
   private async create(path: string, doc: DocumentRef, main: MainText, said: Said): Promise<void> {
     const { ports, activity } = this.ctx;
+    await yieldQuiet(this.ctx);
+    if (!this.ctx.current()) return this.wait(path, main.sha);
     activity.ownWrite(path);
     const made = await ports.vault.create(path, main.text);
     if (made === "exists" && !ports.vault.exists(path)) {
@@ -678,6 +682,8 @@ export class Inbound {
 
   private async update(path: string, doc: DocumentRef, expected: string, main: MainText, said: Said): Promise<void> {
     const { ports, activity } = this.ctx;
+    await yieldQuiet(this.ctx);
+    if (!this.ctx.current()) return this.wait(path, main.sha);
     activity.ownWrite(path);
     let before = "";
     let after = main.text;
@@ -717,6 +723,8 @@ export class Inbound {
     if (result.kind === "conflict") return this.askPerson(path, doc, main, mine, result.review);
     const merged = withBomAndEol(result.text, mine);
     if (merged !== mine) {
+      await yieldQuiet(this.ctx);
+      if (!this.ctx.current()) return this.wait(path, main.sha);
       activity.ownWrite(path);
       const written = await ports.vault.process(path, (current) => (current === mine ? merged : null));
       if (written !== "written") return this.refusedWrite(path, main.sha, written);
@@ -780,6 +788,7 @@ export class Inbound {
     if (ports.disconnected(from) || ports.disconnected(to)) return;
     if (this.caseIndex.collision(move.to, move.from) !== null) return this.holdCaseCollision(move.to, move.sha, move.from);
     if (ports.phaseOf(move.to) !== "local" || !(await this.free(move.from, from, move.sha))) return this.wait(move.from, move.sha);
+    await yieldQuiet(this.ctx);
     const mirror = this.looked?.repo;
     if (!mirror || mirror.has(move.from) || mirror.get(move.to) !== move.sha || !this.ctx.current()) return this.wait(move.from, move.sha);
     const current = await ports.vault.read(move.from);
@@ -829,6 +838,8 @@ export class Inbound {
       if (main.kind === "file") return this.settled(path, main.sha);
       if (main.kind !== "absent" || !this.ctx.current()) return this.wait(path, sha);
     }
+    await yieldQuiet(this.ctx);
+    if (!this.ctx.current()) return this.wait(path, sha);
     activity.ownWrite(path);
     if (!(await ports.vault.trash(path, entry.sha))) return this.unwritten(path, sha);
     this.caseIndex.removeFile(path, (dir) => ports.vault.exists(dir));

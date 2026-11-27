@@ -37,7 +37,7 @@ import { ChangesFlows } from "./flows";
 import { FILES_PER_BATCH } from "./copy-in";
 import { collectAttachments } from "./collect-attachments";
 import { attachmentRenamed, RENAME_LOOKS_AFTER_MS } from "./attachment-rename";
-import { deferDuringUntitled, isFreshUntitled } from "./local-new";
+import { deferDuringUntitled, isFreshUntitled, untitledCreateRemainingMs } from "./local-new";
 import { LiveFiles } from "./live-files";
 import { type Attachment, AttachmentMemory } from "./attachment-memory";
 import { MirrorClient } from "./mirror";
@@ -95,10 +95,23 @@ export interface ChangesSetup {
   bringInDraft?: (path: string) => Promise<BroughtDraft>;
   ownLinks?: OwnLinks;
   githubStatus?: GithubStatusReader;
+  isOwnWrite?: (path: string) => boolean;
 }
 
-const LOOK_AFTER_MS = 1_500;
+export const LOOK_DEBOUNCE_MS = 1_500;
+export const MAX_LOOK_WAIT_MS = 3_500;
+export const OWN_WRITE_LOOK_MS = 4_000;
+const UNTITLED_LOOK_PAD_MS = 50;
 export const RESUME_FLOOR_MS = 30_000;
+
+const pluginOwnWrites = new WeakMap<Plugin, (path: string) => boolean>();
+
+export function registerPluginOwnWrites(plugin: Plugin, check: (path: string) => boolean): () => void {
+  pluginOwnWrites.set(plugin, check);
+  return () => {
+    if (pluginOwnWrites.get(plugin) === check) pluginOwnWrites.delete(plugin);
+  };
+}
 
 const base64Of = (buffer: ArrayBuffer): string => {
   let binary = "";
@@ -378,6 +391,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   };
 
   const host = nativeHost(app);
+  const isOwnWrite = (path: string): boolean => deps.isOwnWrite?.(path) === true || pluginOwnWrites.get(plugin)?.(path) === true;
   const status = new StatusController({
     model,
     flows,
@@ -411,30 +425,87 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   plugin.register(() => status.dispose());
 
   let timer: number | undefined;
-  const lookSoon = (): void => {
-    const currentState = model.state();
-    if (currentState.phase === "rate-limited" && (currentState.rateLimitedUntil ?? 0) > Date.now()) return;
-    window.clearTimeout(timer);
-    timer = window.setTimeout(() => void model.refresh(), LOOK_AFTER_MS);
+  let timerDueAt = Number.POSITIVE_INFINITY;
+  let firstUserEventAt: number | null = null;
+  const clearLookTimer = (): void => {
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = undefined;
+    timerDueAt = Number.POSITIVE_INFINITY;
   };
-  const watch = (file: { path: string }): void => {
-    if (!LISTED_FILE.test(file.path) && file.path !== ".gitignore") return;
+  const fireLook = (): void => {
+    timer = undefined;
+    timerDueAt = Number.POSITIVE_INFINITY;
+    const now = Date.now();
+    const currentState = model.state();
+    if (currentState.phase === "rate-limited" && (currentState.rateLimitedUntil ?? 0) > now) {
+      firstUserEventAt = null;
+      return;
+    }
+    const quietLeft = untitledCreateRemainingMs(plugin, now);
+    if (quietLeft > 0) {
+      const delay = quietLeft + UNTITLED_LOOK_PAD_MS;
+      timerDueAt = now + delay;
+      timer = window.setTimeout(fireLook, delay);
+      return;
+    }
+    firstUserEventAt = null;
+    void model.refresh();
+  };
+  const armLookTimer = (dueAt: number, now: number): void => {
+    const delay = Math.max(0, dueAt - now);
+    window.clearTimeout(timer);
+    timerDueAt = now + delay;
+    timer = window.setTimeout(fireLook, delay);
+  };
+  const lookSoon = (source: "user" | "own" | "poll" = "user"): void => {
+    const now = Date.now();
+    const currentState = model.state();
+    if (currentState.phase === "rate-limited" && (currentState.rateLimitedUntil ?? 0) > now) return;
+    if (source === "own") {
+      if (timer !== undefined) return;
+      armLookTimer(now + OWN_WRITE_LOOK_MS, now);
+      return;
+    }
+    if (source === "poll") {
+      const wanted = now + LOOK_DEBOUNCE_MS;
+      if (timer !== undefined && timerDueAt <= wanted) return;
+      armLookTimer(wanted, now);
+      return;
+    }
+    if (firstUserEventAt === null) firstUserEventAt = now;
+    const wanted = Math.min(now + LOOK_DEBOUNCE_MS, firstUserEventAt + MAX_LOOK_WAIT_MS);
+    armLookTimer(wanted, now);
+  };
+  const watch = (file: { path: string }, oldPath?: string): void => {
+    const listed =
+      LISTED_FILE.test(file.path) ||
+      file.path === ".gitignore" ||
+      (typeof oldPath === "string" && (LISTED_FILE.test(oldPath) || oldPath === ".gitignore"));
+    if (!listed) return;
+    if (isOwnWrite(file.path) || (typeof oldPath === "string" && isOwnWrite(oldPath))) {
+      lookSoon("own");
+      return;
+    }
     unquiet();
-    lookSoon();
+    lookSoon("user");
   };
   const scheduleWatch = deferDuringUntitled(plugin, () => {
     unquiet();
-    lookSoon();
+    lookSoon("user");
   });
   plugin.registerEvent(
     app.vault.on("create", (file) => {
       if (!LISTED_FILE.test(file.path) && file.path !== ".gitignore") return;
+      if (isOwnWrite(file.path)) {
+        lookSoon("own");
+        return;
+      }
       if (isFreshUntitled(plugin, file.path)) {
         scheduleWatch();
         return;
       }
       unquiet();
-      lookSoon();
+      lookSoon("user");
     }),
   );
   const liveFiles = new LiveFiles({
@@ -457,11 +528,8 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     app.vault.on("rename", (file, oldPath) => {
       if (typeof oldPath === "string") {
         deps.ownLinks?.moved(oldPath, file.path);
-        if (oldPath === ".gitignore") {
-          unquiet();
-          lookSoon();
-        }
       }
+      watch(file, typeof oldPath === "string" ? oldPath : undefined);
       if (LISTED_FILE.test(file.path) || underFolder(folder(), file.path) === null) return;
       const timer = window.setTimeout(() => {
         renames.delete(timer);
@@ -474,23 +542,22 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     }),
   );
   plugin.register(() => renames.forEach((timer) => window.clearTimeout(timer)));
-  plugin.registerEvent(app.vault.on("modify", watch));
+  plugin.registerEvent(app.vault.on("modify", (file) => watch(file)));
   plugin.registerEvent(
     app.vault.on("delete", (file) => {
       deps.ownLinks?.forget(file.path);
       watch(file);
     }),
   );
-  plugin.registerEvent(app.vault.on("rename", watch));
   const signals = deps.signals ?? pageSignals(plugin, deps.live);
-  const watcher = new Watch({ signals, moved: () => placed().mirror.moved(), live: () => deps.live?.() === true, look: lookSoon, stay: () => deps.stayOn?.() === true });
+  const watcher = new Watch({ signals, moved: () => placed().mirror.moved(), live: () => deps.live?.() === true, look: () => lookSoon("poll"), stay: () => deps.stayOn?.() === true });
   const unquiet = (): void => watcher.unquiet();
   plugin.register(model.onLooked((looked) => watcher.looked(watchSignature(looked))));
   let lastResumedAt = Number.NEGATIVE_INFINITY;
   const resumed = (): void => {
     if (appHidden()) return;
     unquiet();
-    lookSoon();
+    lookSoon("user");
     const now = Date.now();
     if (now - lastResumedAt < RESUME_FLOOR_MS) return;
     lastResumedAt = now;
@@ -509,7 +576,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   });
   const first = window.setTimeout(() => plugin.registerInterval(window.setInterval(() => void watcher.tick(), CHECK_EVERY_MS)), clientPollOffset(CHECK_EVERY_MS));
   plugin.register(() => window.clearTimeout(first));
-  plugin.register(() => window.clearTimeout(timer));
+  plugin.register(() => clearLookTimer());
   plugin.register(() => current?.cache.flush());
   plugin.register(() => model.dispose());
   const reviewEvents = new ReviewEvents();
@@ -519,7 +586,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
       status.reviewsChanged();
     }
     unquiet();
-    lookSoon();
+    lookSoon("poll");
   });
   plugin.register(reaction.start());
   app.workspace.onLayoutReady(() => {

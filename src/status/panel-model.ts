@@ -31,6 +31,7 @@ export const groupId = (id: string): string => `g:${id}`;
 export interface PanelInput {
   state: ChangesState;
   viewer: string;
+  repo?: string;
   now: number;
   facts: ReadonlyMap<number, ReviewFacts>;
   flight: InFlightResponse | null;
@@ -155,6 +156,7 @@ export type ActivePanelInput = Pick<
   PanelInput,
   | "state"
   | "viewer"
+  | "repo"
   | "unchanged"
   | "holdOf"
   | "isLive"
@@ -480,6 +482,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
   }
 
   const pinned = active ? pinnedOf(input, active, activeHold, ownDoc, base.rowByPath, base.groupByPath, base.factsOf, units.rows) : null;
+  const repo = input.repo?.trim() ?? "";
   const offline = state.phase === "offline";
   const running = state.doing?.kind;
   const model: StatusPanelModel = {
@@ -491,6 +494,7 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
     ...(state.groupsLocked ? { grouping: { reason: GROUP_PRO_ONLY.reason, link: { label: GROUP_PRO_ONLY.upgrade, href: input.plansUrl } } } : {}),
     ...(!state.groupsOn && !state.groupsLocked ? { groupsOff: true } : {}),
     ...(input.readOnly ? { readOnly: true } : {}),
+    ...(repo ? { scope: { kind: "repo" as const, repo } } : {}),
     ...(pinned ? { pinned } : {}),
     items,
     ...(base.folds.length > 0 ? { folds: base.folds } : {}),
@@ -505,7 +509,8 @@ export function panelModelFromVault(base: VaultPanelBase, input: ActivePanelInpu
 }
 
 export function panelModelOf(input: PanelInput): Built {
-  return panelModelFromVault(vaultPanelOf(input), input);
+  const fallbackRepo = input.repo === undefined && input.active ? input.docFor(input.active.path)?.repo : undefined;
+  return panelModelFromVault(vaultPanelOf(input), fallbackRepo ? { ...input, repo: fallbackRepo } : input);
 }
 
 function reviewRowOf(entry: ChangeSetEntry, branch: InFlightBranch | null, doc: DocumentRef | null): ChangeRow | null {

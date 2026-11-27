@@ -1,7 +1,7 @@
 import { REVIEW_STAGES, reviewStage, waitsOnViewer, type ChangeSetEntry, type ReviewStage } from "./change-set";
 import { describePublishBlock } from "./publish-policy";
 import type { PrMergeableState, PrReviewDecision } from "./pr-info";
-import { classifyOutside, type GroupOverview } from "./groups";
+import { classifyOutside, GROUP_BRANCH_PREFIX, type GroupOverview } from "./groups";
 import { draftWorkItems, type InFlightResponse, openedBy } from "./in-flight";
 import { sameLogin } from "./people";
 import { endingWaitsForPick, endingWords } from "./ending";
@@ -52,7 +52,7 @@ export function groupEntry(group: GroupOverview): ChangeSetEntry {
   const held = groupHeld(group);
   const stage: ReviewStage = held?.conflict ? "conflicts" : reviewStage({ isDraft: group.isDraft, mergeableState: group.mergeableState });
   return {
-    path: group.paths[0] ?? group.name,
+    path: group.paths[0] ?? `${GROUP_BRANCH_PREFIX}${group.id}`,
     kind: "note",
     name: group.name,
     prNumber: group.prNumber,
@@ -140,7 +140,7 @@ export interface StatusUnits {
 }
 
 export function statusUnits(entries: readonly ChangeSetEntry[], groups: Record<string, GroupOverview> | undefined): StatusUnits {
-  const overviews = Object.values(groups ?? {}).filter((group) => group.paths.length > 0);
+  const overviews = Object.values(groups ?? {}).filter((group) => group.paths.length > 0 || group.prNumber > 0);
   const grouped = new Set(overviews.flatMap((group) => group.paths));
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
   return {

@@ -312,7 +312,8 @@ export class NoteEditor implements PluginValue {
 
   private connect(ref: DocumentRef): void {
     this.announce = true;
-    const editable = this.leads() && this.services.isLocalOnlyNew?.(this.path) === true;
+    const editable = this.leads() && (this.services.canTypeWhileJoining?.(this.path) ?? this.services.isLocalOnlyNew?.(this.path)) === true;
+    this.join.enterJoining(editable ? this.view.state.doc.toString() : null);
     this.joinRoom(this.services.rooms.acquire(ref));
     this.waitForRoom();
     this.moveTo("joining", editable);
@@ -481,6 +482,7 @@ export class NoteEditor implements PluginValue {
     this.pausedFromLive = false;
     const key = this.ref ? docKey(this.ref) : null;
     const agreed = this.binding && this.room ? (this.room.vouched ?? "") : null;
+    const keepEditable = this.phase === "joining" && this.joiningEditable && agreed === null && this.leads() && (this.services.canTypeWhileJoining?.(this.path) ?? this.services.isLocalOnlyNew?.(this.path)) === true;
     if (agreed !== null && agreed !== "" && this.path !== "") this.services.roomAcked?.(this.path, agreed, true);
     this.takenText = this.room ? (this.room.vouched ?? this.room.text.toJSON()) : null;
     const leaving = this.room?.steps ?? null;
@@ -491,7 +493,7 @@ export class NoteEditor implements PluginValue {
     this.carets?.destroy();
     this.joinRoom(next);
     this.waitForRoom();
-    this.moveTo("joining");
+    this.moveTo("joining", keepEditable);
     later(() => this.roomChanged());
     if (wasFallback) {
       for (const editor of this.registry.editorsOf(this.path)) if (editor !== this && editor.phase === "local") later(() => editor.matchChoice());

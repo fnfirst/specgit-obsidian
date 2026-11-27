@@ -1,6 +1,6 @@
-import type { GithubStatusSnapshot, StatusChipKey, StatusGroupMenuItem, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning } from "../review-flow";
+import type { GithubStatusSnapshot, StatusChipKey, StatusGroupMenuItem, StatusListScope, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning } from "../review-flow";
 
-export type { GithubStatusSnapshot, StatusChipKey, StatusGroupMenuItem, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning };
+export type { GithubStatusSnapshot, StatusChipKey, StatusGroupMenuItem, StatusListScope, StatusNoun, StatusPillState, StatusRowButton, StatusRowMenuItem, StatusRunning };
 
 export type Lane = "approve" | "publish" | "drafts" | "others" | "none";
 
@@ -195,6 +195,7 @@ export interface StatusPanelModel {
     link?: { label: string; href: string };
   };
   readOnly?: boolean;
+  scope?: StatusListScope | null;
   pinned?: StatusPinned | null;
   items: readonly StatusItem[];
   folds?: readonly StatusFold[];

@@ -732,6 +732,23 @@ button.sp-pill {
   height: 12px;
 }
 
+.sp-scope-heading {
+  margin: 14px 0 6px;
+  padding: 0;
+  color: var(--sp-muted);
+  font: inherit;
+  font-size: 0.86em;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sp-scope-heading + .sp-chip-row {
+  margin-top: 0;
+}
+
 .sp-chip-row {
   position: relative;
   display: flex;
