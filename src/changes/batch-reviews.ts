@@ -1,8 +1,9 @@
-import { type GroupOverview, type InFlightBranch, isGroupBranch, isSomeoneElses, openedBy as openerOf, type PrInfo, sameLogin, pickFileReview, type SavesTo } from "../shared/review-flow";
+import { type GroupOverview, type InFlightBranch, isGroupBranch, isSomeoneElses, openedBy as openerOf, type PrInfo, sameLogin, pickFileReview, type SavesTo, withViewerSaveAttribution, withViewerSaveEntries } from "../shared/review-flow";
 import type { ReviewStatus } from "../review/review-api";
 import type { TheirReview } from "./vault-state";
 import type { Draft } from "../stay/draft-state";
 
+export { withViewerSaveAttribution as withViewerSavePaths, withViewerSaveEntries };
 export const reviewAuthor = (entry: InFlightBranch): string | null => openerOf(entry);
 
 const openedBy = (entries: readonly InFlightBranch[], login: string | null): InFlightBranch | null =>
@@ -18,21 +19,22 @@ export interface BatchReview {
 
 export function reviewFromInFlight(entries: readonly InFlightBranch[] | undefined, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): BatchReview {
   const none: BatchReview = { review: null, needsDetail: false };
-  if (!entries || entries.length === 0) return none;
-  const { group, own, branch } = pickFileReview(entries, login, groups, saves);
+  const attributed = withViewerSaveEntries(entries, login);
+  if (!attributed || attributed.length === 0) return none;
+  const { group, own, branch } = pickFileReview(attributed, login, groups, saves);
   if (group) {
     const { entry, overview } = group;
     const pr: PrInfo = { number: overview.prNumber, url: overview.prUrl, state: overview.isDraft ? "draft" : "open", isDraft: overview.isDraft, mergeableState: overview.mergeableState, authorLogin: entry.authorLogin, group: { name: overview.name, files: overview.paths.length } };
     return { review: { reviewBranch: branch, pr }, needsDetail: false };
   }
-  const theirs = openedBy(entries, login) ?? own;
+  const theirs = openedBy(attributed, login) ?? own;
   if (!theirs) return none;
   const pr = prOf(theirs);
   return { review: { reviewBranch: theirs.branch, pr }, needsDetail: pr !== null && !pr.isDraft };
 }
 
 export function isOwnDraft(entries: readonly InFlightBranch[] | undefined, branch: string, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): boolean {
-  return pickFileReview(entries, login, groups, saves).own?.branch === branch;
+  return pickFileReview(withViewerSaveEntries(entries, login), login, groups, saves).own?.branch === branch;
 }
 
 function teammateEntry(entries: readonly InFlightBranch[], login: string): InFlightBranch | null {
@@ -46,23 +48,25 @@ function teammateEntry(entries: readonly InFlightBranch[], login: string): InFli
 }
 
 export function teammateReview(entries: readonly InFlightBranch[] | undefined, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): TheirReview | null {
-  if (!entries || entries.length === 0 || login === null || login === "") return null;
-  const entry = teammateEntry(entries, login);
+  const attributed = withViewerSaveEntries(entries, login);
+  if (!attributed || attributed.length === 0 || login === null || login === "") return null;
+  const entry = teammateEntry(attributed, login);
   if (!entry) return null;
-  const { group, own } = pickFileReview(entries, login, groups, saves);
-  if (own || group || openedBy(entries, login)) return null;
+  const { group, own } = pickFileReview(attributed, login, groups, saves);
+  if (own || group || openedBy(attributed, login)) return null;
   return { by: reviewAuthor(entry)!, branch: entry.branch, prNumber: entry.prNumber ?? null, prUrl: entry.prUrl ?? null, draft: prOf(entry)?.isDraft ?? true };
 }
 
 export function draftOf(entries: readonly InFlightBranch[] | undefined, login: string | null, groups: ReadonlyMap<string, GroupOverview>, saves?: SavesTo): Draft | null {
-  if (!entries || entries.length === 0) return null;
-  const { group, own, branch } = pickFileReview(entries, login, groups, saves);
+  const attributed = withViewerSaveEntries(entries, login);
+  if (!attributed || attributed.length === 0) return null;
+  const { group, own, branch } = pickFileReview(attributed, login, groups, saves);
   if (group) {
-    const mine = branch === null || isGroupBranch(branch) ? null : entries.find((one) => one.branch === branch);
+    const mine = branch === null || isGroupBranch(branch) ? null : attributed.find((one) => one.branch === branch);
     if (!mine) return { branch: group.entry.branch, blob: group.entry.docBlobSha ?? null, by: reviewAuthor(group.entry), lastBy: group.entry.authorLogin || null, prNumber: group.overview.prNumber, inGroup: true, viaGroup: true };
     return { branch: mine.branch, blob: mine.docBlobSha ?? null, by: reviewAuthor(mine), lastBy: mine.authorLogin || null, prNumber: mine.prNumber ?? null, inGroup: true };
   }
-  const entry = openedBy(entries, login) ?? own ?? (login === null || login === "" ? null : teammateEntry(entries, login));
+  const entry = openedBy(attributed, login) ?? own ?? (login === null || login === "" ? null : teammateEntry(attributed, login));
   if (!entry) return null;
   return { branch: entry.branch, blob: entry.docBlobSha ?? null, by: reviewAuthor(entry), lastBy: entry.authorLogin || null, prNumber: entry.prNumber ?? null };
 }

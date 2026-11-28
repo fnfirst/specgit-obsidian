@@ -1,5 +1,6 @@
 import { gitBlobShaOfText } from "../changes/blob-sha";
-import { agreedOf, clearSent, type CacheEntry } from "../changes/cache";
+import { agreedOf, clearSent, RETIRED_DRAFT_TTL_MS, type CacheEntry } from "../changes/cache";
+import { notifyLookedInboundRename } from "../changes/draft-lifecycle";
 import type { Looked } from "../changes/model";
 import { unchangedHere } from "../changes/unchanged-here";
 import { Budget } from "../disk/diff";
@@ -14,9 +15,9 @@ import { TeammateOffers } from "./draft-offers";
 import { DraftRenames, RENAME_HOLD_MS } from "./draft-renames";
 import type { End } from "./ends";
 import { caseCollisionWords, StayHolds, vaultCaseIndex } from "./holds";
-import { FIRST_WAIT_MS, MAX_WAIT_MS, READS_PER_PASS, TEXTS_PER_PASS as MAIN_TEXTS_PER_PASS } from "./inbound";
+import { FIRST_WAIT_MS, MAX_WAIT_MS, READS_PER_PASS } from "./inbound";
 import { changeKey } from "./outbound";
-import { admitDraftReads, backfillAgreed, computeBusyBeforeDraftRun, endedMemoOf, excludeRenameLooked, fallbackHeardDraft, fileFactsOf, finalizeDraftBusy, isFreshLocalUntitled, isSkippableDraftMerge, matchesDraftBlobOnDisk, prioritizeDraftPaths, readDraftMergeBase, snapshotDraftBusy, stepBackoff, writeDraftText, yieldQuiet } from "./outbound-pass";
+import { admitDraftReads, backfillAgreed, collectDraftEnds, computeBusyBeforeDraftRun, endedMemoOf, excludeRenameLooked, fallbackHeardDraft, fileFactsOf, finalizeDraftBusy, isFreshLocalUntitled, isSkippableDraftMerge, matchesDraftBlobOnDisk, prioritizeDraftPaths, readDraftMergeBase, snapshotDraftBusy, stepBackoff, writeDraftText, yieldQuiet } from "./outbound-pass";
 import type { StayState } from "./state";
 import type { StayPorts } from "./types";
 import { BackoffWaits, WakeClock } from "./wait";
@@ -102,6 +103,7 @@ export class DraftInbound {
   private draftsDeferred = new Set<string>();
   private known: (sha: string) => string | undefined = () => undefined;
   private readonly awaiting = new Map<string, { sent: string; to: string | null; agreed: string }>();
+  private readonly retiredInboundSources = new Map<string, number>();
   private readonly crlfMiss = new Map<string, string>();
   private readonly deciding = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
@@ -136,8 +138,19 @@ export class DraftInbound {
       noteRenamed: (from, to) => {
         this.caseIndex.removeFile(from, (dir) => this.ctx.ports.vault.exists(dir));
         this.caseIndex.add(to);
+        if (from !== to && !this.looked?.repo.has(from)) {
+          this.retiredInboundSources.delete(to);
+          this.retiredInboundSources.set(from, this.ctx.ports.now());
+        }
+        if (this.looked) notifyLookedInboundRename(this.looked, from, to);
       },
-      noteRemoved: (path) => this.caseIndex.removeFile(path, (dir) => this.ctx.ports.vault.exists(dir)),
+      noteRemoved: (path) => {
+        this.caseIndex.removeFile(path, (dir) => this.ctx.ports.vault.exists(dir));
+        if (!this.looked?.repo.has(path)) {
+          this.retiredInboundSources.set(path, this.ctx.ports.now());
+          if (this.looked) notifyLookedInboundRename(this.looked, path, "");
+        }
+      },
       awaiting: this.awaiting,
     });
     this.deletes = new DraftDeletes(ctx, {
@@ -311,14 +324,18 @@ export class DraftInbound {
     this.offers.noteInitial(looked, drafts);
     await backfillAgreed(looked, this.ctx.ports, () => this.ctx.current());
     this.deletes.dropGone(looked);
-    const pairLooked = excludeRenameLooked(looked, new Set([...extraSkip, ...(this.ctx.sentSinceLook?.() ?? [])]));
+    const now = this.ctx.ports.now();
+    for (const [src, at] of [...this.retiredInboundSources]) {
+      if (looked.files.has(src) || looked.repo.has(src) || now - at >= RETIRED_DRAFT_TTL_MS) this.retiredInboundSources.delete(src);
+    }
+    const pairLooked = excludeRenameLooked(looked, this.ctx.sentSinceLook?.() ?? new Set(), extraSkip);
     const pairByPath = extraSkip.size > 0 ? new Map([...drafts.byPath].filter(([path]) => !extraSkip.has(path))) : drafts.byPath;
     this.renames.dropSettled(pairLooked, pairByPath);
     const renamed = await this.renames.pair(pairLooked, pairByPath);
     this.deferredRenameSources = renamed.heldFrom;
     changed += renamed.changed;
     const paths = new Set<string>([...drafts.byPath.keys(), ...this.endedMemo.keys(), ...[...looked.files].filter(([, entry]) => entry.sent !== undefined).map(([path]) => path)]);
-    const skip = new Set<string>([...renamed.paths, ...renamed.heldFrom, ...extraSkip]);
+    const skip = new Set<string>([...renamed.paths, ...renamed.heldFrom, ...this.retiredInboundSources.keys(), ...extraSkip]);
     await this.readEnds(looked, paths, drafts, skip);
     await this.readDrafts(looked, paths, drafts, skip);
     for (const path of [...this.unlevel.keys()]) if (!paths.has(path)) this.unlevel.delete(path);
@@ -393,45 +410,11 @@ export class DraftInbound {
   }
 
   private async readEnds(looked: Looked, paths: ReadonlySet<string>, drafts: NonNullable<Looked["drafts"]>, skip: ReadonlySet<string>): Promise<void> {
-    const { ports } = this.ctx;
-    this.ends = new Map();
-    this.endsAsked = new Set();
-    this.endsRetryAfterMs = undefined;
-    this.texts = new Map();
-    if (!ports.reviewEnds || !drafts.level) return;
-    const asked: Array<{ path: string; doc: DocumentRef; number: number; group: boolean }> = [];
-    for (const path of paths) {
-      if (skip.has(path)) continue;
-      const entry = looked.files.get(path);
-      const doc = ports.documentFor(path);
-      const number = /^(?:pr|group):(\d+)$/.exec(entry?.sentTo ?? "")?.[1];
-      if (!doc || !entry || entry.sent === undefined || number === undefined || drafts.byPath.has(path) || this.endedMemo.has(path) || ports.inGroup(path)) continue;
-      if (ports.now() - (entry.sentAt ?? 0) <= ENDED_AFTER_MS) continue;
-      const facts = this.facts(looked, path);
-      const kind = draftCase({ file: facts, draft: null, login: ports.login(), policy: ports.policy(), leftAlone: null, ended: null }).kind;
-      if ((kind === "none" || kind === "wait") && this.ready(path, false)) asked.push({ path, doc, number: Number(number), group: entry.sentTo?.startsWith("group:") === true });
-    }
-    if (asked.length === 0) return;
-    const answer = await ports.reviewEnds(asked.map(({ doc, number, group }) => ({ doc, number, ...(group ? { group: true } : {}) })));
-    if (!this.ctx.current() || answer.kind === "unsupported") return;
-    this.endsRetryAfterMs = answer.retryAfterMs;
-    for (const { path, number } of asked) {
-      const end = answer.ends.get(number);
-      if (end === undefined) this.endsAsked.add(path);
-      else this.ends.set(path, end);
-    }
-    if (!ports.blobTexts) return;
-    const wanted: Array<{ doc: DocumentRef; sha: string }> = [];
-    const seen = new Set<string>();
-    for (const { path, doc } of asked) {
-      const end = this.ends.get(path);
-      const sha = looked.repo.get(path);
-      if ((end !== "published" && end !== "discarded") || sha === undefined || seen.has(sha) || this.known(sha) !== undefined || sha === looked.files.get(path)?.sha) continue;
-      seen.add(sha);
-      wanted.push({ doc, sha });
-      if (wanted.length >= MAIN_TEXTS_PER_PASS) break;
-    }
-    if (wanted.length > 0) this.texts = await ports.blobTexts(wanted);
+    const collected = await collectDraftEnds({ looked, paths, drafts, skip, ports: this.ctx.ports, endedAfterMs: ENDED_AFTER_MS, endedMemoHas: (path) => this.endedMemo.has(path), factsOf: (path) => this.facts(looked, path), isReady: (path) => this.ready(path, false), known: (sha) => this.known(sha), isCurrent: () => this.ctx.current() });
+    this.ends = collected.ends;
+    this.endsAsked = collected.endsAsked;
+    this.endsRetryAfterMs = collected.endsRetryAfterMs;
+    this.texts = collected.texts;
   }
 
   private async readDrafts(looked: Looked, paths: ReadonlySet<string>, drafts: NonNullable<Looked["drafts"]>, skip: ReadonlySet<string>): Promise<void> {
@@ -499,6 +482,11 @@ export class DraftInbound {
 
   private async one(looked: Looked, path: string, draft: Draft | null, level: boolean): Promise<boolean> {
     const { ports } = this.ctx;
+    const retiredAt = this.retiredInboundSources.get(path);
+    if (retiredAt !== undefined) {
+      if (!looked.files.has(path) && !looked.repo.has(path) && ports.now() - retiredAt < RETIRED_DRAFT_TTL_MS) return false;
+      this.retiredInboundSources.delete(path);
+    }
     const doc = ports.documentFor(path);
     if (!doc || (ports.inGroup(path) && draft?.inGroup !== true)) {
       this.unlevel.delete(path);

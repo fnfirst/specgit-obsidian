@@ -139,7 +139,15 @@ export function docItemOf({ entry, branch = null, facts = null, here, viewer, no
   const coWroteTeammateDraft = coWroteDraft && isSomeoneElses(enriched, viewer) && !asksYou;
   const teammate = isSomeoneElses(enriched, viewer) && !asksYou && !coWroteDraft;
   const without = entry.prNumber > 0 && !entry.isDraft ? "in-review" : "draft";
-  const state = pillOf({ deleted: extra.deleted, edited: extra.edited, changedInBoth: extra.changedInBoth, held: extra.held, behind: extra.behind, facts: known, without });
+  const state = pillOf({
+    deleted: extra.deleted,
+    edited: extra.edited,
+    changedInBoth: extra.changedInBoth || (known === null && branch?.prMergeableState === "dirty"),
+    held: extra.held,
+    behind: extra.behind || (known === null && branch?.prMergeableState === "behind"),
+    facts: known,
+    without,
+  });
   const people = asksYou && author ? [author] : writers;
   const check: CheckKind | undefined = teammate
     ? undefined

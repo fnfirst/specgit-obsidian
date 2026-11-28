@@ -8,8 +8,10 @@ import { type DocumentRef, noteName, pathKind } from "../mapping";
 import { GROUP_NOT_ON_WORDS, GROUP_PLAN_WORDS } from "../shared/review-flow";
 import type { Activity } from "./activity";
 import { type Case, draftCase, type Draft, type Ended, type FileFacts, follows, isClean, type LeftAlone, type StayDrafts } from "./draft-state";
+import type { End } from "./ends";
 import { type GitObservation, sameGitMark } from "./git-watch";
 import type { StayHolds } from "./holds";
+import { TEXTS_PER_PASS as MAIN_TEXTS_PER_PASS } from "./inbound";
 import type { Pace, WriteBudget } from "./limits";
 import { type BlockedNew, changeKey, hasOwnOrAgreedDraft, isEdit, type OutboundInput } from "./outbound";
 import { type StayData, type StayGitMark, type StayState, TYPED_KEPT } from "./state";
@@ -203,14 +205,26 @@ export const computeBusyBeforeDraftRun = (input: PreDraftBusyInput): Set<string>
   return busy;
 };
 
-export const excludeRenameLooked = (looked: Looked, skip: Iterable<string>): Looked => {
+export const excludeRenameLooked = (looked: Looked, skip: Iterable<string>, extraSkip?: Iterable<string>): Looked => {
   const skipSet = skip instanceof Set ? skip : new Set(skip);
-  if (skipSet.size === 0) return looked;
+  const extraSet = extraSkip ? (extraSkip instanceof Set ? extraSkip : new Set(extraSkip)) : null;
+  if (skipSet.size === 0 && (!extraSet || extraSet.size === 0)) return looked;
   const removed = new Set<string>();
   for (const draft of looked.drafts?.byPath.values() ?? []) {
     if (draft.removes) for (const from of draft.removes.keys()) removed.add(from);
+    if (draft.renamedFrom) removed.add(draft.renamedFrom);
   }
-  return { ...looked, files: new Map([...looked.files].filter(([path]) => !skipSet.has(path) || removed.has(path))) };
+  return {
+    ...looked,
+    files: new Map(
+      [...looked.files].filter(([path, entry]) => {
+        if (removed.has(path)) return true;
+        if (extraSet?.has(path)) return false;
+        if (!skipSet.has(path)) return true;
+        return entry.sent !== undefined && (entry.sha === entry.sent || agreedOf(entry) === entry.sha);
+      }),
+    ),
+  };
 };
 
 export const pruneSentRecently = (sentRecently: Map<string, number>, looked: Looked, now: number): void => {
@@ -808,20 +822,18 @@ export const sendPlannedOutbound = async (env: SendPlannedEnv): Promise<{ sent: 
     if (!env.isCurrent()) break;
     env.outboundUnsaved.delete(row.change.path);
     const memberBranch = env.memberBranchOf(row.change.path);
-    const { result, writes, deletedAt, retryAfterMs, inVault } = await ports.commit(
-      row,
-      env.isCurrent,
-      edit
+    const { result, writes, deletedAt, retryAfterMs, inVault } = await ports.commit(row, env.isCurrent, {
+      ...(edit
         ? {
             edit: true as const,
-            policy: ports.policy(),
             ...(env.isDraftPending(row.change.path) ? { ended: true as const } : {}),
             ...(memberBranch !== undefined ? { memberBranch } : {}),
-            notWritten: (path) => activity.notWritten(path),
-            during: (paths, run, left) => activity.during(paths, run, left),
           }
-        : undefined,
-    );
+        : {}),
+      policy: ports.policy(),
+      notWritten: (path) => activity.notWritten(path),
+      during: (paths, run, left) => activity.during(paths, run, left),
+    });
     if (writes > 0) budget.spend(writes);
     if (!env.isCurrent()) break;
     if ((result === "committed" && inVault !== false) || result === "held" || result === "conflict") delete state.data.typed?.[row.change.path];
@@ -858,7 +870,9 @@ export const sendPlannedOutbound = async (env: SendPlannedEnv): Promise<{ sent: 
       env.retryAt.set(key, ports.now() + UNSURE_RETRY_MS);
       unsure++;
     } else if (result === "later") {
-      env.retryAt.set(key, ports.now() + stepLaterRetry(env.laterTries, key, generation));
+      const waitLater = stepLaterRetry(env.laterTries, key, generation);
+      env.retryAt.set(key, ports.now() + waitLater);
+      env.scheduleOutbound(waitLater);
     } else {
       const tried = (env.tries.get(key) ?? 0) + 1;
       env.tries.set(key, tried);
@@ -908,4 +922,60 @@ export const groupBurstFiles = async (
   if (made.outcome !== "made" || !isOn()) return { grouped: 0, left: files.length };
   ports.lookAgain();
   return { grouped: files.length, left: 0 };
+};
+
+export interface CollectDraftEndsInput {
+  looked: Looked;
+  paths: ReadonlySet<string>;
+  drafts: NonNullable<Looked["drafts"]>;
+  skip: ReadonlySet<string>;
+  ports: StayPorts;
+  endedAfterMs: number;
+  endedMemoHas: (path: string) => boolean;
+  factsOf: (path: string) => FileFacts;
+  isReady: (path: string) => boolean;
+  known: (sha: string) => string | undefined;
+  isCurrent: () => boolean;
+}
+
+export const collectDraftEnds = async (input: CollectDraftEndsInput): Promise<{ ends: Map<string, End | "unknown">; endsAsked: Set<string>; endsRetryAfterMs: number | undefined; texts: Map<string, string> }> => {
+  const { looked, paths, drafts, skip, ports, endedAfterMs } = input;
+  const ends = new Map<string, End | "unknown">();
+  const endsAsked = new Set<string>();
+  let endsRetryAfterMs: number | undefined = undefined;
+  let texts = new Map<string, string>();
+  if (!ports.reviewEnds || !drafts.level) return { ends, endsAsked, endsRetryAfterMs, texts };
+  const asked: Array<{ path: string; doc: DocumentRef; number: number; group: boolean }> = [];
+  for (const path of paths) {
+    if (skip.has(path)) continue;
+    const entry = looked.files.get(path);
+    const doc = ports.documentFor(path);
+    const number = /^(?:pr|group):(\d+)$/.exec(entry?.sentTo ?? "")?.[1];
+    if (!doc || !entry || entry.sent === undefined || number === undefined || drafts.byPath.has(path) || input.endedMemoHas(path) || ports.inGroup(path)) continue;
+    if (ports.now() - (entry.sentAt ?? 0) <= endedAfterMs) continue;
+    const kind = draftCase({ file: input.factsOf(path), draft: null, login: ports.login(), policy: ports.policy(), leftAlone: null, ended: null }).kind;
+    if ((kind === "none" || kind === "wait") && input.isReady(path)) asked.push({ path, doc, number: Number(number), group: entry.sentTo?.startsWith("group:") === true });
+  }
+  if (asked.length === 0) return { ends, endsAsked, endsRetryAfterMs, texts };
+  const answer = await ports.reviewEnds(asked.map(({ doc, number, group }) => ({ doc, number, ...(group ? { group: true } : {}) })));
+  if (!input.isCurrent() || answer.kind === "unsupported") return { ends, endsAsked, endsRetryAfterMs, texts };
+  endsRetryAfterMs = answer.retryAfterMs;
+  for (const { path, number } of asked) {
+    const end = answer.ends.get(number);
+    if (end === undefined) endsAsked.add(path);
+    else ends.set(path, end);
+  }
+  if (!ports.blobTexts) return { ends, endsAsked, endsRetryAfterMs, texts };
+  const wanted: Array<{ doc: DocumentRef; sha: string }> = [];
+  const seen = new Set<string>();
+  for (const { path, doc } of asked) {
+    const end = ends.get(path);
+    const sha = looked.repo.get(path);
+    if ((end !== "published" && end !== "discarded") || sha === undefined || seen.has(sha) || input.known(sha) !== undefined || sha === looked.files.get(path)?.sha) continue;
+    seen.add(sha);
+    wanted.push({ doc, sha });
+    if (wanted.length >= MAIN_TEXTS_PER_PASS) break;
+  }
+  if (wanted.length > 0) texts = await ports.blobTexts(wanted);
+  return { ends, endsAsked, endsRetryAfterMs, texts };
 };

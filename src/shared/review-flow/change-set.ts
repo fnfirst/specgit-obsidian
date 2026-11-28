@@ -1,5 +1,5 @@
 import { sameLogin } from "./people";
-import type { PrInfo, PrMergeableState } from "./pr-info";
+import type { InFlightMergeableState, PrInfo, PrMergeableState } from "./pr-info";
 import { describePublishBlock, type PublishBlock } from "./publish-policy";
 
 export const REVIEW_STAGES = ["conflicts", "in_progress", "waiting", "auto_publish", "in_review"] as const;
@@ -49,7 +49,7 @@ export interface ChangeSet {
 
 const nameOf = (path: string) => path.split("/").pop() ?? path;
 
-export function reviewStage(pr: { isDraft: boolean; mergeableState?: PrMergeableState | null; autoMergeEnabled?: boolean | null }): ReviewStage {
+export function reviewStage(pr: { isDraft: boolean; mergeableState?: InFlightMergeableState | null; autoMergeEnabled?: boolean | null }): ReviewStage {
   if (pr.mergeableState === "dirty") return "conflicts";
   if (pr.isDraft) return "in_progress";
   if (pr.mergeableState === "blocked") return pr.autoMergeEnabled ? "auto_publish" : "waiting";

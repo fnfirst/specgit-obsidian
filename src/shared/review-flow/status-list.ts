@@ -75,7 +75,7 @@ export function inFlightEntries(inFlight: InFlightResponse, viewerLogin: string 
     if (seen.has(path)) return [];
     seen.add(path);
     const isDraft = entry.prIsDraft !== false;
-    const stage: ReviewStage = isDraft ? "in_progress" : "in_review";
+    const stage: ReviewStage = reviewStage({ isDraft, mergeableState: entry.prMergeableState ?? null });
     return [
       {
         path,
@@ -88,7 +88,7 @@ export function inFlightEntries(inFlight: InFlightResponse, viewerLogin: string 
         ...(openedBy(entry) === null ? { ownerUnknown: true as const } : {}),
         stage,
         block: null,
-        next: isDraft ? ("submit" as const) : ("publish" as const),
+        next: isDraft ? ("submit" as const) : stage === "conflicts" ? null : ("publish" as const),
         existsOnBase: entry.changedStatus !== "added",
         requestedReviewers: [],
         openComments: 0,

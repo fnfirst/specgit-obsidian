@@ -2,7 +2,7 @@ import { ALL_SELECTED, applyPending, AskAgain, CHANGE_GRACE_MS, type ChangeSetEn
 import { isHiddenPath, LISTED_FILE } from "../mapping";
 import type { GroupsRead, PresenceRead, ReviewStatus } from "../review/review-api";
 import { Awareness, awareLayout, type AwareLine, type HeldDeletes, type NoteChoice, withChoice } from "./awareness";
-import { agreedOf } from "./cache";
+import { agreedOf, RETIRED_DRAFT_TTL_MS, REVIEW_TOMBSTONE_TTL_MS } from "./cache";
 
 export type { AwareLine, NoteChoice };
 export type { ChangeRow, ChangesDeps, ChangesPhase, ChangesSectionId, ChangesState, Doing, GroupInfo, Looked } from "./model-types";
@@ -22,6 +22,8 @@ import type { PrInfo, SaverStatus } from "../shared/review-flow";
 import { type ReviewKey, reviewKey } from "./review-key";
 import { isAnotherAuthor } from "./review-owner";
 import { isBlankUntitledContent, isLocalOnlyNew as checkLocalOnlyNew, repoLowerSet } from "./local-new";
+import { RoomPool } from "../room/pool";
+import { bindLookedInboundRename, hasViewerWrittenEntry, isViewerWrittenDraftEntry } from "./draft-lifecycle";
 
 const utf8Decoder = new TextDecoder("utf-8");
 
@@ -186,7 +188,17 @@ export class ChangesModel {
   private looked: { rows: ChangeRow[]; groups: ChangeRow[]; maps: Lookups } | null = null;
   private states: VaultStates | null = null;
   private repoFiles: ReadonlyMap<string, string> | null = null;
+  private rawFlight: ReturnType<typeof flightOf> = null;
   private readonly closedDraftPaths = new Map<string, { branch: string | null; prNumber: number | null; at: number }>();
+  private readonly recentlyAbandonedPaths = new Map<string, number>();
+  private cachedVisibleFlight: { raw: ReturnType<typeof flightOf>; stamp: string; value: ReturnType<typeof flightOf> } | null = null;
+  private readonly lateRetiredCloses = new Set<string>();
+  private readonly savingDraftPaths = new Set<string>();
+  private readonly liveSeenPaths = new Set<string>();
+  private readonly deletedLiveShas = new Map<string, string>();
+  private readonly deletedDraftTargets = new Map<string, { prNumber: number | null; sha: string | null }>();
+  private presentFiles = new Set<string>();
+  private stayOnCheck: (() => boolean) | null = null;
 
   constructor(private readonly deps: ChangesDeps) {}
 
@@ -265,7 +277,7 @@ export class ChangesModel {
     const groups = allUnits.groups.flatMap((group) => this.groupRow(group, byPath) ?? []);
     const loose = allUnits.loose.flatMap((entry) => byPath.get(entry.path) ?? []);
     const viewer = this.deps.viewerLogin?.() ?? null;
-    const aware = this.awareness.state({ viewer, flight: this.flight, vaultPath: (path) => this.deps.vaultPath?.(path) ?? path, documentFor: (path) => this.deps.documentFor(path) }, next.aware);
+    const aware = this.awareness.state({ viewer, flight: this.visibleFlight(), vaultPath: (path) => this.deps.vaultPath?.(path) ?? path, documentFor: (path) => this.deps.documentFor(path) }, next.aware);
     const layout = awareLayout({ aware, loose, units: allUnits, line: next.line, live: (path) => this.deps.isLive?.(path) === true });
     const { units } = layout;
     this.settleLeftGroup(units.loose, byPath);
@@ -356,8 +368,20 @@ export class ChangesModel {
     return this.deps.groups();
   }
 
+  private matchesClosedDraft(
+    closed: { branch: string | null; prNumber: number | null },
+    one: { branch: string; prNumber?: number | null },
+  ): boolean {
+    if (closed.prNumber !== null && closed.prNumber > 0 && typeof one.prNumber === "number" && one.prNumber > 0) {
+      return one.prNumber === closed.prNumber;
+    }
+    if (closed.branch !== null) return one.branch === closed.branch;
+    return closed.prNumber === null;
+  }
+
   private readFlight(groups: GroupsRead): { paths: NonNullable<GroupsRead["paths"]>; stale: boolean; overviews: ReadonlyMap<string, GroupOverview>; saves?: SavesTo; asOf?: number } | null {
     const raw = flightOf(groups);
+    this.rawFlight = raw;
     if (!raw || this.closedDraftPaths.size === 0) return raw;
     const now = this.now();
     let nextPaths: NonNullable<GroupsRead["paths"]> | null = null;
@@ -371,11 +395,7 @@ export class ChangesModel {
         if (!raw.stale) this.closedDraftPaths.delete(repoPath);
         continue;
       }
-      const matchesClosed = (one: NonNullable<GroupsRead["paths"]>[string][number]): boolean =>
-        (closed.branch !== null && one.branch === closed.branch) ||
-        (closed.prNumber !== null && one.prNumber === closed.prNumber) ||
-        (closed.branch === null && closed.prNumber === null);
-      const filtered = entries.filter((one) => !matchesClosed(one));
+      const filtered = entries.filter((one) => !this.matchesClosedDraft(closed, one));
       if (filtered.length === entries.length) {
         if (!raw.stale) this.closedDraftPaths.delete(repoPath);
         continue;
@@ -403,9 +423,10 @@ export class ChangesModel {
       this.flight = flight;
       this.draftsChecked = true;
     }
-    if (!flight || !this.awareness.hasFiles()) return;
+    const visible = this.visibleFlight();
+    if (!visible || !this.awareness.hasFiles()) return;
     const viewer = this.deps.viewerLogin?.() ?? null;
-    const aware = this.awareness.state({ viewer, flight, vaultPath: (path) => this.deps.vaultPath?.(path) ?? path, documentFor: (path) => this.deps.documentFor(path) }, this.current.aware);
+    const aware = this.awareness.state({ viewer, flight: visible, vaultPath: (path) => this.deps.vaultPath?.(path) ?? path, documentFor: (path) => this.deps.documentFor(path) }, this.current.aware);
     if (aware === null) return this.set({ line: null });
     if (about.added !== undefined && about.added > 0) this.set({ line: { added: about.added } });
   }
@@ -460,6 +481,11 @@ export class ChangesModel {
   learn(path: string, review: ReviewStatus): void {
     const pr = review.pr;
     if (pr && pr.number > 0 && (pr.state === "open" || pr.state === "draft")) {
+      const repoPath = this.deps.documentFor(path)?.path ?? path;
+      const closed = this.closedDraftPaths.get(repoPath);
+      if (closed && (closed.prNumber === null || closed.prNumber !== pr.number)) {
+        this.closedDraftPaths.delete(repoPath);
+      }
       this.emitDraftMoved(pr.number, pr.isDraft || pr.state === "draft", pr.requestedReviewers);
     }
     const row = this.row(path);
@@ -574,6 +600,7 @@ export class ChangesModel {
   }
 
   remember(rows: readonly ChangeRow[]): void {
+    this.cachedVisibleFlight = null;
     for (const row of rows) {
       this.overlay.set(row.change.path, { sha: row.change.kind === "deleted" ? null : row.change.sha, before: row.change.repoSha, sent: this.deps.cache.get(row.change.path)?.sent ?? null });
       if (row.change.from) {
@@ -621,7 +648,14 @@ export class ChangesModel {
       this.statuses.clear();
       this.learnedAt.clear();
       this.closedDraftPaths.clear();
+      this.recentlyAbandonedPaths.clear();
+      this.cachedVisibleFlight = null;
+      this.liveSeenPaths.clear();
+      this.deletedLiveShas.clear();
+      this.deletedDraftTargets.clear();
+      this.presentFiles.clear();
       this.flight = null;
+      this.rawFlight = null;
       this.draftsChecked = false;
       this.levelAt = null;
       this.denied = false;
@@ -654,6 +688,7 @@ export class ChangesModel {
       this.lookListeners.forEach((listener) => listener(null));
       this.states = null;
       this.repoFiles = null;
+      this.cachedVisibleFlight = null;
       return this.set({ phase: "signed-out", rows: [], retryAfterMs: null, rateLimitedUntil: null });
     }
     if (scheduled && this.current.phase === "rate-limited") {
@@ -693,12 +728,16 @@ export class ChangesModel {
     }
     if (repo.kind === "not_installed") {
       this.repoFiles = null;
+      this.cachedVisibleFlight = null;
       this.rateLimitedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
       return this.set({ phase: "not-installed", retryAfterMs: null, rateLimitedUntil: null });
     }
     if (repo.kind === "rate_limited" || groups.kind === "rate_limited") {
-      if (repo.kind !== "files" && repo.kind !== "building") this.repoFiles = null;
+      if (repo.kind !== "files" && repo.kind !== "building") {
+        this.repoFiles = null;
+        this.cachedVisibleFlight = null;
+      }
       if (repo.kind === "files") this.failedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
       const repoWait = repo.kind === "rate_limited" ? (repo.retryAfterMs ?? 0) : 0;
@@ -717,6 +756,7 @@ export class ChangesModel {
     }
     if (repo.kind !== "files") {
       this.repoFiles = null;
+      this.cachedVisibleFlight = null;
       this.rateLimitedLooks = 0;
       this.lookListeners.forEach((listener) => listener(null));
       const retry = RETRY_AFTER_FAILED_MS[Math.min(this.failedLooks, RETRY_AFTER_FAILED_MS.length - 1)] ?? 0;
@@ -747,18 +787,128 @@ export class ChangesModel {
       if (this.movedFrom(place)) return;
     }
     const cache = this.deps.cache;
-    const drafts = this.draftsLooked().drafts;
-    const draftsKnown = drafts !== undefined ? drafts.level : this.deps.groups === undefined;
-    cache.reconcile(repoFiles, new Set(drafts?.byPath.keys()), draftsKnown);
+    this.presentFiles = new Set(scanned.files.keys());
+    for (const path of scanned.files.keys()) {
+      this.deletedLiveShas.delete(path);
+      cache.clearUnflushedLiveDelete(path);
+      const scanDoc = this.deps.documentFor(path);
+      if (this.deps.isLive?.(path) === true || (scanDoc !== null && RoomPool.hasRoomFor(scanDoc))) {
+        this.liveSeenPaths.add(path);
+      }
+    }
+    const rawFlight = this.rawFlight ?? this.flight;
+    const rawInFlightSet = new Set(Object.keys(rawFlight?.paths ?? {}).map((repoPath) => this.vaultPathFor(repoPath)));
+    const login = this.deps.viewerLogin?.() ?? "";
+    this.repoFiles = repoFiles;
+    this.cachedVisibleFlight = null;
+    for (const gone of cache.deleted()) {
+      if (gone.base !== null || repoFiles.has(gone.path) || this.hasRepoFile(gone.path) || this.isSupersededDraftSource(gone.path)) continue;
+      const goneDoc = this.deps.documentFor(gone.path);
+      if (!goneDoc) continue;
+      const wasLiveOrSaving = this.liveSeenPaths.has(gone.path) || this.savingDraftPaths.has(gone.path);
+      if (wasLiveOrSaving) this.deletedLiveShas.set(gone.path, gone.sha);
+      const rawEntries = rawFlight?.paths[goneDoc.path];
+      const hasRemoteDraft =
+        hasViewerWrittenEntry(rawEntries, login) &&
+        (gone.localOnly !== true || rawEntries?.some((one) => one.docBlobSha === gone.sha) === true);
+      if (wasLiveOrSaving || hasRemoteDraft) {
+        const matchedEntry = rawEntries?.find((one) => one.isReviewBranch && isViewerWrittenDraftEntry(one, login));
+        this.recordDeletedDraftTarget(gone.path, matchedEntry?.prNumber ?? null, gone.sha);
+        cache.queueDraftDelete(gone.path);
+        this.liveSeenPaths.delete(gone.path);
+      }
+    }
+    for (const pendingPath of cache.draftDeletes()) {
+      const existingTarget = this.deletedDraftTargets.get(pendingPath);
+      if (existingTarget?.prNumber != null) continue;
+      const presentEntry = scanned.files.get(pendingPath);
+      const unsentPresent = presentEntry !== undefined && presentEntry.sent === undefined;
+      if (presentEntry !== undefined && !unsentPresent && existingTarget?.sha == null) continue;
+      const pendingGone = cache.deleted().find((one) => one.path === pendingPath);
+      const targetSha = existingTarget?.sha ?? pendingGone?.sha ?? null;
+      const pendingDoc = this.deps.documentFor(pendingPath);
+      const pendingEntries = pendingDoc ? rawFlight?.paths[pendingDoc.path] : undefined;
+      const matchedEntry = pendingEntries?.find(
+        (one) =>
+          one.isReviewBranch &&
+          isViewerWrittenDraftEntry(one, login) &&
+          (presentEntry === undefined ||
+            unsentPresent ||
+            (targetSha !== null && (one.docBlobSha === targetSha || typeof one.docBlobSha !== "string" || one.docBlobSha === "") && one.docBlobSha !== presentEntry.sent)),
+      );
+      if (matchedEntry || !existingTarget) {
+        this.recordDeletedDraftTarget(pendingPath, matchedEntry?.prNumber ?? null, targetSha ?? matchedEntry?.docBlobSha ?? null);
+      }
+    }
+    let waitingUnflushedSha = false;
+    for (const [unflushedPath, unflushed] of [...cache.unflushedLiveDeleted()]) {
+      if (scanned.files.has(unflushedPath) || repoFiles.has(unflushedPath) || this.hasRepoFile(unflushedPath)) {
+        cache.clearUnflushedLiveDelete(unflushedPath);
+        continue;
+      }
+      const unflushedDoc = this.deps.documentFor(unflushedPath);
+      if (!unflushedDoc) {
+        cache.clearUnflushedLiveDelete(unflushedPath);
+        continue;
+      }
+      const rawEntries = rawFlight?.paths[unflushedDoc.path];
+      if (!rawEntries || rawEntries.length === 0) continue;
+      const activeOwn = rawEntries.filter((one) => one.isReviewBranch && isViewerWrittenDraftEntry(one, login));
+      const matchedFlush = activeOwn.find((one) => one.docBlobSha === unflushed.sha);
+      if (matchedFlush) {
+        this.recordDeletedDraftTarget(unflushedPath, matchedFlush.prNumber ?? null, unflushed.sha);
+        cache.queueDraftDelete(unflushedPath);
+        cache.clearUnflushedLiveDelete(unflushedPath);
+        continue;
+      }
+      if (activeOwn.some((one) => typeof one.docBlobSha !== "string" || one.docBlobSha === "")) {
+        waitingUnflushedSha = true;
+        continue;
+      }
+      cache.clearUnflushedLiveDelete(unflushedPath);
+    }
+    const renamesSizeBefore = cache.draftRenameTargets().size;
+    const retiredSizeBefore = cache.retiredSources().size;
+    const deletesSizeBefore = cache.draftDeletes().size;
+    const initialDrafts = this.draftsLooked().drafts;
+    const draftsKnown = initialDrafts !== undefined ? initialDrafts.level : this.deps.groups === undefined;
+    cache.reconcile(repoFiles, new Set(initialDrafts?.byPath.keys()), draftsKnown, rawInFlightSet, this.stayOnCheck?.() === true);
+    for (const path of [...this.liveSeenPaths]) {
+      if (!scanned.files.has(path) && !cache.hasPendingDraftDelete(path)) this.liveSeenPaths.delete(path);
+    }
+    const drafts =
+      cache.draftRenameTargets().size !== renamesSizeBefore ||
+      cache.retiredSources().size !== retiredSizeBefore ||
+      cache.draftDeletes().size !== deletesSizeBefore
+        ? this.draftsLooked().drafts
+        : initialDrafts;
+    this.lateRetiredCloses.clear();
+    for (const [retiredPath] of cache.retiredSources()) {
+      if (scanned.files.has(retiredPath) || repoFiles.has(retiredPath) || this.isNonSupersedableSource(retiredPath)) continue;
+      const retiredDoc = this.deps.documentFor(retiredPath);
+      if (!retiredDoc) continue;
+      const rawEntries = rawFlight?.paths[retiredDoc.path];
+      if (!hasViewerWrittenEntry(rawEntries, login)) continue;
+      const closed = this.closedDraftPaths.get(retiredDoc.path);
+      const hasUnclosed = rawEntries?.some(
+        (one) =>
+          one.isReviewBranch &&
+          one.changedStatus !== "removed" &&
+          !isGroupBranch(one.branch) &&
+          one.prIsDraft !== false &&
+          !(closed && this.matchesClosedDraft(closed, one)),
+      );
+      if (hasUnclosed) this.lateRetiredCloses.add(retiredPath);
+    }
     cache.clearForeign([...cache.foreignFiles()].filter(([path, sha]) => scanned.files.get(path)?.sha !== sha).map(([path]) => path));
     cache.save();
     const theirs = this.theirReviews();
     if (theirs) this.theirs = theirs;
-    const login = this.deps.viewerLogin?.() ?? "";
     const renamed = new Map<string, string>();
     if (drafts) {
       for (const [to, draft] of drafts.byPath) {
-        if (!draft.removes) continue;
+        const directFrom = draft.renamedFrom ?? (draft.removes ? [...draft.removes].find(([, target]) => target === to)?.[0] : undefined);
+        if (directFrom === undefined) continue;
         const entry = scanned.files.get(to);
         if (!entry) continue;
         const key = draftKey(draft);
@@ -769,17 +919,13 @@ export class ChangesModel {
           sameLogin(draftWriter(draft), login) ||
           (draft.blob !== null && entry.sha === draft.blob);
         if (!related) continue;
-        for (const [from, target] of draft.removes) {
-          if (target === to) {
-            renamed.set(to, from);
-            break;
-          }
-        }
+        renamed.set(to, directFrom);
       }
     }
     const isIgnored = this.deps.isIgnored;
     const leftOut = isIgnored ? (path: string): boolean => !repoFiles.has(path) && (scanned.files.get(path)?.base ?? null) === null && isIgnored(path) : undefined;
-    const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: cache.deleted(), foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs, ...(leftOut ? { leftOut } : {}), ...(renamed.size > 0 ? { renamed } : {}) });
+    const visibleDeleted = cache.deleted().filter((gone) => !gone.localOnly || this.hasPendingDraftDelete(gone.path));
+    const states = vaultStates({ files: scanned.files, repo: repoFiles, added: repo.added, deleted: visibleDeleted, foreign: cache.foreignFiles(), keptFromMain: (path) => this.deps.deletedOnMain?.(path) === true, theirs, ...(leftOut ? { leftOut } : {}), ...(renamed.size > 0 ? { renamed } : {}) });
     this.notHere = states.missing.copy.flatMap((path) => {
       const doc = this.deps.documentFor(path);
       return doc ? [{ path, doc, sha: repoFiles.get(path) ?? null }] : [];
@@ -812,8 +958,13 @@ export class ChangesModel {
     if (unread > 0) {
       const again = this.unreadAsking.after({ unread: true });
       if (again !== null) this.lookLater(again);
-    } else this.unreadAsking.reset();
-    const looked: Looked = { files: scanned.files, repo: repoFiles, deleted: this.deps.cache.deleted(), rows, ...(drafts ? { drafts } : {}) };
+    } else {
+      this.unreadAsking.reset();
+      if (waitingUnflushedSha) this.lookLater(1_500);
+    }
+    const lookedDeleted = this.deps.cache.deleted().filter((gone) => !gone.localOnly || this.hasPendingDraftDelete(gone.path));
+    const looked: Looked = { files: scanned.files, repo: repoFiles, deleted: lookedDeleted, rows, ...(drafts ? { drafts } : {}) };
+    bindLookedInboundRename(looked, (from, to) => this.noteInboundDraftRename(from, to));
     this.lookListeners.forEach((listener) => listener(looked));
     void this.readWatched();
   }
@@ -823,7 +974,7 @@ export class ChangesModel {
   }
 
   private theirReviews(): Map<string, TheirReview> | undefined {
-    const flight = this.flight;
+    const flight = this.visibleFlight();
     return flight ? teammateReviews(flight.paths, this.deps.viewerLogin?.() ?? null, flight.overviews, flight.saves, (path) => this.deps.vaultPath?.(path) ?? path) : undefined;
   }
 
@@ -832,7 +983,7 @@ export class ChangesModel {
   }
 
   private draftsLooked(): Pick<Looked, "drafts"> {
-    const flight = this.flight;
+    const flight = this.visibleFlight();
     if (!flight) return {};
     const login = this.deps.viewerLogin?.() ?? null;
     const byPath = new Map<string, Draft>();
@@ -840,10 +991,13 @@ export class ChangesModel {
     const removals = removalsByBranch(flight.paths, vaultPath);
     for (const path in flight.paths) {
       const here = vaultPath(path);
-      if (this.isSupersededDraftSource(here)) continue;
-      const draft = draftOf(flight.paths[path], login, flight.overviews, flight.saves);
+      const entries = flight.paths[path];
+      if (!entries) continue;
+      const draft = draftOf(entries, login, flight.overviews, flight.saves);
       if (!draft) continue;
       draft.removes = removals.size > 0 ? (removals.get(draft.branch) ?? EMPTY_REMOVALS) : EMPTY_REMOVALS;
+      const rawMatch = entries?.find((one) => one.branch === draft.branch && typeof one.renamedFrom === "string" && one.renamedFrom !== "");
+      if (rawMatch?.renamedFrom) draft.renamedFrom = vaultPath(rawMatch.renamedFrom);
       byPath.set(here, draft);
     }
     return { drafts: { byPath, level: !flight.stale, ...(flight.asOf === undefined ? {} : { asOf: flight.asOf }) } };
@@ -859,7 +1013,7 @@ export class ChangesModel {
 
   draftInfo(path: string): { draft: Draft | null; sent: string | undefined; sentTo: string | undefined; holdsDraft: boolean } {
     if (this.place === null || this.place !== (this.deps.place?.() ?? "")) return { draft: null, sent: undefined, sentTo: undefined, holdsDraft: false };
-    const flight = this.flight;
+    const flight = this.visibleFlight();
     const doc = this.deps.documentFor(path);
     const entries = flight && doc ? flight.paths[doc.path] : undefined;
     const draft = flight && entries ? draftOf(entries, this.deps.viewerLogin?.() ?? null, flight.overviews, flight.saves) : null;
@@ -903,7 +1057,7 @@ export class ChangesModel {
       phase: this.current.phase,
       states: this.states,
       repoFiles: this.repoFiles,
-      flight: this.flight,
+      flight: this.visibleFlight(),
       overlay: this.overlay,
       cache: this.deps.cache,
       documentFor: (one) => this.deps.documentFor(one),
@@ -927,7 +1081,7 @@ export class ChangesModel {
     if (this.theirs?.has(path)) return true;
     if (this.deps.cache.foreignFiles().has(path)) return true;
     const doc = this.deps.documentFor(path);
-    const entries = this.flight && doc ? this.flight.paths[doc.path] : undefined;
+    const entries = this.flight && doc ? this.filterPendingDeletedEntries(path, this.flight.paths[doc.path]) : undefined;
     if (!entries || entries.length === 0) return false;
     const viewer = this.deps.viewerLogin?.() ?? "";
     for (const one of entries) {
@@ -941,7 +1095,8 @@ export class ChangesModel {
   hasUnagreedRemoteDraft(path: string): boolean {
     if (this.deps.cache.get(path)?.sent !== undefined) return false;
     const doc = this.deps.documentFor(path);
-    const entries = this.flight && doc ? this.flight.paths[doc.path] : undefined;
+    const visible = this.visibleFlight();
+    const entries = visible && doc ? visible.paths[doc.path] : undefined;
     return entries !== undefined && entries.some((one) => one.isReviewBranch && one.changedStatus !== "removed");
   }
 
@@ -956,11 +1111,19 @@ export class ChangesModel {
     return !this.hasUnagreedRemoteDraft(path);
   }
 
+  setStayOnCheck(fn: () => boolean): void {
+    this.stayOnCheck = fn;
+  }
+
   draftRenamedFrom(newPath: string): string | null {
     return this.deps.cache.draftRenameSource(newPath);
   }
 
-  pendingDraftRenames(): ReadonlyMap<string, string> {
+  draftRenameSources(newPath: string): readonly string[] {
+    return this.deps.cache.draftRenameSources(newPath);
+  }
+
+  pendingDraftRenames(): ReadonlyMap<string, readonly string[]> {
     return this.deps.cache.draftRenameTargets();
   }
 
@@ -1001,23 +1164,38 @@ export class ChangesModel {
   }
 
   noteLocalCreate(path: string): void {
-    if (!this.deps.cache.isSupersededDraftSource(path)) return;
-    this.deps.cache.clearDraftRenamesFrom(path);
-    this.set({});
+    this.presentFiles.add(path);
+    this.deletedLiveShas.delete(path);
+    const clearedUnflushed = this.deps.cache.clearUnflushedLiveDelete(path);
+    const doc = this.deps.documentFor(path);
+    const clearedClosed = doc !== null && this.closedDraftPaths.delete(doc.path);
+    const clearedRename = this.deps.cache.isSupersededDraftSource(path);
+    if (clearedRename) this.deps.cache.clearDraftRenamesFrom(path);
+    if (clearedRename || clearedClosed || clearedUnflushed) this.set({});
   }
 
   noteLocalRename(oldPath: string, newPath: string): void {
-    if (oldPath === newPath || this.deps.documentFor(oldPath) === null || this.deps.documentFor(newPath) === null) return;
+    const oldDoc = this.deps.documentFor(oldPath);
+    const newDoc = this.deps.documentFor(newPath);
+    if (oldPath === newPath || oldDoc === null || newDoc === null) return;
+    this.presentFiles.delete(oldPath);
+    this.presentFiles.add(newPath);
+    this.deletedLiveShas.delete(oldPath);
+    this.deletedLiveShas.delete(newPath);
+    this.deps.cache.clearUnflushedLiveDelete(oldPath);
+    this.deps.cache.clearUnflushedLiveDelete(newPath);
+    this.closedDraftPaths.delete(newDoc.path);
+    if (this.liveSeenPaths.delete(oldPath)) this.liveSeenPaths.add(newPath);
     if (this.isNonSupersedableSource(oldPath)) return;
     const cachedOld = this.deps.cache.get(oldPath);
     if (cachedOld && cachedOld.base !== null) return;
-    const chained = this.deps.cache.draftRenameSource(oldPath);
-    if (chained !== null && this.isNonSupersedableSource(chained)) return;
-    const oldDoc = this.deps.documentFor(oldPath);
+    const chained = this.deps.cache.draftRenameSources(oldPath);
+    if (chained.some((src) => this.isNonSupersedableSource(src))) return;
     const viewer = this.deps.viewerLogin?.() ?? "";
-    const flightEntries = this.flight && oldDoc ? this.flight.paths[oldDoc.path] : undefined;
+    const rawEntries = (this.rawFlight ?? this.flight)?.paths[oldDoc.path];
+    const flightEntries = this.flight ? this.flight.paths[oldDoc.path] : undefined;
     const hasOwnFlightDraft =
-      flightEntries?.some(
+      (rawEntries ?? flightEntries)?.some(
         (one) =>
           one.isReviewBranch &&
           one.changedStatus !== "removed" &&
@@ -1039,7 +1217,12 @@ export class ChangesModel {
       !cachedOld.sentTo?.startsWith("group:") &&
       (flightEntries === undefined || flightEntries.length === 0) &&
       knownReview === undefined;
-    if (chained === null && !hasOwnFlightDraft && !hasOwnKnownDraft && !hasUnlistedOwnSent) return;
+    const wasActiveOrSaving =
+      this.deps.isLive?.(oldPath) === true ||
+      this.liveSeenPaths.has(newPath) ||
+      RoomPool.hasRoomFor(oldDoc) ||
+      this.savingDraftPaths.has(oldPath);
+    if (chained.length === 0 && !hasOwnFlightDraft && !hasOwnKnownDraft && !hasUnlistedOwnSent && !wasActiveOrSaving) return;
     this.deps.cache.recordDraftRename(oldPath, newPath);
     this.statuses.delete(oldPath);
     this.learnedAt.delete(oldPath);
@@ -1047,25 +1230,270 @@ export class ChangesModel {
     this.set(filtered.length === this.current.rows.length ? {} : { rows: filtered });
   }
 
+  forgetDraftRenameSource(newPath: string, oldPath: string): void {
+    if (this.deps.cache.forgetDraftRenameSource(newPath, oldPath)) this.set({});
+  }
+
   forgetDraftRename(newPath: string): void {
     if (this.deps.cache.forgetDraftRename(newPath)) this.set({});
   }
 
+  retireDraftSource(oldPath: string): void {
+    if (this.hasRepoFile(oldPath)) return;
+    this.deps.cache.retireDraftSource(oldPath);
+  }
+
+  noteInboundDraftRename(from: string, to: string): void {
+    if (from === "" || from === to || this.hasRepoFile(from)) return;
+    this.presentFiles.delete(from);
+    if (to !== "") this.presentFiles.add(to);
+    this.deletedLiveShas.delete(from);
+    this.deps.cache.clearUnflushedLiveDelete(from);
+    if (to !== "") this.deps.cache.forgetDraftRenameSource(to, from);
+    this.deps.cache.finishDraftDelete(from);
+    this.liveSeenPaths.delete(from);
+    this.deps.cache.dropped(from);
+    this.deps.cache.retireDraftSource(from);
+    this.statuses.delete(from);
+    this.learnedAt.delete(from);
+  }
+
+  noteSavingDraft(path: string, saving: boolean): void {
+    if (saving) this.savingDraftPaths.add(path);
+    else this.savingDraftPaths.delete(path);
+  }
+
+  isSavingDraft(path: string): boolean {
+    return this.savingDraftPaths.has(path);
+  }
+
+  recordUnflushedLiveDelete(path: string): void {
+    if (this.hasRepoFile(path) || this.presentFiles.has(path)) return;
+    const sha = this.deletedLiveShas.get(path);
+    if (sha !== undefined && sha !== "") {
+      this.deps.cache.noteUnflushedLiveDelete(path, sha);
+      this.deletedLiveShas.delete(path);
+    }
+  }
+
+  noteLocalDelete(path: string): void {
+    this.presentFiles.delete(path);
+    const cached = this.deps.cache.get(path);
+    const sentTo = cached?.sentTo;
+    const sentPr = sentTo?.startsWith("pr:") ? Number(sentTo.slice(3)) : NaN;
+    const knownReview = this.statuses.get(path)?.review;
+    const knownPr = knownReview?.pr ?? null;
+    const viewer = this.deps.viewerLogin?.() ?? "";
+    const ownKnownPr =
+      knownPr &&
+      !knownPr.group &&
+      knownPr.isDraft !== false &&
+      (knownReview?.reviewBranch == null || !isGroupBranch(knownReview.reviewBranch)) &&
+      (viewer === "" ? (knownPr.authorLogin ?? null) === null : !isAnotherAuthor(knownPr.authorLogin ?? null, viewer) || this.viewerWroteInDraft(path))
+        ? knownPr.number
+        : null;
+    const prNumber = Number.isInteger(sentPr) && sentPr > 0 ? sentPr : ownKnownPr;
+    const sha = cached?.sent ?? cached?.sha ?? null;
+    this.recordDeletedDraftTarget(path, prNumber, sha);
+  }
+
+  deletedDraftTarget(path: string): { prNumber: number | null; sha: string | null } | undefined {
+    return this.deletedDraftTargets.get(path);
+  }
+
+  recordDeletedDraftTarget(path: string, prNumber: number | null, sha: string | null): void {
+    if (prNumber === null && sha === null) return;
+    const prev = this.deletedDraftTargets.get(path);
+    this.deletedDraftTargets.set(path, {
+      prNumber: prNumber !== null && prNumber > 0 ? prNumber : (prev?.prNumber ?? null),
+      sha: sha !== null && sha !== "" ? sha : (prev?.sha ?? null),
+    });
+  }
+
+  private filterPendingDeletedEntries<
+    T extends {
+      isReviewBranch?: boolean;
+      changedStatus?: string;
+      branch?: string;
+      prIsDraft?: boolean;
+      prNumber?: number | null;
+      docBlobSha?: string | null;
+      prAuthorLogin?: string | null;
+      authorLogin?: string | null;
+      writers?: readonly string[];
+    },
+  >(
+    vaultPath: string,
+    entries: readonly T[] | undefined,
+  ): readonly T[] | undefined {
+    if (!entries || entries.length === 0) return entries;
+    const pendingDelete = !this.hasRepoFile(vaultPath) && this.deps.cache.hasPendingDraftDelete(vaultPath);
+    const login = this.deps.viewerLogin?.() ?? "";
+    if (!this.presentFiles.has(vaultPath)) {
+      if ((this.stayOnCheck?.() === true && pendingDelete) || this.deps.cache.unflushedLiveDeleted().has(vaultPath)) {
+        const foreign = entries.filter((one) => !isViewerWrittenDraftEntry(one, login));
+        return foreign.length === entries.length ? entries : foreign.length > 0 ? foreign : undefined;
+      }
+      return entries;
+    }
+    if (this.stayOnCheck?.() !== true || !pendingDelete) return entries;
+    const doomed = this.deletedDraftTargets.get(vaultPath);
+    const cachedSent = this.deps.cache.get(vaultPath)?.sent;
+    if (cachedSent !== undefined && (!doomed || (doomed.prNumber === null && doomed.sha === null))) return entries;
+    const kept = entries.filter((one) => {
+      if (!isViewerWrittenDraftEntry(one, login)) return true;
+      if (doomed?.prNumber != null && typeof one.prNumber === "number" && one.prNumber > 0) {
+        return one.prNumber !== doomed.prNumber;
+      }
+      if (cachedSent === undefined && (doomed === undefined || doomed.prNumber === null)) {
+        return false;
+      }
+      if (doomed?.sha != null && typeof one.docBlobSha === "string" && one.docBlobSha !== "") {
+        return one.docBlobSha !== doomed.sha || one.docBlobSha === cachedSent;
+      }
+      return true;
+    });
+    return kept.length === entries.length ? entries : kept.length > 0 ? kept : undefined;
+  }
+
+  private visibleFlightStamp(): string {
+    const stay = this.stayOnCheck?.() === true ? "1" : "0";
+    const renames = this.deps.cache.draftRenameTargets();
+    const retired = this.deps.cache.retiredSources();
+    const deletes = this.deps.cache.draftDeletes();
+    const unflushed = this.deps.cache.unflushedLiveDeleted();
+    if (renames.size === 0 && retired.size === 0 && deletes.size === 0 && unflushed.size === 0) return stay;
+    const now = this.now();
+    const parts = [stay];
+    for (const [to, srcs] of renames) {
+      parts.push(`m:${to}<-${srcs.map((s) => `${s}:${this.isSupersededDraftSource(s) ? 1 : 0}`).join(",")}`);
+    }
+    for (const [k, v] of retired) {
+      const active = !this.presentFiles.has(k) && now - v < RETIRED_DRAFT_TTL_MS && !this.isNonSupersedableSource(k) ? 1 : 0;
+      parts.push(`r:${k}:${active}`);
+    }
+    for (const k of deletes) {
+      const t = this.deletedDraftTargets.get(k);
+      parts.push(`d:${k}:${this.presentFiles.has(k) ? 1 : 0}:${this.hasRepoFile(k) ? 1 : 0}:${this.deps.cache.get(k)?.sent ?? ""}:${t?.prNumber ?? ""}:${t?.sha ?? ""}`);
+    }
+    for (const [k, v] of unflushed) {
+      parts.push(`u:${k}:${v.sha}:${this.presentFiles.has(k) ? 1 : 0}:${this.hasRepoFile(k) ? 1 : 0}`);
+    }
+    return parts.join("|");
+  }
+
+  private visibleFlight(): typeof this.flight {
+    const flight = this.flight;
+    if (!flight) return null;
+    const stamp = this.visibleFlightStamp();
+    if (this.cachedVisibleFlight?.raw === flight && this.cachedVisibleFlight.stamp === stamp) {
+      return this.cachedVisibleFlight.value;
+    }
+    let nextPaths: NonNullable<GroupsRead["paths"]> | null = null;
+    for (const repoPath in flight.paths) {
+      const here = this.vaultPathFor(repoPath);
+      if (this.isSupersededDraftSource(here)) {
+        nextPaths ??= { ...flight.paths };
+        delete nextPaths[repoPath];
+        continue;
+      }
+      const orig = flight.paths[repoPath];
+      const filtered = this.filterPendingDeletedEntries(here, orig);
+      if (filtered !== orig) {
+        nextPaths ??= { ...flight.paths };
+        if (filtered && filtered.length > 0) nextPaths[repoPath] = [...filtered];
+        else delete nextPaths[repoPath];
+      }
+    }
+    const value = nextPaths ? { ...flight, paths: nextPaths } : flight;
+    this.cachedVisibleFlight = { raw: flight, stamp, value };
+    return value;
+  }
+
+  wasRecentlyClosedDraft(path: string): boolean {
+    if (this.deps.cache.wasRecentlyAbandonedDraft(path)) return true;
+    const repoPath = this.deps.documentFor(path)?.path ?? path;
+    const at = this.recentlyAbandonedPaths.get(repoPath);
+    if (at === undefined) return false;
+    if (this.now() - at < REVIEW_TOMBSTONE_TTL_MS) return true;
+    this.recentlyAbandonedPaths.delete(repoPath);
+    return false;
+  }
+
+  private sanitizeStatusForDeletedDraft(path: string, review: ReviewStatus): ReviewStatus {
+    if (this.stayOnCheck?.() !== true || !this.hasPendingDraftDelete(path)) return review;
+    if (review.reviewBranch === null && review.pr === null) return review;
+    if ((review.reviewBranch !== null && isGroupBranch(review.reviewBranch)) || review.pr?.group || review.pr?.isDraft === false) {
+      return review;
+    }
+    const viewer = this.deps.viewerLogin?.() ?? "";
+    const author = review.pr?.authorLogin ?? null;
+    const ownOrWritten = viewer === "" ? author === null : !isAnotherAuthor(author, viewer) || this.viewerWroteInDraft(path);
+    if (!ownOrWritten) return review;
+    const doomed = this.deletedDraftTargets.get(path);
+    const prNum = review.pr?.number ?? null;
+    if (doomed?.prNumber != null && prNum !== null) {
+      return prNum === doomed.prNumber ? { reviewBranch: null, pr: null, ...(review.saver ? { saver: review.saver } : {}) } : review;
+    }
+    if ((doomed === undefined || doomed.prNumber === null) && (!this.presentFiles.has(path) || this.deps.cache.get(path)?.sent === undefined)) {
+      return { reviewBranch: null, pr: null, ...(review.saver ? { saver: review.saver } : {}) };
+    }
+    return review;
+  }
+
+  queuePendingDraftDelete(path: string): void {
+    if (this.hasRepoFile(path) || this.isSupersededDraftSource(path)) return;
+    this.deps.cache.queueDraftDelete(path);
+  }
+
+  hasPendingDraftDelete(path: string): boolean {
+    return !this.hasRepoFile(path) && !this.isSupersededDraftSource(path) && this.deps.cache.hasPendingDraftDelete(path);
+  }
+
+  pendingDraftDeletes(): ReadonlySet<string> {
+    return this.deps.cache.draftDeletes();
+  }
+
+  finishDraftDelete(path: string): void {
+    this.deletedDraftTargets.delete(path);
+    if (this.deps.cache.finishDraftDelete(path)) this.set({});
+  }
+
+  takeLateRetiredCloses(): string[] {
+    if (this.lateRetiredCloses.size === 0) return [];
+    const list = [...this.lateRetiredCloses];
+    this.lateRetiredCloses.clear();
+    return list;
+  }
+
+  viewerWroteInDraft(path: string): boolean {
+    const doc = this.deps.documentFor(path);
+    const activeFlight = this.rawFlight ?? this.flight;
+    const entries = activeFlight && doc ? activeFlight.paths[doc.path] : undefined;
+    return hasViewerWrittenEntry(entries, this.deps.viewerLogin?.() ?? "");
+  }
+
   clearInFlightPath(path: string, branch: string | null = null, prNumber: number | null = null): void {
     const repoPath = this.deps.documentFor(path)?.path ?? path;
-    this.closedDraftPaths.set(repoPath, { branch, prNumber, at: this.now() });
-    this.statuses.delete(path);
-    this.learnedAt.delete(path);
+    const closed = { branch, prNumber };
+    if (branch !== null || prNumber !== null) {
+      const now = this.now();
+      this.closedDraftPaths.set(repoPath, { ...closed, at: now });
+      this.recentlyAbandonedPaths.set(repoPath, now);
+      this.deps.cache.noteAbandonedDraft(this.vaultPathFor(repoPath));
+    }
+    const knownReview = this.statuses.get(path)?.review ?? null;
+    const matchesKnown =
+      knownReview === null ||
+      (branch === null && prNumber === null) ||
+      this.matchesClosedDraft(closed, { branch: knownReview.reviewBranch ?? "", prNumber: knownReview.pr?.number ?? null });
+    if (matchesKnown) {
+      this.statuses.delete(path);
+      this.learnedAt.delete(path);
+    }
     if (this.flight && repoPath in this.flight.paths) {
       const nextPaths = { ...this.flight.paths };
-      const kept = (nextPaths[repoPath] ?? []).filter(
-        (one) =>
-          !(
-            (branch !== null && one.branch === branch) ||
-            (prNumber !== null && one.prNumber === prNumber) ||
-            (branch === null && prNumber === null)
-          ),
-      );
+      const kept = (nextPaths[repoPath] ?? []).filter((one) => !this.matchesClosedDraft(closed, one));
       if (kept.length > 0) nextPaths[repoPath] = kept;
       else delete nextPaths[repoPath];
       this.flight = { ...this.flight, paths: nextPaths };
@@ -1204,13 +1632,14 @@ export class ChangesModel {
           failedReads.add(change.path);
           continue;
         }
-        const review = await this.deps.review.status(doc);
+        const rawReview = await this.deps.review.status(doc);
         if ((this.deps.place?.() ?? "") !== place || this.disposed) return;
-        if (review === null) {
+        if (rawReview === null) {
           failedReads.add(change.path);
           if (mode === "step") halted = true;
           continue;
         }
+        const review = this.sanitizeStatusForDeletedDraft(change.path, rawReview);
         if (this.isStaleDraftDowngrade(change.path, review.pr)) {
           const current = this.statuses.get(change.path);
           if (current) {
@@ -1264,9 +1693,10 @@ export class ChangesModel {
       for (const target of list) {
         const doc = this.deps.documentFor(target.change.path);
         if (!doc) continue;
-        const review = await this.deps.review.status(doc);
+        const rawReview = await this.deps.review.status(doc);
         if ((this.deps.place?.() ?? "") !== place || this.disposed) return;
-        if (review === null || superseded(target.change.path)) continue;
+        if (rawReview === null || superseded(target.change.path)) continue;
+        const review = this.sanitizeStatusForDeletedDraft(target.change.path, rawReview);
         const pr = review.pr && review.pr.number === target.pr.number && target.pr.group && !review.pr.group ? { ...review.pr, group: target.pr.group } : review.pr;
         if (this.isStaleDraftDowngrade(target.change.path, pr)) continue;
         const nextReview = pr === review.pr ? review : { ...review, pr };
@@ -1353,7 +1783,7 @@ export class ChangesModel {
   }
 
   private applyFlight(changes: readonly LocalChange[]): { detailed: LocalChange[]; verify: VerifyTarget[] } {
-    const flight = this.flight;
+    const flight = this.visibleFlight();
     const detailed: LocalChange[] = [];
     const verify: VerifyTarget[] = [];
     if (!flight) return { detailed, verify };
@@ -1493,7 +1923,7 @@ export class ChangesModel {
     if (!watched || this.disposed || this.current.busy || this.row(watched.path)) return;
     const doc = this.deps.documentFor(watched.path);
     if (!doc) return;
-    const listed = (this.flight?.paths[doc.path]?.length ?? 0) > 0;
+    const listed = (this.visibleFlight()?.paths[doc.path]?.length ?? 0) > 0;
     if (!first && !listed && !this.ownOpen(watched.review) && watched.review?.saver?.state !== "waiting" && this.sentTo(watched.path) === null) return;
     const place = this.deps.place?.() ?? "";
     const version = watched.version;
@@ -1690,6 +2120,9 @@ export class ChangesModel {
   }
 
   settledDelete(path: string): void {
+    this.presentFiles.delete(path);
+    this.liveSeenPaths.delete(path);
+    this.deletedLiveShas.delete(path);
     this.deps.cache.dropped(path);
   }
 
@@ -1715,12 +2148,11 @@ export class ChangesModel {
   }
 
   flightAnswer(): InFlightResponse | null {
-    const flight = this.flight;
+    const flight = this.visibleFlight();
     if (!flight) return null;
     const paths: Record<string, InFlightResponse["paths"][string]> = {};
     for (const path in flight.paths) {
       const here = this.vaultPathFor(path);
-      if (this.isSupersededDraftSource(here)) continue;
       if (this.deps.documentFor(here) !== null && !isHiddenPath(here)) paths[here] = flight.paths[path]!;
     }
     return { base: "", paths, groups: this.vaultOverviews() ?? {} };

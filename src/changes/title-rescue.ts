@@ -21,6 +21,7 @@ export interface PreTitleRescueState {
   originTitleEl: HTMLElement | null;
   originCmEl: HTMLElement | null;
   originPath: string | null;
+  flushingTitleEl?: HTMLElement | null;
   pendingTitleChars: string;
   pendingBodyChars: string;
   submitted: boolean;
@@ -31,6 +32,10 @@ const syntheticTitleEnterEvents = new WeakSet<Event>();
 
 export function isSyntheticTitleEnter(event: Event): boolean {
   return syntheticTitleEnterEvents.has(event);
+}
+
+export function isRelayedKeyEvent(event: Event): boolean {
+  return (event as { isRelayed?: unknown }).isRelayed === true;
 }
 
 export function popLastCodePoint(text: string): string {
@@ -77,8 +82,13 @@ export function consumeBufferedBeforeInput(
 export function inlineTitleElementOf(target: unknown): HTMLElement | null {
   if (!target || typeof target !== "object") return null;
   const el = target as { classList?: { contains?: (name: string) => boolean }; closest?: (selector: string) => unknown };
-  if (typeof el.classList?.contains === "function" && el.classList.contains("inline-title")) return target as HTMLElement;
-  const found = typeof el.closest === "function" ? el.closest(".inline-title") : null;
+  if (
+    typeof el.classList?.contains === "function" &&
+    (el.classList.contains("inline-title") || el.classList.contains("view-header-title"))
+  ) {
+    return target as HTMLElement;
+  }
+  const found = typeof el.closest === "function" ? el.closest(".inline-title, .view-header-title") : null;
   return found && typeof found === "object" ? (found as HTMLElement) : null;
 }
 
@@ -94,14 +104,21 @@ export function cmContentElementOf(target: unknown): HTMLElement | null {
   return found && typeof found === "object" ? (found as HTMLElement) : null;
 }
 
+export function leafEditorPathOf(leafEl: Element | null): string | null {
+  const scope: ParentNode | null = leafEl;
+  const cmEl = scope?.querySelector?.(".cm-content") ?? null;
+  if (!(cmEl && typeof cmEl === "object")) return null;
+  return EditorView.findFromDOM(cmEl as HTMLElement)?.state.field(editorInfoField, false)?.file?.path ?? null;
+}
+
 export function currentDoc(): Document | null {
   if (typeof activeDocument !== "undefined") return activeDocument;
   if (typeof window !== "undefined") return window.document;
   return null;
 }
 
-export function focusedInlineTitle(): HTMLElement | null {
-  const active = currentDoc()?.activeElement ?? null;
+export function focusedInlineTitle(doc: Document | null = currentDoc()): HTMLElement | null {
+  const active = doc?.activeElement ?? null;
   return inlineTitleElementOf(active);
 }
 
@@ -142,9 +159,9 @@ export function isBlockedPreTitleFocusTarget(target: unknown): boolean {
   return typeof el?.closest === "function" && el.closest(".modal-container, .prompt, input, textarea") !== null;
 }
 
-function isBlockedPreTitleTarget(target: unknown, originTitleEl: HTMLElement | null): boolean {
+function isBlockedPreTitleTarget(target: unknown, originTitleEl: HTMLElement | null, flushingTitleEl: HTMLElement | null | undefined): boolean {
   const targetTitle = inlineTitleElementOf(target);
-  if (targetTitle !== null) return targetTitle !== originTitleEl;
+  if (targetTitle !== null) return targetTitle !== originTitleEl && targetTitle !== flushingTitleEl;
   return isBlockedPreTitleFocusTarget(target);
 }
 
@@ -162,9 +179,9 @@ function activePreTitleOf(
   const doc = (event.target as Node | null)?.ownerDocument ?? currentDoc();
   const win = doc?.defaultView ?? null;
   if (pre.win !== null && win !== null && win !== pre.win) return null;
-  const focusedTitle = focusedInlineTitle() ?? inlineTitleElementOf(doc?.activeElement ?? null);
-  if (focusedTitle !== null && focusedTitle !== pre.originTitleEl) return null;
-  if (isBlockedPreTitleTarget(event.target, pre.originTitleEl)) return null;
+  const focusedTitle = focusedInlineTitle(doc);
+  if (focusedTitle !== null && focusedTitle !== pre.originTitleEl && focusedTitle !== pre.flushingTitleEl) return null;
+  if (isBlockedPreTitleTarget(event.target, pre.originTitleEl, pre.flushingTitleEl)) return null;
   return pre;
 }
 
@@ -242,56 +259,91 @@ export function flushPreTitleOnFocus(
 ): void {
   const pre = holder.preTitle;
   if (pre === null) return;
-  if (titleEl === pre.originTitleEl) {
-    const rawNow = (titleEl.textContent ?? "").trim();
-    const activeNow = holder.activePath();
-    if (rawNow !== "" && !/^Untitled(?: \d+)?$/i.test(rawNow) && activeNow !== null && !isUntitled(activeNow)) return;
-  }
-  holder.preTitle = null;
-  if (now >= pre.expiresAt || pre.pendingTitleChars.length === 0) return;
-  const titleWin = titleEl.ownerDocument?.defaultView ?? null;
+  const doc = titleEl.ownerDocument ?? currentDoc();
+  if (!isElementShown(titleEl, doc)) return;
+  const titleWin = doc?.defaultView ?? null;
   if (pre.win !== null && titleWin !== null && titleWin !== pre.win) return;
+  const rawNow = (titleEl.textContent ?? "").trim();
+  const rawNowUntitled = rawNow === "" || /^Untitled(?: \d+)?$/i.test(rawNow);
+  if (!rawNowUntitled) {
+    const activeNow = holder.activePath();
+    if (activeNow !== null && !isUntitled(activeNow)) return;
+  }
+  if (now >= pre.expiresAt || pre.pendingTitleChars.length === 0) {
+    holder.preTitle = null;
+    return;
+  }
+  if (pre.flushingTitleEl === titleEl) return;
+  pre.flushingTitleEl = titleEl;
   queueMicrotask(() => {
-    if (isDisposed() || !titleEl.isConnected) return;
-    const raw = (titleEl.textContent ?? "").trim();
-    const active = holder.activePath();
-    if ((raw === "" || /^Untitled(?: \d+)?$/i.test(raw)) && (active === null || isUntitled(active))) {
-      titleEl.textContent = pre.pendingTitleChars;
-      const doc = titleEl.ownerDocument;
-      const sel = typeof doc?.getSelection === "function" ? doc.getSelection() : null;
-      if (sel && typeof doc?.createRange === "function") {
-        try {
-          const range = doc.createRange();
-          range.selectNodeContents(titleEl);
-          range.collapse(false);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } catch {
-          void 0;
-        }
+    if (holder.preTitle === pre) holder.preTitle = null;
+    else return;
+    if (isDisposed() || !titleEl.isConnected || pre.pendingTitleChars.length === 0) return;
+    const currentText = titleEl.textContent ?? "";
+    const raw = currentText.trim();
+    const rawIsUntitled = raw === "" || /^Untitled(?: \d+)?$/i.test(raw);
+    if (titleEl === pre.originTitleEl) {
+      const active = holder.activePath();
+      if (!rawIsUntitled && active !== null && !isUntitled(active)) return;
+    }
+    const nextTitle = rawIsUntitled ? pre.pendingTitleChars : `${pre.pendingTitleChars}${currentText}`;
+    titleEl.textContent = nextTitle;
+    const sel = typeof doc?.getSelection === "function" ? doc.getSelection() : null;
+    if (sel && typeof doc?.createRange === "function") {
+      try {
+        const range = doc.createRange();
+        range.selectNodeContents(titleEl);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {
+        void 0;
       }
-      titleEl.dispatchEvent(
-        typeof InputEvent === "function"
-          ? new InputEvent("input", { bubbles: true, inputType: "insertText", data: pre.pendingTitleChars })
-          : new Event("input", { bubbles: true }),
-      );
-      if (pre.submitted) {
-        const at = Date.now();
-        onSeedPostEnter(at);
-        const leafEl = typeof titleEl.closest === "function" ? titleEl.closest(".workspace-leaf") : null;
-        holder.rescue = {
-          el: titleEl,
-          leafEl,
-          expectedPath: holder.activePath(),
-          win: titleWin ?? (typeof window !== "undefined" ? window : null),
-          pendingBodyChars: pre.pendingBodyChars,
-          expiresAt: at + rescueMaxMs,
-          skipBeforeInput: null,
-        };
-        const enterEv = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
-        syntheticTitleEnterEvents.add(enterEv);
-        titleEl.dispatchEvent(enterEv);
-      }
+    }
+    const InputEventCtor =
+      titleWin && typeof (titleWin as { InputEvent?: unknown }).InputEvent === "function"
+        ? (titleWin as { InputEvent: typeof InputEvent }).InputEvent
+        : typeof InputEvent === "function"
+          ? InputEvent
+          : null;
+    const EventCtor =
+      titleWin && typeof (titleWin as { Event?: unknown }).Event === "function"
+        ? (titleWin as { Event: typeof Event }).Event
+        : Event;
+    titleEl.dispatchEvent(
+      InputEventCtor
+        ? new InputEventCtor("input", { bubbles: true, inputType: "insertText", data: nextTitle })
+        : new EventCtor("input", { bubbles: true }),
+    );
+    if (pre.submitted) {
+      const at = Date.now();
+      onSeedPostEnter(at);
+      const leafEl = typeof titleEl.closest === "function" ? titleEl.closest(".workspace-leaf") : null;
+      const leafPath = leafEditorPathOf(leafEl);
+      const activeAtEnter = holder.activePath();
+      const expectedPath =
+        leafPath ??
+        (activeAtEnter !== null &&
+        isUntitled(activeAtEnter) &&
+        (titleEl === pre.originTitleEl || activeAtEnter !== pre.originPath)
+          ? activeAtEnter
+          : null);
+      holder.rescue = {
+        el: titleEl,
+        leafEl,
+        expectedPath,
+        win: titleWin ?? (typeof window !== "undefined" ? window : null),
+        pendingBodyChars: pre.pendingBodyChars,
+        expiresAt: at + rescueMaxMs,
+        skipBeforeInput: null,
+      };
+      const KeyEventCtor =
+        titleWin && typeof (titleWin as { KeyboardEvent?: unknown }).KeyboardEvent === "function"
+          ? (titleWin as { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent
+          : KeyboardEvent;
+      const enterEv = new KeyEventCtor("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      syntheticTitleEnterEvents.add(enterEv);
+      titleEl.dispatchEvent(enterEv);
     }
   });
 }
@@ -308,19 +360,22 @@ export function flushPreTitleToEditor(
   if (pre === null) return;
   holder.preTitle = null;
   const targetWin = cmContent.ownerDocument?.defaultView ?? null;
+  const viewPath = EditorView.findFromDOM(cmContent)?.state.field(editorInfoField, false)?.file?.path ?? null;
   const activeNow = holder.activePath();
+  const eligiblePath = viewPath !== null ? isUntitled(viewPath) : activeNow === null || isUntitled(activeNow);
   if (
     now < pre.expiresAt &&
     pre.pendingTitleChars.length > 0 &&
     (pre.win === null || targetWin === null || targetWin === pre.win) &&
-    (activeNow === null || isUntitled(activeNow))
+    eligiblePath
   ) {
+    const expected = viewPath ?? (activeNow !== null && isUntitled(activeNow) ? activeNow : null);
     const textToFlush = pre.submitted ? `${pre.pendingTitleChars}\n${pre.pendingBodyChars}` : pre.pendingTitleChars;
     queueMicrotask(() => {
       if (isDisposed() || !cmContent.isConnected) return;
-      const activeAtFlush = holder.activePath();
+      const activeAtFlush = EditorView.findFromDOM(cmContent)?.state.field(editorInfoField, false)?.file?.path ?? holder.activePath();
       if (activeAtFlush !== null && !isUntitled(activeAtFlush)) return;
-      flushRescuedChars(plugin, cmContent, textToFlush, activeNow);
+      flushRescuedChars(plugin, cmContent, textToFlush, expected);
     });
   }
 }
@@ -330,6 +385,39 @@ function isInActiveLeaf(el: HTMLElement, doc: Document | null): boolean {
   if (leaf === null) return true;
   if (leaf.classList.contains("mod-active")) return true;
   return !doc?.querySelector?.(".workspace-leaf.mod-active");
+}
+
+function vaultShowInlineTitle(plugin: Plugin): boolean | undefined {
+  const vault = plugin.app?.vault as { getConfig?: (key: string) => unknown } | undefined;
+  const raw = typeof vault?.getConfig === "function" ? vault.getConfig("showInlineTitle") : undefined;
+  return typeof raw === "boolean" ? raw : undefined;
+}
+
+function closestLeafOf(target: unknown): Element | null {
+  if (!target || typeof target !== "object") return null;
+  const el = target as { closest?: (selector: string) => Element | null };
+  return typeof el.closest === "function" ? el.closest(".workspace-leaf") : null;
+}
+
+function isElementShown(el: Element, doc: Document | null): boolean {
+  const candidate = el as HTMLElement & { isShown?: () => boolean };
+  if (typeof candidate.isShown === "function") return candidate.isShown();
+  if (candidate.hidden || candidate.style?.display === "none") return false;
+  const win = doc?.defaultView;
+  if (win && typeof win.getComputedStyle === "function") return win.getComputedStyle(candidate).display !== "none";
+  return typeof getComputedStyle !== "function" || getComputedStyle(candidate).display !== "none";
+}
+
+export function willFocusInlineTitle(plugin: Plugin, target: unknown, doc: Document | null): boolean {
+  const leaf = closestLeafOf(target) ?? doc?.querySelector?.(".workspace-leaf.mod-active") ?? null;
+  const scope: ParentNode | null = leaf ?? doc;
+  if (vaultShowInlineTitle(plugin) !== false) {
+    const found = scope?.querySelector?.(".inline-title") ?? null;
+    if (found && typeof found === "object" && isElementShown(found, doc)) return true;
+  }
+  const foundHeader = scope?.querySelector?.(".view-header-title") ?? null;
+  if (foundHeader && typeof foundHeader === "object" && isElementShown(foundHeader, doc)) return true;
+  return false;
 }
 
 export function settlePreTitleOnFileOpen(
@@ -376,7 +464,9 @@ export function settlePreTitleOnFileOpen(
       pre.originTitleEl = null;
       pre.originCmEl = null;
       pre.originPath = null;
-      flushPreTitleToEditor(plugin, holder, activeCm, now, isDisposed, isUntitled);
+      if (!willFocusInlineTitle(plugin, activeCm, doc)) {
+        flushPreTitleToEditor(plugin, holder, activeCm, now, isDisposed, isUntitled);
+      }
     }
     return;
   }

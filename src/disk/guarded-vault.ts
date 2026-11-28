@@ -74,6 +74,7 @@ interface PaneView {
   editor?: { getValue(): string };
   getViewType(): string;
   getViewData?: () => string;
+  setViewData?: (data: string, clear: boolean) => void;
   canvas?: { isDragging?: boolean; nodes?: unknown } | null;
   containerEl?: {
     querySelector?: (selector: string) => unknown;
@@ -383,20 +384,42 @@ export function guardedVault(app: App): GuardedVault {
       const file = fileAt(path);
       if (!file) return "gone";
       let refused = false;
+      let beforeText: string | null = null;
+      let writtenText: string | null = null;
       const confirmed = options?.confirmed === true;
       try {
         await vault.process(file, (current) => {
+          beforeText = current;
           const next = heldInPane(path, current, confirmed) ? null : edit(current);
           if (next === null) {
             refused = true;
             return current;
           }
+          writtenText = next;
           return next;
         });
       } catch {
         return vault.getFileByPath(path) ? "refused" : "gone";
       }
-      return refused ? "refused" : "written";
+      if (refused) return "refused";
+      if (writtenText !== null && beforeText !== null && /\.canvas$/i.test(path)) {
+        const syncedText = writtenText;
+        const priorText = beforeText;
+        workspace.iterateAllLeaves((leaf) => {
+          const view = leaf.view as PaneView;
+          if (view.file?.path !== path || view.getViewType() !== "canvas") return;
+          if (hasDirtyCanvasCard(view) || view.canvas?.isDragging === true || editingElements(view.containerEl).some(isEditingNodeActive)) return;
+          const afterData = readViewData(view);
+          if (afterData !== null && sameCanvasText(afterData, priorText) && !sameCanvasText(afterData, syncedText) && typeof view.setViewData === "function") {
+            try {
+              view.setViewData(syncedText, false);
+            } catch {
+              void 0;
+            }
+          }
+        });
+      }
+      return "written";
     },
     create: async (path, text) => {
       if (!isVaultTarget(path, configDirOf(app))) return "failed";

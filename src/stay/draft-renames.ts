@@ -8,6 +8,7 @@ import type { DraftContext } from "./draft-inbound";
 import { type Draft, draftKey, follows, isClean, type LeftAlone } from "./draft-state";
 import { EMPTY_BLOB, READS_PER_PASS } from "./inbound";
 import { changeKey } from "./outbound";
+import { rewriteCanvasFileRefsOnRename } from "./canvas-rename";
 import { DRAFT_SAID } from "./words";
 
 export const RENAME_HOLD_MS = 120_000;
@@ -18,7 +19,7 @@ const targetKeyOf = (to: string, draft: Pick<Draft, "branch">): string => `${to}
 
 const isPublishedBytes = (entry: Pick<CacheEntry, "base">, blob: string | null): boolean => blob !== null && blob !== EMPTY_BLOB && entry.base === blob;
 
-const isRenamedFrom = (draft: Draft, from: string, to: string): boolean => draft.removes?.get(from) === to;
+const isRenamedFrom = (draft: Draft, from: string, to: string): boolean => draft.renamedFrom === from || draft.removes?.get(from) === to;
 const isRemovedBy = (draft: Draft, from: string): boolean => draft.removes?.get(from) === null;
 
 const isDraftOnly = (looked: Looked, byPath: ReadonlyMap<string, Draft>, from: string, entry: Pick<CacheEntry, "sent">, phase: NotePhase): boolean =>
@@ -27,11 +28,15 @@ const isDraftOnly = (looked: Looked, byPath: ReadonlyMap<string, Draft>, from: s
 const bytesMatch = (entry: Pick<CacheEntry, "sha" | "sent" | "base">, blob: string | null): boolean =>
   blob !== null && blob !== EMPTY_BLOB && (entry.sha === blob || entry.sent === blob || isPublishedBytes(entry, blob));
 
-const isCleanRenameSource = (byPath: ReadonlyMap<string, Draft>, from: string, entry: CacheEntry, draft: Draft): { exactBlob: boolean; clean: boolean } => {
+const isCleanRenameSource = (looked: Looked, byPath: ReadonlyMap<string, Draft>, from: string, to: string, entry: CacheEntry, draft: Draft): { exactBlob: boolean; clean: boolean } => {
   const exactBlob = draft.blob !== null && draft.blob !== EMPTY_BLOB && entry.sha === draft.blob;
   if (exactBlob) return { exactBlob: true, clean: true };
   const agreed = agreedOf(entry);
-  const sameDraft = entry.sent !== undefined && !byPath.has(from) && (entry.sentTo === undefined || entry.sentTo === draftKey(draft));
+  const sameDraft =
+    entry.sent !== undefined &&
+    ((!looked.repo.has(from) &&
+      (isRenamedFrom(draft, from, to) || (draft.blob !== null && draft.blob !== EMPTY_BLOB && entry.sent === draft.blob))) ||
+      (!byPath.has(from) && (entry.sentTo === undefined || entry.sentTo === draftKey(draft))));
   const clean = sameDraft
     ? isClean({ sha: entry.sha, ...(agreed !== undefined ? { agreed } : {}), unchanged: unchangedHere(entry) })
     : unchangedHere(entry);
@@ -84,7 +89,7 @@ export class DraftRenames {
     const now = this.ctx.ports.now();
     for (const path of this.since.keys()) if (!byPath.has(path) || looked.files.has(path)) this.since.delete(path);
     for (const [path, moved] of this.knownRenames) {
-      if (!looked.files.has(path) || byPath.has(path)) {
+      if (!looked.files.has(path) || (byPath.has(path) && looked.repo.has(path))) {
         this.knownRenames.delete(path);
         continue;
       }
@@ -99,7 +104,7 @@ export class DraftRenames {
     }
     for (const [path, missed] of this.noRenames) {
       const entry = looked.files.get(path);
-      if (!entry || byPath.has(path) || fileStateOf(entry) !== missed.state || now - missed.at >= RENAME_MISS_TTL_MS) {
+      if (!entry || (byPath.has(path) && looked.repo.has(path)) || fileStateOf(entry) !== missed.state || now - missed.at >= RENAME_MISS_TTL_MS) {
         this.noRenames.delete(path);
       }
     }
@@ -268,7 +273,8 @@ export class DraftRenames {
       if (probeCandidates !== null) return probeCandidates;
       const list: Array<{ from: string; entry: CacheEntry; fromDoc: DocumentRef; state: string }> = [];
       for (const [from, entry] of allFiles()) {
-        if (byPath.has(from) || ports.inGroup(from)) continue;
+        if (ports.inGroup(from)) continue;
+        if (byPath.has(from) && (looked.repo.has(from) || entry.sent === undefined || (entry.sha !== entry.sent && agreedOf(entry) !== entry.sha))) continue;
         if (entry.sent === undefined && looked.repo.has(from)) continue;
         const fromDoc = ports.documentFor(from);
         if (!fromDoc) continue;
@@ -321,7 +327,9 @@ export class DraftRenames {
       }
       const eligible = ([from]: [string, CacheEntry]): boolean => from !== to && !out.paths.has(from) && ports.documentFor(from) !== null && !ports.inGroup(from);
       let found =
-        (draft.removes && draft.removes.size > 0 ? allFiles().find((pair) => eligible(pair) && isRenamedFrom(draft, pair[0], to)) : undefined) ??
+        (draft.renamedFrom !== undefined || (draft.removes && draft.removes.size > 0)
+          ? allFiles().find((pair) => eligible(pair) && isRenamedFrom(draft, pair[0], to))
+          : undefined) ??
         (draft.blob !== EMPTY_BLOB
           ? indexMatches().get(draft.blob)?.find(([from, entry]) => eligible([from, entry]) && (isRemovedBy(draft, from) || isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))))
           : undefined);
@@ -353,7 +361,7 @@ export class DraftRenames {
         if (probed === "wait") hold(from);
         continue;
       }
-      const { exactBlob, clean } = isCleanRenameSource(byPath, from, entry, draft);
+      const { exactBlob, clean } = isCleanRenameSource(looked, byPath, from, to, entry, draft);
       if (!clean) {
         const left = await this.host.leftAlone(looked, from, { transientOnly: true });
         if (!this.ctx.current()) break;
@@ -400,18 +408,19 @@ export class DraftRenames {
         if (!byPath.has(from)) out.heldFrom.add(from);
         continue;
       }
+      if (from !== to && !looked.repo.has(from)) ports.forgetDelete(from);
       this.host.noteRenamed(from, to);
       this.ctx.renameOwnBlobs?.(from, to);
-      if (from !== to && !looked.repo.has(from)) ports.forgetDelete(from);
       state.data.committed.push(changeKey({ kind: "new", path: to }), changeKey({ kind: "renamed", path: to, from }));
       ports.agreed(from, null);
       this.host.forgetEnded(from);
       this.host.settled(from);
       const awaitingSent = exactBlob ? draft.blob : (entry.sent ?? entry.base ?? entry.sha);
       this.host.awaiting.set(to, { sent: awaitingSent, to: draftKey(draft), agreed: entry.sha });
+      const updatedCanvases = await rewriteCanvasFileRefsOnRename(ports.vault, activity, state, ports.now(), from, to);
       out.paths.add(from);
       out.paths.add(to);
-      out.changed++;
+      out.changed += 1 + updatedCanvases;
     }
     return out;
   }
@@ -455,13 +464,15 @@ export class DraftRenames {
     const { ports, activity } = this.ctx;
     const at = looked.files.get(to);
     if (!at || ports.inGroup(to) || looked.repo.has(to)) return 0;
+    const toDoc = ports.documentFor(to);
     for (const [from, entry] of byBytes.get(at.sha) ?? []) {
       const removed = isRenamedFrom(draft, from, to) || isRemovedBy(draft, from);
-      if (from === to || (byPath.has(from) && !removed) || paths.has(from) || ports.inGroup(from)) continue;
-      if (!removed && !isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) continue;
+      const provenDraftRename = !looked.repo.has(from) && toDoc !== null && this.knownRenames.get(from)?.path === toDoc.path;
+      if (from === to || (byPath.has(from) && !removed && !provenDraftRename) || paths.has(from) || ports.inGroup(from)) continue;
+      if (!removed && !provenDraftRename && !isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) continue;
       if (entry.sent === undefined && at.sha !== draft.blob) continue;
       const fromDoc = ports.documentFor(from);
-      const { clean } = isCleanRenameSource(byPath, from, entry, draft);
+      const { clean } = isCleanRenameSource(looked, byPath, from, to, entry, draft);
       if (!fromDoc || !follows(draft, ports.login(), undefined, ports.policy()) || !clean) continue;
       const probed = await this.probeAbsent(from, fromDoc, draft.branch);
       if (!this.ctx.current()) return 0;
@@ -472,14 +483,15 @@ export class DraftRenames {
         this.host.wait(from);
         continue;
       }
-      this.host.noteRemoved(from);
       if (!looked.repo.has(from)) ports.forgetDelete(from);
+      this.host.noteRemoved(from);
+      const updatedCanvases = await rewriteCanvasFileRefsOnRename(ports.vault, activity, this.ctx.state, ports.now(), from, to);
       ports.agreed(from, null);
       this.ctx.clearOwnBlobs?.(from);
       this.host.forgetEnded(from);
       this.host.settled(from);
       paths.add(from);
-      return 1;
+      return 1 + updatedCanvases;
     }
     return 0;
   }

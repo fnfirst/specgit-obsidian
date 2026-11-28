@@ -2,6 +2,7 @@ import type { GroupOverview, InFlightBranch, StatusUnits } from "../shared/revie
 import type { ChangeRow } from "./model";
 import type { PresenceRead } from "../review/review-api";
 import { type AwareState, awareState } from "./aware";
+import { withViewerSavePaths } from "./batch-reviews";
 import { agreedOf, type CacheEntry } from "./cache";
 
 export interface NoteChoice {
@@ -111,14 +112,14 @@ export class Awareness {
     if (!flight || !files) return kept;
     return awareState({
       viewer: from.viewer,
-      paths: flight.paths,
+      paths: withViewerSavePaths(flight.paths, from.viewer),
       overviews: flight.overviews,
       presence: this.presence,
       vaultPath: from.vaultPath,
       fileAt: (path) => {
         const file = files.get(path);
         if (!file || from.documentFor(path) === null) return null;
-        return { holds: (blob) => file.sha === blob || (file.sent === blob && agreedOf(file) === file.sha) };
+        return { holds: (blob) => file.sha === blob || file.same === blob || (file.sent === blob && agreedOf(file) === file.sha) };
       },
     });
   }

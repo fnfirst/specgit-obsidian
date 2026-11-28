@@ -46,6 +46,7 @@ import { StayState } from "./state";
 import type { AutoCommitOutcome, DraftBase, StayPorts } from "./types";
 import { OFFER } from "./words";
 import { appHidden, watchWindows } from "../windows";
+import { RoomPool } from "../room/pool";
 
 export interface StayDeps {
   settings: () => Settings;
@@ -512,6 +513,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
     for (const one of oneShots) one.stop();
     oneShots.clear();
   };
+  deps.flows.bindStayOn?.(() => deps.settings().stayConnected && deps.signedIn());
   const stop = deps.model.onLooked((looked) => {
     lastLooked = looked;
     if (engine && engineIdentity !== identity()) settingsChanged();
@@ -556,10 +558,20 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         engine?.panesChanged(file.path);
       }),
     );
-    plugin.registerEvent(app.vault.on("delete", (file) => (isTrackedFile(file) ? touched(file.path, true) : undefined)));
+    plugin.registerEvent(
+      app.vault.on("delete", (file) => {
+        if ("children" in file) return;
+        const delDoc = mapped(file.path);
+        if (delDoc) RoomPool.dropFor(delDoc);
+        if (!isHiddenPath(file.path)) deps.flows.noteLocalDelete?.(file.path);
+        if (isTrackedFile(file)) touched(file.path, true);
+      }),
+    );
     plugin.registerEvent(
       app.vault.on("rename", (file, from) => {
         if ("children" in file) return;
+        const fromDoc = mapped(from);
+        if (fromDoc) RoomPool.dropFor(fromDoc);
         if (isTrackedPath(file.path)) activity.renamed(from, file.path);
         else if (isTrackedPath(from)) touched(from, true);
       }),

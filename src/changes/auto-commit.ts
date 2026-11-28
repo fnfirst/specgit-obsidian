@@ -34,6 +34,7 @@ export interface AutoCommitHost {
   readonly memory: SentMemory;
   readonly meter: { writes: number };
   readonly goneAt: Map<string, number>;
+  isClosingDeletedDraft(path: string): boolean;
   sendOnce(row: ChangeRow, options: SendOptions): Promise<Sent>;
   sendAttachmentsAlone(row: FileRow, deps: FlowDeps): Promise<Sent | null>;
 }
@@ -42,6 +43,9 @@ export class AutoCommitFlows {
   constructor(private readonly host: AutoCommitHost) {}
 
   async autoCommit(row: ChangeRow, isCurrent: () => boolean, hooks?: SendHooks): Promise<AutoCommitOutcome> {
+    if (hooks !== undefined && row.change.kind !== "deleted" && !this.host.model.hasRepoFile(row.change.path) && this.host.isClosingDeletedDraft(row.change.path)) {
+      return { result: "later", writes: 0 };
+    }
     const before = this.host.meter.writes;
     this.host.goneAt.delete(row.change.path);
     const outcome = hooks?.edit ? (this.host.model.groupOf(row.change.path) ? await this.autoMember(row, isCurrent, hooks) : await this.autoEdited(row, isCurrent, hooks)) : await this.autoCommitted(row, isCurrent);

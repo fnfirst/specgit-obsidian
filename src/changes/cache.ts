@@ -29,6 +29,7 @@ export interface Gone {
   path: string;
   sha: string;
   base: string | null;
+  localOnly?: true;
 }
 
 export interface Scanned {
@@ -43,6 +44,9 @@ export const SCAN_CONCURRENCY = 4;
 export const RACY_MS = 2_000;
 export const COPIED_KEPT_MS = 10 * 60_000;
 export const CACHE_SAVE_DEBOUNCE_MS = 30_000;
+export const RETIRED_DRAFT_TTL_MS = 5 * 60_000;
+export const REVIEW_TOMBSTONE_TTL_MS = 15 * 60_000;
+export const RETIRED_DRAFT_SETTLE_MS = 60_000;
 export const MAX_FOREIGN = 5_000;
 export const MAX_REMOVED = 5_000;
 
@@ -99,9 +103,14 @@ export class FileCache {
   private entries = new Map<string, CacheEntry>();
   private removed = new Map<string, Gone>();
   private foreign = new Map<string, string>();
-  private readonly draftRenamedFrom = new Map<string, string>();
+  private readonly draftRenamedFrom = new Map<string, string[]>();
+  private readonly retiredDraftSources = new Map<string, number>();
+  private readonly recentlyAbandonedDrafts = new Map<string, number>();
+  private readonly unflushedLiveDeletes = new Map<string, { sha: string; at: number }>();
+  private readonly pendingDraftDeletes = new Set<string>();
   private readonly copied = new Map<string, { sha: string; at: number }>();
   private readonly activeScans = new Set<Set<string>>();
+  private readonly activeRenameTargets = new Set<Set<string>>();
   private dirty = false;
   private pendingSave: (() => void) | null = null;
 
@@ -121,22 +130,56 @@ export class FileCache {
   private load(): void {
     try {
       const stored = this.state.load(this.key);
-      const record = typeof stored === "object" && stored !== null ? (stored as { files?: unknown; removed?: unknown; foreign?: unknown; copied?: unknown; draftRenames?: unknown }) : {};
+      const record =
+        typeof stored === "object" && stored !== null
+          ? (stored as { files?: unknown; removed?: unknown; foreign?: unknown; copied?: unknown; draftRenames?: unknown; retiredDraftSources?: unknown; recentlyAbandonedDrafts?: unknown; unflushedLiveDeletes?: unknown; pendingDraftDeletes?: unknown })
+          : {};
       for (const [path, kept] of Object.entries((typeof record.copied === "object" && record.copied !== null ? record.copied : {}) as Record<string, unknown>)) {
         if (Array.isArray(kept) && typeof kept[0] === "string" && typeof kept[1] === "number") this.copied.set(path, { sha: kept[0], at: kept[1] });
       }
       for (const [path, entry] of Object.entries((record.files ?? {}) as Record<string, unknown>)) if (isEntry(entry)) this.entries.set(path, entry);
       for (const [path, sha] of Object.entries((typeof record.foreign === "object" && record.foreign !== null ? record.foreign : {}) as Record<string, unknown>)) if (typeof sha === "string") this.foreign.set(path, sha);
-      for (const [newPath, oldPath] of Object.entries((typeof record.draftRenames === "object" && record.draftRenames !== null ? record.draftRenames : {}) as Record<string, unknown>)) {
-        if (typeof oldPath === "string" && oldPath !== "" && oldPath !== newPath) this.draftRenamedFrom.set(newPath, oldPath);
+      for (const [newPath, rawOld] of Object.entries((typeof record.draftRenames === "object" && record.draftRenames !== null ? record.draftRenames : {}) as Record<string, unknown>)) {
+        const list = typeof rawOld === "string" ? [rawOld] : Array.isArray(rawOld) ? rawOld : [];
+        const cleaned: string[] = [];
+        for (const item of list) {
+          if (typeof item === "string" && item !== "" && item !== newPath && !cleaned.includes(item)) cleaned.push(item);
+        }
+        if (cleaned.length > 0) this.draftRenamedFrom.set(newPath, cleaned);
+      }
+      const now = this.now();
+      for (const [path, at] of Object.entries((typeof record.retiredDraftSources === "object" && record.retiredDraftSources !== null ? record.retiredDraftSources : {}) as Record<string, unknown>)) {
+        if (typeof at === "number" && path !== "" && !this.entries.has(path) && now - at < RETIRED_DRAFT_TTL_MS) this.retiredDraftSources.set(path, at);
+      }
+      for (const [path, at] of Object.entries((typeof record.recentlyAbandonedDrafts === "object" && record.recentlyAbandonedDrafts !== null ? record.recentlyAbandonedDrafts : {}) as Record<string, unknown>)) {
+        if (typeof at === "number" && path !== "" && now - at < REVIEW_TOMBSTONE_TTL_MS) this.recentlyAbandonedDrafts.set(path, at);
+      }
+      for (const [path, rawUnflushed] of Object.entries((typeof record.unflushedLiveDeletes === "object" && record.unflushedLiveDeletes !== null ? record.unflushedLiveDeletes : {}) as Record<string, unknown>)) {
+        const item = rawUnflushed as { sha?: unknown; at?: unknown } | null;
+        if (item && typeof item.sha === "string" && item.sha !== "" && typeof item.at === "number" && path !== "" && !this.entries.has(path) && now - item.at < RETIRED_DRAFT_SETTLE_MS) {
+          this.unflushedLiveDeletes.set(path, { sha: item.sha, at: item.at });
+        }
+      }
+      for (const path of Array.isArray(record.pendingDraftDeletes) ? record.pendingDraftDeletes : []) {
+        if (typeof path === "string" && path !== "") this.pendingDraftDeletes.add(path);
       }
       for (const gone of Array.isArray(record.removed) ? (record.removed as unknown[]) : []) {
         const candidate = gone as Partial<Gone> | null;
-        if (candidate && typeof candidate.path === "string" && typeof candidate.sha === "string") this.removed.set(candidate.path, { path: candidate.path, sha: candidate.sha, base: candidate.base ?? null });
+        if (candidate && typeof candidate.path === "string" && typeof candidate.sha === "string") {
+          this.removed.set(candidate.path, {
+            path: candidate.path,
+            sha: candidate.sha,
+            base: candidate.base ?? null,
+            ...(candidate.localOnly === true ? { localOnly: true as const } : {}),
+          });
+        }
       }
       capMap(this.foreign, MAX_FOREIGN);
       capMap(this.removed, MAX_REMOVED);
       capMap(this.draftRenamedFrom, MAX_REMOVED);
+      capMap(this.retiredDraftSources, MAX_REMOVED);
+      capMap(this.recentlyAbandonedDrafts, MAX_REMOVED);
+      capMap(this.unflushedLiveDeletes, MAX_REMOVED);
     } catch {
       void 0;
     }
@@ -157,7 +200,17 @@ export class FileCache {
     }
     if (!this.dirty) return;
     try {
-      this.state.save(this.key, { files: Object.fromEntries(this.entries), removed: [...this.removed.values()], ...(this.foreign.size > 0 ? { foreign: Object.fromEntries(this.foreign) } : {}), ...(this.copied.size > 0 ? { copied: Object.fromEntries([...this.copied].map(([path, one]) => [path, [one.sha, one.at]])) } : {}), ...(this.draftRenamedFrom.size > 0 ? { draftRenames: Object.fromEntries(this.draftRenamedFrom) } : {}) });
+      this.state.save(this.key, {
+        files: Object.fromEntries(this.entries),
+        removed: [...this.removed.values()],
+        ...(this.foreign.size > 0 ? { foreign: Object.fromEntries(this.foreign) } : {}),
+        ...(this.copied.size > 0 ? { copied: Object.fromEntries([...this.copied].map(([path, one]) => [path, [one.sha, one.at]])) } : {}),
+        ...(this.draftRenamedFrom.size > 0 ? { draftRenames: Object.fromEntries(this.draftRenamedFrom) } : {}),
+        ...(this.retiredDraftSources.size > 0 ? { retiredDraftSources: Object.fromEntries(this.retiredDraftSources) } : {}),
+        ...(this.recentlyAbandonedDrafts.size > 0 ? { recentlyAbandonedDrafts: Object.fromEntries(this.recentlyAbandonedDrafts) } : {}),
+        ...(this.unflushedLiveDeletes.size > 0 ? { unflushedLiveDeletes: Object.fromEntries(this.unflushedLiveDeletes) } : {}),
+        ...(this.pendingDraftDeletes.size > 0 ? { pendingDraftDeletes: [...this.pendingDraftDeletes] } : {}),
+      });
       this.dirty = false;
     } catch {
       void 0;
@@ -202,8 +255,10 @@ export class FileCache {
     clock: () => number = () => performance.now(),
   ): Promise<Scanned> {
     const scanDropped = new Set<string>();
+    const scanRenamedTargets = new Set<string>();
     const next = new Map<string, CacheEntry>();
     this.activeScans.add(scanDropped);
+    this.activeRenameTargets.add(scanRenamedTargets);
     try {
       const stale: Listed[] = [];
       for (const file of listed) {
@@ -256,21 +311,52 @@ export class FileCache {
         } else files.set(file.path, entry);
       }
       const gone: Gone[] = [];
-      let droppedLocal = false;
       for (const [path, entry] of this.entries) {
         if (present.has(path) || scanDropped.has(path)) continue;
-        if (entry.localOnly && entry.base === null && entry.sent === undefined) {
-          droppedLocal = true;
-          continue;
+        const isLocalOnly = entry.localOnly === true && entry.base === null && entry.sent === undefined;
+        if (!isLocalOnly && entry.base === null && entry.sent !== undefined && !entry.sentTo?.startsWith("group:") && !this.foreign.has(path) && !this.isSupersededDraftSource(path)) {
+          this.pendingDraftDeletes.add(path);
+          this.dirty = true;
         }
-        const lost = { path, sha: entry.sha, base: entry.base };
+        const lost: Gone = { path, sha: entry.sha, base: entry.base, ...(isLocalOnly ? { localOnly: true as const } : {}) };
         this.removed.delete(path);
         this.removed.set(path, lost);
         gone.push(lost);
       }
-      for (const [newPath, oldPath] of [...this.draftRenamedFrom]) {
-        if (present.has(oldPath) || (!present.has(newPath) && !scanDropped.has(newPath))) {
+      for (const [newPath, sources] of [...this.draftRenamedFrom]) {
+        if (!present.has(newPath) && !scanRenamedTargets.has(newPath) && !scanDropped.has(newPath)) {
+          for (const src of sources) {
+            if (!present.has(src)) this.pendingDraftDeletes.add(src);
+          }
           this.draftRenamedFrom.delete(newPath);
+          this.dirty = true;
+          continue;
+        }
+        const kept = sources.filter((src) => !present.has(src));
+        if (kept.length === 0) {
+          this.draftRenamedFrom.delete(newPath);
+          this.dirty = true;
+        } else if (kept.length !== sources.length) {
+          this.draftRenamedFrom.set(newPath, kept);
+          this.dirty = true;
+        }
+      }
+      const scanNow = this.now();
+      for (const [path, at] of [...this.retiredDraftSources]) {
+        if (present.has(path) || scanNow - at >= RETIRED_DRAFT_TTL_MS) {
+          this.retiredDraftSources.delete(path);
+          this.dirty = true;
+        }
+      }
+      for (const [path, at] of [...this.recentlyAbandonedDrafts]) {
+        if (scanNow - at >= REVIEW_TOMBSTONE_TTL_MS) {
+          this.recentlyAbandonedDrafts.delete(path);
+          this.dirty = true;
+        }
+      }
+      for (const [path, one] of [...this.unflushedLiveDeletes]) {
+        if (present.has(path) || scanNow - one.at >= RETIRED_DRAFT_SETTLE_MS) {
+          this.unflushedLiveDeletes.delete(path);
           this.dirty = true;
         }
       }
@@ -288,11 +374,12 @@ export class FileCache {
           this.dirty = true;
         }
       }
-      this.dirty ||= hashed > 0 || gone.length > 0 || droppedLocal;
+      this.dirty ||= hashed > 0 || gone.length > 0;
       this.save();
       return { files, gone, hashed };
     } finally {
       this.activeScans.delete(scanDropped);
+      this.activeRenameTargets.delete(scanRenamedTargets);
     }
   }
 
@@ -307,18 +394,31 @@ export class FileCache {
 
   private applyDraftRename(oldPath: string, newPath: string): void {
     if (oldPath === newPath) return;
-    const rootSource = this.draftRenamedFrom.get(oldPath) ?? oldPath;
+    for (const scanDropped of this.activeScans) scanDropped.add(oldPath);
+    for (const scanRenamedTargets of this.activeRenameTargets) scanRenamedTargets.add(newPath);
+    const prior = this.draftRenamedFrom.get(oldPath) ?? [];
     this.draftRenamedFrom.delete(oldPath);
-    if (rootSource === newPath) {
-      this.dirty = true;
-      return;
+    this.retiredDraftSources.delete(newPath);
+    this.unflushedLiveDeletes.delete(oldPath);
+    this.unflushedLiveDeletes.delete(newPath);
+    this.pendingDraftDeletes.delete(oldPath);
+    const combined: string[] = [];
+    for (const src of [...prior, oldPath]) {
+      if (src !== "" && src !== newPath && !combined.includes(src)) combined.push(src);
     }
-    for (const [target, source] of [...this.draftRenamedFrom]) {
-      if (target === rootSource || source === newPath) this.draftRenamedFrom.delete(target);
+    for (const [target, sources] of [...this.draftRenamedFrom]) {
+      if (target === newPath) {
+        this.draftRenamedFrom.delete(target);
+        continue;
+      }
+      const kept = sources.filter((src) => src !== newPath);
+      if (kept.length === 0) this.draftRenamedFrom.delete(target);
+      else if (kept.length !== sources.length) this.draftRenamedFrom.set(target, kept);
     }
-    this.draftRenamedFrom.delete(newPath);
-    this.draftRenamedFrom.set(newPath, rootSource);
-    capMap(this.draftRenamedFrom, MAX_REMOVED);
+    if (combined.length > 0) {
+      this.draftRenamedFrom.set(newPath, combined);
+      capMap(this.draftRenamedFrom, MAX_REMOVED);
+    }
     this.dirty = true;
   }
 
@@ -328,10 +428,14 @@ export class FileCache {
   }
 
   clearDraftRenamesFrom(oldPath: string): void {
-    let changed = false;
-    for (const [target, source] of [...this.draftRenamedFrom]) {
-      if (source === oldPath) {
+    let changed = this.retiredDraftSources.delete(oldPath);
+    for (const [target, sources] of [...this.draftRenamedFrom]) {
+      const kept = sources.filter((src) => src !== oldPath);
+      if (kept.length === 0) {
         this.draftRenamedFrom.delete(target);
+        changed = true;
+      } else if (kept.length !== sources.length) {
+        this.draftRenamedFrom.set(target, kept);
         changed = true;
       }
     }
@@ -340,17 +444,90 @@ export class FileCache {
     this.save();
   }
 
-  draftRenameSource(newPath: string): string | null {
-    return this.draftRenamedFrom.get(newPath) ?? null;
+  draftRenameSources(newPath: string): readonly string[] {
+    return this.draftRenamedFrom.get(newPath) ?? [];
   }
 
-  draftRenameTargets(): ReadonlyMap<string, string> {
+  draftRenameSource(newPath: string): string | null {
+    const list = this.draftRenamedFrom.get(newPath);
+    return list && list.length > 0 ? list[0]! : null;
+  }
+
+  draftRenameTargets(): ReadonlyMap<string, readonly string[]> {
     return this.draftRenamedFrom;
   }
 
-  isSupersededDraftSource(oldPath: string): boolean {
-    for (const source of this.draftRenamedFrom.values()) if (source === oldPath) return true;
+  retireDraftSource(oldPath: string): void {
+    if (oldPath === "" || this.entries.has(oldPath)) return;
+    this.retiredDraftSources.delete(oldPath);
+    this.retiredDraftSources.set(oldPath, this.now());
+    capMap(this.retiredDraftSources, MAX_REMOVED);
+    this.dirty = true;
+    this.save();
+  }
+
+  retiredSources(): ReadonlyMap<string, number> {
+    return this.retiredDraftSources;
+  }
+
+  noteAbandonedDraft(path: string): void {
+    if (path === "") return;
+    this.recentlyAbandonedDrafts.delete(path);
+    this.recentlyAbandonedDrafts.set(path, this.now());
+    capMap(this.recentlyAbandonedDrafts, MAX_REMOVED);
+    this.dirty = true;
+    this.save();
+  }
+
+  wasRecentlyAbandonedDraft(path: string): boolean {
+    const at = this.recentlyAbandonedDrafts.get(path);
+    if (at === undefined) return false;
+    if (this.now() - at < REVIEW_TOMBSTONE_TTL_MS) return true;
+    this.recentlyAbandonedDrafts.delete(path);
+    this.dirty = true;
     return false;
+  }
+
+  noteUnflushedLiveDelete(path: string, sha: string): void {
+    if (path === "" || sha === "" || this.entries.has(path)) return;
+    this.unflushedLiveDeletes.delete(path);
+    this.unflushedLiveDeletes.set(path, { sha, at: this.now() });
+    capMap(this.unflushedLiveDeletes, MAX_REMOVED);
+    this.dirty = true;
+    this.save();
+  }
+
+  clearUnflushedLiveDelete(path: string): boolean {
+    if (!this.unflushedLiveDeletes.delete(path)) return false;
+    this.dirty = true;
+    this.save();
+    return true;
+  }
+
+  unflushedLiveDeleted(): ReadonlyMap<string, { sha: string; at: number }> {
+    return this.unflushedLiveDeletes;
+  }
+
+  isSupersededDraftSource(oldPath: string): boolean {
+    for (const sources of this.draftRenamedFrom.values()) if (sources.includes(oldPath)) return true;
+    const retiredAt = this.retiredDraftSources.get(oldPath);
+    if (retiredAt === undefined) return false;
+    if (!this.entries.has(oldPath) && this.now() - retiredAt < RETIRED_DRAFT_TTL_MS) return true;
+    this.retiredDraftSources.delete(oldPath);
+    this.dirty = true;
+    return false;
+  }
+
+  forgetDraftRenameSource(newPath: string, oldPath: string): boolean {
+    const list = this.draftRenamedFrom.get(newPath);
+    if (!list) return false;
+    const kept = list.filter((src) => src !== oldPath);
+    if (kept.length === list.length) return false;
+    if (kept.length === 0) this.draftRenamedFrom.delete(newPath);
+    else this.draftRenamedFrom.set(newPath, kept);
+    this.dirty = true;
+    this.save();
+    return true;
   }
 
   forgetDraftRename(newPath: string): boolean {
@@ -358,6 +535,28 @@ export class FileCache {
     this.dirty = true;
     this.save();
     return true;
+  }
+
+  queueDraftDelete(path: string): void {
+    if (path === "" || this.isSupersededDraftSource(path) || this.pendingDraftDeletes.has(path)) return;
+    this.pendingDraftDeletes.add(path);
+    this.dirty = true;
+    this.save();
+  }
+
+  finishDraftDelete(path: string): boolean {
+    if (!this.pendingDraftDeletes.delete(path)) return false;
+    this.dirty = true;
+    this.save();
+    return true;
+  }
+
+  hasPendingDraftDelete(path: string): boolean {
+    return this.pendingDraftDeletes.has(path);
+  }
+
+  draftDeletes(): ReadonlySet<string> {
+    return this.pendingDraftDeletes;
   }
 
   matched(path: string, sha: string): void {
@@ -391,7 +590,13 @@ export class FileCache {
     this.dirty = true;
   }
 
-  reconcile(repo: ReadonlyMap<string, string>, inFlight: ReadonlySet<string>, draftsKnown: boolean): void {
+  reconcile(
+    repo: ReadonlyMap<string, string>,
+    inFlight: ReadonlySet<string>,
+    draftsKnown: boolean,
+    rawInFlight?: ReadonlySet<string>,
+    closingDeletes = false,
+  ): void {
     for (const [path, entry] of this.entries) {
       const repoSha = repo.get(path);
       if (repoSha === entry.sha) this.matched(path, entry.sha);
@@ -399,20 +604,55 @@ export class FileCache {
       else if (repoSha !== undefined || inFlight.has(path)) this.setLocalOnly(path, false);
       else if (draftsKnown && entry.base === null && entry.sent === undefined) this.setLocalOnly(path, true);
     }
-    for (const [newPath, oldSource] of [...this.draftRenamedFrom]) {
-      if (repo.has(oldSource)) {
+    for (const [newPath, sources] of [...this.draftRenamedFrom]) {
+      const kept = sources.filter((src) => !repo.has(src));
+      if (kept.length === 0) {
         this.draftRenamedFrom.delete(newPath);
+        this.dirty = true;
+      } else if (kept.length !== sources.length) {
+        this.draftRenamedFrom.set(newPath, kept);
         this.dirty = true;
       }
     }
-    if (draftsKnown) {
-      for (const gone of [...this.removed.values()]) {
-        if (gone.base === null && !repo.has(gone.path) && !inFlight.has(gone.path) && !this.isSupersededDraftSource(gone.path)) this.settled(gone.path);
+    const rawSet = rawInFlight ?? inFlight;
+    const now = this.now();
+    for (const [path, at] of [...this.retiredDraftSources]) {
+      if (repo.has(path) || this.entries.has(path) || now - at >= RETIRED_DRAFT_TTL_MS || (draftsKnown && !rawSet.has(path) && now - at >= RETIRED_DRAFT_SETTLE_MS)) {
+        this.retiredDraftSources.delete(path);
+        this.dirty = true;
+      }
+    }
+    for (const [path, at] of [...this.recentlyAbandonedDrafts]) {
+      if (repo.has(path) || now - at >= REVIEW_TOMBSTONE_TTL_MS) {
+        this.recentlyAbandonedDrafts.delete(path);
+        this.dirty = true;
+      }
+    }
+    for (const [path, one] of [...this.unflushedLiveDeletes]) {
+      if (repo.has(path) || this.entries.has(path) || now - one.at >= RETIRED_DRAFT_SETTLE_MS) {
+        this.unflushedLiveDeletes.delete(path);
+        this.dirty = true;
+      }
+    }
+    for (const path of [...this.pendingDraftDeletes]) {
+      if (repo.has(path) || (!closingDeletes && draftsKnown && !rawSet.has(path))) {
+        this.pendingDraftDeletes.delete(path);
+        this.dirty = true;
+      }
+    }
+    for (const gone of [...this.removed.values()]) {
+      if (gone.localOnly && !this.pendingDraftDeletes.has(gone.path) && draftsKnown && !rawSet.has(gone.path)) {
+        this.settled(gone.path);
+        continue;
+      }
+      if (draftsKnown && gone.base === null && !repo.has(gone.path) && !inFlight.has(gone.path) && !this.isSupersededDraftSource(gone.path) && !this.pendingDraftDeletes.has(gone.path)) {
+        this.settled(gone.path);
       }
     }
   }
 
   sentAs(path: string, sha: string | null, to: string | null = null, agreement: { agreed?: string; commit?: string; at?: number } = {}): void {
+    if (sha !== null && this.recentlyAbandonedDrafts.delete(path)) this.dirty = true;
     const entry = this.entries.get(path);
     const next: Pick<CacheEntry, "sent" | "sentTo" | "agreed" | "sentCommit" | "sentAt"> =
       sha === null ? {} : { sent: sha, ...(to === null ? {} : { sentTo: to }), ...(agreement.agreed === undefined ? {} : { agreed: agreement.agreed }), ...(agreement.commit === undefined ? {} : { sentCommit: agreement.commit }), ...(agreement.at === undefined ? {} : { sentAt: agreement.at }) };

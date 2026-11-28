@@ -20,7 +20,7 @@ export type { AutoCommitOutcome };
 
 export interface SendHooks {
   memberBranch?: string;
-  edit: true;
+  edit?: true;
   ended?: true;
   policy?: StayDrafts;
   notWritten(path: string): void;

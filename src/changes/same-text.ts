@@ -46,11 +46,10 @@ export async function sameAsRepo(deps: SameTextDeps, path: string, doc: Document
   const kind = pathKind(path);
   const structured = kind === "board" || kind === "base";
   if (!structured && kind !== "note") return "differs";
-  if (kind === "board" && !mayRead) return "needs-read";
   const bytes = await deps.readBytes(path);
   if (bytes === null || (await gitBlobSha(bytes)) !== sha) return "unknown";
   const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-  if (kind !== "board" && layoutShas(text).has(repoSha)) return "same";
+  if (layoutShas(text).has(repoSha) && (kind !== "board" || sameCanvasText(text, text))) return "same";
   if (!structured && !hasFrontMatter(text)) return "differs";
   if (!mayRead) return "needs-read";
   const theirs = await deps.readBlob(doc, repoSha);
@@ -114,33 +113,66 @@ interface Comparison {
   doc: DocumentRef;
   sha: string;
   against: string;
-  base: boolean;
+  stage: "base" | "repo" | "sent";
   repoSha: string | undefined;
 }
 
 export async function settleSameness({ files, repo, cache, ask, documentFor, alive, unsure, notBase, now, prefetch }: SettleSameness): Promise<number> {
   const queue: Comparison[] = [];
   const first: Comparison[] = [];
+  const nextTarget = (
+    entry: CacheEntry,
+    repoSha: string | undefined,
+    after?: "base" | "repo",
+  ): { against: string; stage: "base" | "repo" | "sent" } | null => {
+    const against = (blob: string): boolean => (unsure.get(`${entry.sha}|${blob}`) ?? 0) > now();
+    if (after === undefined && entry.base !== null && entry.base !== repoSha && !notBase.has(`${entry.sha}|${entry.base}`)) {
+      return against(entry.base) ? null : { against: entry.base, stage: "base" };
+    }
+    if (after !== "repo" && repoSha !== undefined && entry.same !== repoSha && entry.differs !== repoSha && !notBase.has(`${entry.sha}|${repoSha}`)) {
+      return against(repoSha) ? null : { against: repoSha, stage: "repo" };
+    }
+    if (
+      entry.sent !== undefined &&
+      entry.sent !== entry.sha &&
+      entry.sent !== repoSha &&
+      entry.sent !== entry.base &&
+      entry.same !== entry.sent &&
+      !notBase.has(`${entry.sha}|${entry.sent}`)
+    ) {
+      return against(entry.sent) ? null : { against: entry.sent, stage: "sent" };
+    }
+    return null;
+  };
+  const chainedTargets = (entry: CacheEntry, repoSha: string | undefined, fromStage: "base" | "repo" | "sent"): Array<{ against: string; stage: "base" | "repo" | "sent" }> => {
+    const out: Array<{ against: string; stage: "base" | "repo" | "sent" }> = [];
+    let stage: "base" | "repo" | "sent" = fromStage;
+    while (stage !== "sent") {
+      const next = nextTarget(entry, repoSha, stage);
+      if (!next) break;
+      out.push(next);
+      stage = next.stage;
+    }
+    return out;
+  };
   for (const [path, entry] of files) {
     const repoSha = repo.get(path);
     const doc = documentFor(path);
     if (!doc || repoSha === entry.sha || unchangedHere(entry) || (repoSha !== undefined && entry.same === repoSha)) continue;
-    const against = (blob: string): boolean => (unsure.get(`${entry.sha}|${blob}`) ?? 0) > now();
-    if (entry.base !== null && entry.base !== repoSha && !notBase.has(`${entry.sha}|${entry.base}`)) {
-      if (!against(entry.base)) first.push({ path, doc, sha: entry.sha, against: entry.base, base: true, repoSha });
-      continue;
-    }
-    if (repoSha === undefined || entry.differs === repoSha || against(repoSha)) continue;
-    first.push({ path, doc, sha: entry.sha, against: repoSha, base: false, repoSha });
+    const picked = nextTarget(entry, repoSha);
+    if (picked) first.push({ path, doc, sha: entry.sha, against: picked.against, stage: picked.stage, repoSha });
   }
   const answer = (one: Comparison, result: Sameness): Comparison | null => {
     if (result === "same") cache.sameAs(one.path, one.sha, one.against);
     else if (result === "unknown") unsure.set(`${one.sha}|${one.against}`, now() + UNSURE_FOR_MS);
-    else if (result === "differs" && !one.base) cache.differsFrom(one.path, one.sha, one.against);
     else if (result === "differs") {
+      if (one.stage === "repo") cache.differsFrom(one.path, one.sha, one.against);
       notBase.add(`${one.sha}|${one.against}`);
-      const repoSha = one.repoSha;
-      if (repoSha !== undefined && files.get(one.path)?.same !== repoSha && files.get(one.path)?.differs !== repoSha && (unsure.get(`${one.sha}|${repoSha}`) ?? 0) <= now()) return { ...one, against: repoSha, base: false };
+      if (one.stage !== "sent") {
+        const current = files.get(one.path);
+        const chained = current ? nextTarget(current, one.repoSha, one.stage) : null;
+        if (chained) return { ...one, against: chained.against, stage: chained.stage };
+      }
     }
     return null;
   };
@@ -166,17 +198,14 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
     };
     for (const one of queue.slice(0, SAME_PER_LOOK)) {
       addRead(one.doc, one.against);
-      const repoSha = one.repoSha;
-      if (
-        one.base &&
-        repoSha !== undefined &&
-        repoSha !== one.against &&
-        files.get(one.path)?.same !== repoSha &&
-        files.get(one.path)?.differs !== repoSha &&
-        (unsure.get(`${one.sha}|${repoSha}`) ?? 0) <= now()
-      ) {
-        addRead(one.doc, repoSha);
-        chainedPrefetched.add(`${one.path}\n${one.sha}\n${repoSha}`);
+      const current = files.get(one.path);
+      if (current) {
+        for (const chained of chainedTargets(current, one.repoSha, one.stage)) {
+          if (chained.against !== one.against) {
+            addRead(one.doc, chained.against);
+            chainedPrefetched.add(`${one.path}\n${one.sha}\n${chained.against}`);
+          }
+        }
       }
     }
     if (toPrefetch.length > 0) await prefetch(toPrefetch);
@@ -187,12 +216,12 @@ export async function settleSameness({ files, repo, cache, ask, documentFor, ali
       if (!alive()) return;
       reads++;
       const one = queue.shift()!;
-      const next = answer(one, await ask(one.path, one.doc, one.sha, one.against, true));
-      if (!next) continue;
-      if (chainedPrefetched.has(`${next.path}\n${next.sha}\n${next.against}`)) {
+      let next = answer(one, await ask(one.path, one.doc, one.sha, one.against, true));
+      while (next && chainedPrefetched.has(`${next.path}\n${next.sha}\n${next.against}`)) {
         if (!alive()) return;
-        answer(next, await ask(next.path, next.doc, next.sha, next.against, true));
-      } else queue.push(next);
+        next = answer(next, await ask(next.path, next.doc, next.sha, next.against, true));
+      }
+      if (next) queue.push(next);
     }
   };
   await Promise.all(Array.from({ length: Math.min(AT_ONCE, queue.length) }, worker));

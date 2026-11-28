@@ -1,7 +1,8 @@
 import type { PublishQuota } from "./lifecycle-copy";
 import { type GroupOverview, isGroupBranch } from "./groups";
 import { sameLogin } from "./people";
-import { isSaveBranchFor, type SavesTo } from "./review-branch-names";
+import type { InFlightMergeableState } from "./pr-info";
+import { branchNamespace, isSaveBranchFor, SHARED_NAMESPACE, type SavesTo, userNamespace } from "./review-branch-names";
 
 export const IN_FLIGHT_ANSWER_SHAPE = 4;
 
@@ -23,6 +24,7 @@ export interface InFlightBranch {
   prUrl?: string;
   prIsDraft?: boolean;
   prAuthorLogin?: string | null;
+  prMergeableState?: InFlightMergeableState | null;
   ownerLogin?: string;
   writers?: string[];
   boardNotes?: string[];
@@ -54,6 +56,47 @@ export const isViewersBranch = (entry: Pick<InFlightBranch, "prAuthorLogin" | "p
   const by = openedBy(entry);
   return sameLogin(by, viewerLogin);
 };
+
+export function withViewerSaveEntries(
+  entries: readonly InFlightBranch[] | undefined,
+  viewerLogin: string | null,
+): readonly InFlightBranch[] | undefined {
+  if (!entries || entries.length === 0 || !viewerLogin) return entries;
+  const own = userNamespace(viewerLogin);
+  if (own === "" || own === SHARED_NAMESPACE) return entries;
+  let changed = false;
+  const mapped = entries.map((entry) => {
+    if (
+      openedBy(entry) === null &&
+      branchNamespace(entry.branch) === own &&
+      (entry.authorLogin == null || entry.authorLogin === "" || sameLogin(entry.authorLogin, viewerLogin)) &&
+      !(entry.writers && entry.writers.length > 0 && !entry.writers.some((w) => sameLogin(w, viewerLogin)))
+    ) {
+      changed = true;
+      return { ...entry, prAuthorLogin: viewerLogin };
+    }
+    return entry;
+  });
+  return changed ? mapped : entries;
+}
+
+export function withViewerSaveAttribution(
+  paths: Readonly<Record<string, readonly InFlightBranch[]>>,
+  viewerLogin: string | null,
+  _saves?: SavesTo,
+): InFlightMap {
+  if (!viewerLogin) return paths as InFlightMap;
+  const own = userNamespace(viewerLogin);
+  if (own === "" || own === SHARED_NAMESPACE) return paths as InFlightMap;
+  let changed = false;
+  const next: InFlightMap = {};
+  for (const [path, entries] of Object.entries(paths)) {
+    const mapped = withViewerSaveEntries(entries, viewerLogin);
+    if (mapped !== entries) changed = true;
+    next[path] = (mapped ?? entries) as InFlightBranch[];
+  }
+  return changed ? next : (paths as InFlightMap);
+}
 
 export interface FileReviewPick {
   group: { entry: InFlightBranch; overview: GroupOverview } | null;

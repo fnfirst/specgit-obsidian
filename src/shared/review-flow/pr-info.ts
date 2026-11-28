@@ -11,6 +11,8 @@ export type PrState = "draft" | "open" | "merged" | "closed";
 
 export type PrMergeableState = "clean" | "dirty" | "blocked" | "unknown";
 
+export type InFlightMergeableState = PrMergeableState | "behind" | "unstable";
+
 export interface GroupLabel {
   name: string;
   files: number;

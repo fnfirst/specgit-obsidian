@@ -245,7 +245,8 @@ export class SentMemory {
           : null;
     const existing = this.host.model.row(path)?.review ?? null;
     const existingPr = existing?.pr;
-    if (existingPr && existingPr.state !== "merged" && existingPr.state !== "closed") return;
+    const replacingPr = typeof raw?.number === "number" && raw.number > 0 && existingPr != null && raw.number !== existingPr.number;
+    if (existingPr && existingPr.state !== "merged" && existingPr.state !== "closed" && !replacingPr) return;
     if (!raw || typeof raw.number !== "number" || raw.number <= 0) {
       if (branch !== null && (existing === null || !reviewIsOpen(existing))) this.host.model.learn(path, { reviewBranch: branch, pr: null });
       return;
@@ -264,7 +265,7 @@ export class SentMemory {
       ...(raw.mergeableState ? { mergeableState: raw.mergeableState } : {}),
       ...(raw.reviewPolicy ? { reviewPolicy: raw.reviewPolicy } : {}),
     };
-    const fallbackBranch = existing !== null && reviewIsOpen(existing) ? existing.reviewBranch : null;
+    const fallbackBranch = existing !== null && reviewIsOpen(existing) && !replacingPr ? existing.reviewBranch : null;
     this.host.model.learn(path, { reviewBranch: branch ?? fallbackBranch, pr });
   }
 

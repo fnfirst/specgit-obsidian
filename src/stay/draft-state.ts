@@ -10,6 +10,7 @@ export interface Draft {
   prNumber: number | null;
   inGroup?: true;
   viaGroup?: true;
+  renamedFrom?: string;
   removes?: ReadonlyMap<string, string | null>;
 }
 

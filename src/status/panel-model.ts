@@ -22,6 +22,7 @@ import {
 } from "../shared/status-panel";
 import { type ChangeRow, type ChangesState, draftEntry } from "../changes/model";
 import { writersOf } from "../changes/aware";
+import { withViewerSavePaths } from "../changes/batch-reviews";
 import { type DocumentRef, noteName, pathKind } from "../mapping";
 import { placeUnder } from "../changes/vault-state";
 import { phaseOf, type NoteStatus } from "../status";
@@ -101,6 +102,12 @@ export function factsFromPr(pr: PrInfo | null | undefined): ReviewFacts | null {
 }
 
 const peopleOf = (logins: readonly string[] | undefined): StatusPerson[] => (logins ?? []).map((login) => ({ login }));
+
+function withViewerSaveFlight(flight: InFlightResponse | null, viewer: string): InFlightResponse | null {
+  if (!flight) return null;
+  const paths = withViewerSavePaths(flight.paths, viewer);
+  return paths === flight.paths ? flight : { ...flight, paths };
+}
 
 function branchesOf(flight: InFlightResponse | null, viewer: string): Map<string, InFlightBranch> {
   const branches = new Map<string, InFlightBranch>();
@@ -196,7 +203,7 @@ export interface VaultPanelBase {
 
 export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
   const { state, viewer, now } = input;
-  const flight = input.flight;
+  const flight = withViewerSaveFlight(input.flight, viewer);
   const branches = branchesOf(flight, viewer);
   const ownListed = ownListedOf(flight, viewer);
   const firstListed = new Map(flight ? inFlightEntries(flight, viewer, flight.base).map((entry) => [entry.path, entry] as const) : []);
@@ -265,10 +272,23 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
     const settled = state.aware?.settled.has(path) === true;
     const branch = branches.get(path) ?? null;
     const wroteIn = state.aware?.own.has(path) === true || (branch !== null && writersOf(branch).some((login) => sameLogin(login, viewer)));
-    const theirs = listedOwn === null && settled && !wroteIn && (row.entry === null || isSomeoneElses(row.entry, viewer)) ? (firstListed.get(path) ?? null) : null;
+    const rawCandidate =
+      listedOwn === null && settled && (row.entry === null || isSomeoneElses(row.entry, viewer))
+        ? (firstListed.get(path) ?? null)
+        : null;
+    const candidate =
+      rawCandidate && isSomeoneElses(rawCandidate, viewer) && (branch === null || !isGroupBranch(branch.branch))
+        ? rawCandidate
+        : null;
+    const candidateFacts =
+      candidate && candidate.prNumber > 0
+        ? (input.facts.get(candidate.prNumber) ??
+          (row.entry?.prNumber === candidate.prNumber && !(row.light && !row.entry.isDraft) ? factsFromPr(row.review?.pr) : null))
+        : null;
+    const theirs = candidate && (!wroteIn || !(candidateFacts?.isDraft ?? candidate.isDraft)) ? candidate : null;
     if (theirs) {
       const reviewRow = theirs.prNumber > 0 ? reviewRowOf(theirs, branch, input.docFor(path)) : null;
-      return { entry: theirs, facts: theirs.prNumber > 0 ? (input.facts.get(theirs.prNumber) ?? null) : null, acts: reviewRow ?? row, url: theirs.prUrl || null };
+      return { entry: theirs, facts: candidateFacts, acts: reviewRow ?? row, url: theirs.prUrl || null };
     }
     const reviewed = row.entry ?? listedOwn ?? row.unit;
     const facts = row.entry ? factsOf(row.entry.prNumber, row.light && !row.entry.isDraft ? null : row.review?.pr, path, row.review?.pr) : listedOwn ? factsOf(listedOwn.prNumber, null, path) : null;

@@ -39,7 +39,6 @@ import {
   unitLabel,
   unitsWords,
   asksBeforeSeparate,
-  isGroupBranch,
   newSeparateReviews,
   SEPARATE_ASK,
   ATTACHMENT_WORDS,
@@ -73,6 +72,7 @@ import type { ChangesContext } from "../review/words";
 import type { VaultFile } from "./vault-state";
 import { readSince, type SinceView } from "./vault-since";
 import { isAnotherAuthor } from "./review-owner";
+import { closeOneDeletedDraft, closeOneRetiredDraft, closeSupersededDraftsFor, type DraftCloseHooks } from "./draft-lifecycle";
 
 const READS: ReadonlySet<string> = new Set(["status", "groups", "mergePreview", "catchUpPreview", "reviewers", "movesKnown"]);
 
@@ -111,7 +111,11 @@ export interface SubmitPlan {
 export class ChangesFlows {
   private readonly uploaded = new Map<string, string | null>();
   private readonly pendingCloseRetries = new Set<string>();
+  private readonly closingDeletedDrafts = new Map<string, Promise<"done" | "retry">>();
+  private readonly abandoningDeletedDrafts = new Map<string, { expectPr: number | null; done: Promise<boolean> }>();
   private retryingCloses = false;
+  private closingRetired = false;
+  private stayOnCheck: (() => boolean) | null = null;
 
   private readonly deps: FlowDeps;
   private lostAnswers = 0;
@@ -186,12 +190,41 @@ export class ChangesFlows {
       memory: this.memory,
       meter: this.meter,
       goneAt: this.goneAt,
+      isClosingDeletedDraft: (path) => this.closingDeletedDrafts.has(path),
       sendOnce: (row, options) => this.sendOnce(row, options),
       sendAttachmentsAlone: (row, deps) => this.sendAttachmentsAlone(row, deps, false, { onlyMine: true, branch: row.review?.reviewBranch ?? null }),
     });
     this.deps.model.onLooked((looked) => {
-      if (looked && this.pendingCloseRetries.size > 0) void this.retryPendingDraftCloses();
+      if (!looked) return;
+      if (this.pendingCloseRetries.size > 0) void this.retryPendingDraftCloses();
+      const lateRetired = this.deps.model.takeLateRetiredCloses();
+      if (lateRetired.length > 0) void this.closeLateRetiredDrafts(lateRetired);
+      if (this.stayOnCheck?.() === true && this.deps.model.pendingDraftDeletes().size > 0) void this.closeDeletedDrafts();
     });
+  }
+
+  bindStayOn(fn: () => boolean): void {
+    this.stayOnCheck = fn;
+    this.deps.model.setStayOnCheck(fn);
+  }
+
+  noteLocalDelete(path: string): void {
+    this.memory.forget(path);
+    this.deps.model.noteLocalDelete(path);
+  }
+
+  private draftCloseHooks(): DraftCloseHooks {
+    return {
+      clearUploaded: () => this.uploaded.clear(),
+      forgetMemory: (path) => this.memory.forget(path),
+      onAbandonStart: (path, expectPr, done) => {
+        const record = { expectPr, done };
+        this.abandoningDeletedDrafts.set(path, record);
+        void done.finally(() => {
+          if (this.abandoningDeletedDrafts.get(path) === record) this.abandoningDeletedDrafts.delete(path);
+        });
+      },
+    };
   }
 
   private async retryPendingDraftCloses(): Promise<void> {
@@ -203,6 +236,45 @@ export class ChangesFlows {
       }
     } finally {
       this.retryingCloses = false;
+    }
+  }
+
+  private async closeLateRetiredDrafts(paths: readonly string[]): Promise<void> {
+    if (this.closingRetired || paths.length === 0) return;
+    this.closingRetired = true;
+    try {
+      for (const oldPath of paths) {
+        await closeOneRetiredDraft(oldPath, this.deps, this.draftCloseHooks());
+      }
+    } finally {
+      this.closingRetired = false;
+    }
+  }
+
+  private closeDeletedDraft(path: string, deps: FlowDeps): Promise<"done" | "retry"> {
+    const existing = this.closingDeletedDrafts.get(path);
+    if (existing) return existing;
+    const run = closeOneDeletedDraft(path, deps, this.draftCloseHooks())
+      .then((outcome) => {
+        if (this.closingDeletedDrafts.get(path) === run) this.closingDeletedDrafts.delete(path);
+        if (outcome === "done" && deps.vault.exists(path)) void deps.model.refresh();
+        return outcome;
+      })
+      .catch((err) => {
+        if (this.closingDeletedDrafts.get(path) === run) this.closingDeletedDrafts.delete(path);
+        throw err;
+      });
+    this.closingDeletedDrafts.set(path, run);
+    return run;
+  }
+
+  private async closeDeletedDrafts(): Promise<void> {
+    if (this.stayOnCheck?.() !== true) return;
+    const pending = [...this.deps.model.pendingDraftDeletes()].filter((path) => !this.closingDeletedDrafts.has(path));
+    if (pending.length === 0) return;
+    for (const path of pending) {
+      if (this.stayOnCheck?.() !== true || this.closingDeletedDrafts.has(path)) continue;
+      await this.closeDeletedDraft(path, this.deps);
     }
   }
 
@@ -292,15 +364,22 @@ export class ChangesFlows {
     const main: MainFile = options.toReview ? { kind: "absent" } : await deps.gitFile(doc);
     if (main.kind === "unreadable") return { ok: false, unreadable: true, message: UNREADABLE(name) };
     if (!options.toReview && deletedOnGitHub(row, main)) return options.quiet ? { ok: false, held: true } : { ok: false, message: DELETED_ON_GITHUB(name) };
+    const closingPrevDelete = main.kind === "absent" && this.closingDeletedDrafts.has(change.path);
+    if (main.kind === "absent" && deps.model.hasPendingDraftDelete(change.path) && !closingPrevDelete) {
+      const closedPrev = await this.closeDeletedDraft(change.path, deps);
+      if (closedPrev === "retry") return { ok: false, unreadable: true, message: UNREADABLE(name) };
+    }
     if (options.quiet && (options.toReview || options.edit)) {
       if (options.edit && (main.kind !== "file" || !lastMatched(row, main))) return { ok: false, held: true };
     } else if (options.quiet) {
       if (main.kind === "file") return { ok: false, held: true };
-      const existing = await deps.review.status(doc);
-      if (existing === null) return { ok: false, unreadable: true, message: UNREADABLE(name) };
-      if (reviewIsOpen(existing)) return this.alreadyThere(change.path, doc, existing, text, memory);
+      if (!closingPrevDelete) {
+        const existing = await deps.review.status(doc);
+        if (existing === null) return { ok: false, unreadable: true, message: UNREADABLE(name) };
+        if (reviewIsOpen(existing)) return this.alreadyThere(change.path, doc, existing, text, memory);
+      }
     }
-    const branch = options.quiet ? options.branch : (row.theirs?.branch ?? row.review?.reviewBranch ?? undefined);
+    const branch = closingPrevDelete ? undefined : (options.quiet ? options.branch : (row.theirs?.branch ?? row.review?.reviewBranch ?? undefined));
     const found = options.found ?? (branch ? await deps.branchFile(doc, branch) : undefined);
     if (found?.kind === "unreadable") return { ok: false, unreadable: true, message: UNREADABLE(name) };
     const first = found?.kind === "file" ? found : undefined;
@@ -392,6 +471,9 @@ export class ChangesFlows {
     const expectMain = main.kind === "file" ? main.sha : null;
     const lenient = step.options.auto !== undefined;
     const automatic = lenient || step.options.quiet === true;
+    if (!deps.vault.exists(change.path) || deps.model.isSupersededDraftSource(change.path)) {
+      return automatic ? { ok: false, unreadable: true, message: GONE_FROM_VAULT } : { ok: false, message: GONE_FROM_VAULT };
+    }
     const baselines: string[] = [];
     if (main.kind === "file") baselines.push(main.text);
     if (there !== undefined) baselines.push(there.text);
@@ -402,9 +484,87 @@ export class ChangesFlows {
     const like = main.kind === "file" ? main.text : options.toReview ? there?.text : undefined;
     const outgoing = like === undefined ? body : inRepoEndings(body, like);
     const createOver = lenient ? null : (this.deps.deletedAt?.(change.path) ?? null);
-    const saved = await this.backs.save(row.doc, outgoing, await deps.review.save(doc, outgoing, options.toReview ? undefined : expectMain, { toExistingReview: options.toReview === true, ...(createOver === null ? {} : { createOver }), ...(options.afresh ? { afresh: true } : {}), ...(row.review?.reviewBranch ? { hasReview: true } : {}), ...(there ? { expectBranch: there.sha } : {}), ...(named.length > 0 ? { attachments: named.map((attachment) => attachmentEntry(attachment, carried.has(attachment))), ...(lenient ? { attachmentsKeepGoing: true as const } : {}) } : {}) }));
+    const inFlightAbandon = main.kind === "absent" ? this.abandoningDeletedDrafts.get(change.path) : undefined;
+    const hadPendingDelete =
+      main.kind === "absent" &&
+      (inFlightAbandon !== undefined || this.closingDeletedDrafts.has(change.path) || deps.model.hasPendingDraftDelete(change.path));
+    const doomedTarget = hadPendingDelete ? deps.model.deletedDraftTarget(change.path) : undefined;
+    const runSave = async (override?: { afresh?: true; clean?: true }): Promise<StepResult> => {
+      const useClean = override?.clean === true;
+      const effectiveThere = useClean ? undefined : there;
+      const toExisting = useClean ? false : options.toReview === true;
+      const hasReview = useClean ? false : Boolean(row.review?.reviewBranch);
+      const useAfresh = override?.afresh === true || options.afresh === true;
+      return this.backs.save(
+        row.doc,
+        outgoing,
+        await deps.review.save(doc, outgoing, toExisting ? undefined : expectMain, {
+          toExistingReview: toExisting,
+          ...(createOver === null ? {} : { createOver }),
+          ...(useAfresh ? { afresh: true } : {}),
+          ...(hasReview ? { hasReview: true } : {}),
+          ...(effectiveThere ? { expectBranch: effectiveThere.sha } : {}),
+          ...(named.length > 0 ? { attachments: named.map((attachment) => attachmentEntry(attachment, carried.has(attachment))), ...(lenient ? { attachmentsKeepGoing: true as const } : {}) } : {}),
+        }),
+      );
+    };
+    deps.model.noteSavingDraft(change.path, true);
+    let saved: StepResult;
+    try {
+      saved = await runSave();
+      const activeAbandon = this.abandoningDeletedDrafts.get(change.path) ?? inFlightAbandon;
+      const doomedPr = activeAbandon?.expectPr ?? doomedTarget?.prNumber ?? null;
+      const savedPr = saved.ok ? ((saved.body.pr as { number?: unknown } | null | undefined)?.number ?? null) : null;
+      const hitDoomedBranch =
+        hadPendingDelete &&
+        (saved.ok
+          ? doomedPr !== null
+            ? savedPr === doomedPr
+            : activeAbandon !== undefined || saved.body.unchanged === true
+          : saved.status === 409);
+      if (hitDoomedBranch) {
+        let closedDoomed = false;
+        deps.model.noteSavingDraft(change.path, false);
+        try {
+          const stillClosing = this.closingDeletedDrafts.get(change.path);
+          if (activeAbandon) {
+            closedDoomed = await activeAbandon.done;
+            if (stillClosing) await stillClosing;
+          } else if (stillClosing) {
+            closedDoomed = (await stillClosing) === "done";
+          } else if (deps.model.hasPendingDraftDelete(change.path)) {
+            closedDoomed = (await this.closeDeletedDraft(change.path, deps)) === "done";
+          } else {
+            closedDoomed = true;
+          }
+        } finally {
+          deps.model.noteSavingDraft(change.path, true);
+        }
+        if (!closedDoomed) {
+          return { ok: false, unreadable: true, message: UNREADABLE(noteName(change.path)) };
+        }
+        if (!deps.vault.exists(change.path) || deps.model.isSupersededDraftSource(change.path)) {
+          return automatic ? { ok: false, unreadable: true, message: GONE_FROM_VAULT } : { ok: false, message: GONE_FROM_VAULT };
+        }
+        saved = await runSave({ afresh: true, clean: true });
+      } else if (!saved.ok && saved.status === 409 && saved.code === "conflict" && main.kind === "absent" && !options.toReview && !options.afresh && deps.model.wasRecentlyClosedDraft(change.path)) {
+        saved = await runSave({ afresh: true, clean: true });
+      }
+    } finally {
+      deps.model.noteSavingDraft(change.path, false);
+    }
     if (saved.ok && createOver !== null) this.deps.restored?.(change.path);
     if (saved.ok) {
+      if (deps.model.isSupersededDraftSource(change.path)) {
+        await closeOneRetiredDraft(change.path, deps, this.draftCloseHooks());
+        return automatic ? { ok: false, unreadable: true, message: GONE_FROM_VAULT } : { ok: false, message: GONE_FROM_VAULT };
+      }
+      if (!deps.vault.exists(change.path)) {
+        deps.model.queuePendingDraftDelete(change.path);
+        if (this.stayOnCheck?.() === true) await this.closeDeletedDraft(change.path, deps);
+        return automatic ? { ok: false, unreadable: true, message: GONE_FROM_VAULT } : { ok: false, message: GONE_FROM_VAULT };
+      }
+      deps.model.finishDraftDelete(change.path);
       const savedBranch = typeof saved.body.reviewBranch === "string" ? saved.body.reviewBranch : (row.review?.reviewBranch ?? null);
       if (named.length > 0) {
         const sent = await this.sendMissingAttachments(row, named, saved.body, savedBranch, { expectMain, outgoing, options }, deps, problems, lenient);
@@ -492,82 +652,15 @@ export class ChangesFlows {
     return null;
   }
 
-  private async closeSupersededDraft(newPath: string, deps: FlowDeps): Promise<void> {
-    const oldPath = deps.model.draftRenamedFrom(newPath);
-    if (!oldPath || oldPath === newPath) {
-      this.pendingCloseRetries.delete(newPath);
-      return;
-    }
-    if (deps.vault.exists(oldPath) || (await deps.readText(oldPath)) !== null || deps.model.hasRepoFile(oldPath)) {
-      this.pendingCloseRetries.delete(newPath);
-      deps.model.forgetDraftRename(newPath);
-      return;
-    }
-    const oldDoc = deps.documentFor(oldPath);
-    if (!oldDoc) {
-      this.pendingCloseRetries.delete(newPath);
-      deps.model.forgetDraftRename(newPath);
-      return;
-    }
-    const oldMain = await deps.gitFile(oldDoc);
-    if (oldMain.kind === "unreadable") {
-      this.pendingCloseRetries.add(newPath);
-      return;
-    }
-    if (oldMain.kind === "file") {
-      this.pendingCloseRetries.delete(newPath);
-      deps.model.forgetDraftRename(newPath);
-      return;
-    }
-    const status = await deps.review.status(oldDoc);
-    if (status === null) {
-      this.pendingCloseRetries.add(newPath);
-      return;
-    }
-    if (!reviewIsOpen(status) || !status.reviewBranch) {
-      this.pendingCloseRetries.delete(newPath);
-      this.memory.forget(oldPath);
-      deps.model.learnSent(oldPath, null);
-      deps.model.forgetDraftRename(newPath);
-      deps.model.clearInFlightPath(oldPath);
-      return;
-    }
-    const viewer = deps.viewerLogin();
-    const ownDraft =
-      !isGroupBranch(status.reviewBranch) &&
-      !status.pr?.group &&
-      status.pr?.isDraft !== false &&
-      !isAnotherAuthor(status.pr?.authorLogin ?? null, viewer);
-    if (!ownDraft) {
-      this.pendingCloseRetries.delete(newPath);
-      deps.model.forgetDraftRename(newPath);
-      return;
-    }
-    const expectPr = status.pr && status.pr.number > 0 ? status.pr.number : undefined;
-    const closed = await deps.review.abandon(oldDoc, undefined, expectPr);
-    if (!closed.ok && closed.status !== 404) {
-      if (closed.status === 0 || closed.status === 429 || closed.status >= 500) {
-        this.pendingCloseRetries.add(newPath);
-        return;
-      }
-      this.pendingCloseRetries.delete(newPath);
-      deps.model.forgetDraftRename(newPath);
-      return;
-    }
-    this.pendingCloseRetries.delete(newPath);
-    this.uploaded.clear();
-    this.memory.forget(oldPath);
-    deps.model.learnSent(oldPath, null);
-    deps.model.learn(oldPath, { reviewBranch: null, pr: null });
-    deps.model.forgetDraftRename(newPath);
-    deps.model.clearInFlightPath(oldPath, status.reviewBranch, expectPr ?? null);
+  private closeSupersededDraft(newPath: string, deps: FlowDeps): Promise<void> {
+    return closeSupersededDraftsFor(newPath, deps, this.draftCloseHooks(), this.pendingCloseRetries);
   }
 
   private async alreadyThere(path: string, doc: DocumentRef, existing: NonNullable<Awaited<ReturnType<ReviewApi["status"]>>>, text: string, memory: SentMemory = this.memory): Promise<Sent> {
     const holds = await reviewHolds(this.back, doc, text, existing);
     if (holds === null) return { ok: false, unreadable: true, message: UNREADABLE(noteName(doc.path)) };
     if (!holds) return { ok: false, held: true };
-    await memory.accepted(path, text, text, null, { pr: existing.pr });
+    await memory.accepted(path, text, text, null, { reviewBranch: existing.reviewBranch, pr: existing.pr });
     return { ok: true, expectMain: null };
   }
 

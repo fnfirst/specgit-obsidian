@@ -13,9 +13,11 @@ interface Entry {
   holders: number;
   closing: number | null;
   lastTried: number;
+  noLinger?: boolean;
 }
 
 export class RoomPool {
+  private static readonly activePools = new Set<RoomPool>();
   private readonly entries = new Map<string, Entry>();
 
   constructor(
@@ -24,10 +26,40 @@ export class RoomPool {
     private readonly closed: (ref: DocumentRef) => void,
     private readonly tokens: Pick<TokenSource, "askForBridge">,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    RoomPool.activePools.add(this);
+  }
+
+  static dropFor(ref: DocumentRef): void {
+    for (const pool of RoomPool.activePools) pool.drop(ref);
+  }
+
+  static hasRoomFor(ref: DocumentRef): boolean {
+    for (const pool of RoomPool.activePools) if (pool.hasRoom(ref)) return true;
+    return false;
+  }
+
+  hasRoom(ref: DocumentRef): boolean {
+    return this.entries.has(keyOf(ref));
+  }
 
   hasActive(ref: DocumentRef): boolean {
     return (this.entries.get(keyOf(ref))?.holders ?? 0) > 0;
+  }
+
+  drop(ref: DocumentRef): void {
+    const key = keyOf(ref);
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    if (entry.holders <= 0) {
+      if (entry.closing !== null) window.clearTimeout(entry.closing);
+      entry.closing = null;
+      entry.room.destroy();
+      this.entries.delete(key);
+      this.closed(entry.room.ref);
+      return;
+    }
+    entry.noLinger = true;
   }
 
   acquire(ref: DocumentRef): Room {
@@ -38,6 +70,7 @@ export class RoomPool {
       this.entries.set(key, entry);
       this.watch(key, entry);
     }
+    entry.noLinger = false;
     if (entry.closing !== null) {
       window.clearTimeout(entry.closing);
       entry.closing = null;
@@ -57,7 +90,7 @@ export class RoomPool {
       this.entries.delete(key);
       this.closed(room.ref);
     };
-    if (now) close();
+    if (now || entry.noLinger === true) close();
     else entry.closing = window.setTimeout(close, LINGER_MS);
   }
 
@@ -83,6 +116,7 @@ export class RoomPool {
   }
 
   destroy(): void {
+    RoomPool.activePools.delete(this);
     for (const entry of this.entries.values()) {
       if (entry.closing !== null) window.clearTimeout(entry.closing);
       entry.room.destroy();

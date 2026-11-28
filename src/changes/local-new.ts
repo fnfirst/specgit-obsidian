@@ -15,10 +15,13 @@ import {
   inlineTitleElementOf,
   isBlockedPreTitleFocusTarget,
   isInlineTitleElement,
+  isRelayedKeyEvent,
   isRescueTargetActive,
   isSyntheticTitleEnter,
+  leafEditorPathOf,
   popLastCodePoint,
   settlePreTitleOnFileOpen,
+  willFocusInlineTitle,
   type PreTitleRescueState,
   type TitleRescueState,
 } from "./title-rescue";
@@ -269,7 +272,9 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
         const pre = tracker.preTitle;
         const activeNow = tracker.activePath();
         const sameOrigin = cmContent === pre.originCmEl && (activeNow === pre.originPath || (activeNow !== null && !isUntitledPath(activeNow)));
-        if (!sameOrigin) flushPreTitleToEditor(plugin, tracker, cmContent, now, () => disposed, isUntitledPath);
+        if (!sameOrigin && !willFocusInlineTitle(plugin, cmContent, cmContent.ownerDocument ?? currentDoc())) {
+          flushPreTitleToEditor(plugin, tracker, cmContent, now, () => disposed, isUntitledPath);
+        }
       } else if (isBlockedPreTitleFocusTarget(event.target)) {
         tracker.preTitle = null;
       }
@@ -294,7 +299,7 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       return;
     }
     const expectedPath = tracker.rescue.expectedPath;
-    const activeNow = tracker.activePath();
+    const activeNow = leafEditorPathOf(cmLeaf) ?? tracker.activePath();
     if (expectedPath !== null && (activeNow === null || activeNow.toLowerCase() !== expectedPath.toLowerCase())) {
       tracker.rescue = null;
       return;
@@ -304,7 +309,7 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     if (pending.length > 0) {
       queueMicrotask(() => {
         if (disposed) return;
-        const activeAtFlush = tracker.activePath();
+        const activeAtFlush = leafEditorPathOf(cmLeaf) ?? tracker.activePath();
         if (expectedPath !== null && (activeAtFlush === null || activeAtFlush.toLowerCase() !== expectedPath.toLowerCase())) return;
         flushRescuedChars(plugin, cmContent, pending, expectedPath);
       });
@@ -326,8 +331,8 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     }
   };
 
-  const onCaptureKeyDown = (event: Event): void => {
-    if (disposed || isSyntheticTitleEnter(event)) return;
+  const onCaptureKeyDown = (event: Event, listenerDoc: Document | null): void => {
+    if (disposed || isRelayedKeyEvent(event) || isSyntheticTitleEnter(event)) return;
     const ke = event as KeyboardEvent;
     const now = Date.now();
     const key = typeof ke.key === "string" ? ke.key : "";
@@ -336,12 +341,12 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     if (isModN) {
       tracker.rescue = null;
       armCreateQuiet(now);
-      const doc = (event.target as Node | null)?.ownerDocument ?? currentDoc();
+      const doc = (event.target as Node | null)?.ownerDocument ?? listenerDoc ?? currentDoc();
       if (!ke.shiftKey && !ke.isComposing && !doc?.querySelector?.(".modal-container, .prompt")) {
         tracker.preTitle = {
           expiresAt: now + UNTITLED_PRE_TITLE_MAX_MS,
           win: doc?.defaultView ?? (typeof window !== "undefined" ? window : null),
-          originTitleEl: focusedInlineTitle() ?? inlineTitleElementOf(doc?.activeElement ?? null) ?? inlineTitleElementOf(event.target),
+          originTitleEl: focusedInlineTitle(doc) ?? inlineTitleElementOf(event.target),
           originCmEl: cmContentElementOf(doc?.activeElement ?? null) ?? cmContentElementOf(event.target),
           originPath: tracker.activePath(),
           pendingTitleChars: "",
@@ -431,10 +436,22 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     }
     const sameRescue = tracker.rescue && tracker.rescue.el === titleEl && now < tracker.rescue.expiresAt ? tracker.rescue : null;
     const leafEl = typeof titleEl.closest === "function" ? titleEl.closest(".workspace-leaf") : null;
+    const resolveExpectedPath = (): string | null => {
+      const leafPath = leafEditorPathOf(leafEl);
+      if (leafPath !== null) return leafPath;
+      const activeNow = tracker.activePath();
+      if (activeNow === null) return null;
+      if (!isUntitledPath(activeNow) && !tracker.fresh.has(activeNow.toLowerCase())) {
+        for (const entry of tracker.fresh.values()) {
+          if (!entry.opened && isUntitledPath(entry.path)) return null;
+        }
+      }
+      return activeNow;
+    };
     tracker.rescue = {
       el: titleEl,
       leafEl,
-      expectedPath: sameRescue ? sameRescue.expectedPath : tracker.activePath(),
+      expectedPath: sameRescue ? sameRescue.expectedPath : resolveExpectedPath(),
       win: titleEl.ownerDocument?.defaultView ?? (typeof window !== "undefined" ? window : null),
       pendingBodyChars: sameRescue ? sameRescue.pendingBodyChars : "",
       expiresAt: now + UNTITLED_RESCUE_MAX_MS,
@@ -450,34 +467,43 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
     typeof workspace.on === "function" &&
     typeof workspace.offref === "function" &&
     typeof plugin.register === "function";
+  const attachWindowListeners = (
+    doc: Document,
+    win: Window | null,
+    on: (target: Window | Document, type: string, run: (event: Event) => void, options?: AddEventListenerOptions) => void,
+  ): void => {
+    const keyTarget: Window | Document = win && typeof win.addEventListener === "function" ? win : doc;
+    const onWinCaptureKeyDown = (event: Event): void => {
+      if (isRelayedKeyEvent(event)) return;
+      const ownerDoc = (event.target as Node | null)?.ownerDocument ?? null;
+      if (ownerDoc !== null && ownerDoc !== doc) return;
+      onCaptureKeyDown(event, doc);
+    };
+    on(doc, "focusin", onFocusIn, { capture: true });
+    on(doc, "focusout", onFocusOut);
+    on(doc, "mousedown", onPointerDown, { capture: true });
+    on(keyTarget, "keydown", onWinCaptureKeyDown, { capture: true });
+    on(doc, "beforeinput", onBeforeInput, { capture: true });
+    on(doc, "keydown", onBubbleKeyDown);
+  };
+
   let stopDom: (() => void) | null = null;
   if (canWatchWindows) {
     stopDom = watchWindows(plugin, (win, on) => {
       if (!win.document || typeof win.document.addEventListener !== "function") return;
-      on(win.document, "focusin", onFocusIn, { capture: true });
-      on(win.document, "focusout", onFocusOut);
-      on(win.document, "mousedown", onPointerDown, { capture: true });
-      on(win.document, "keydown", onCaptureKeyDown, { capture: true });
-      on(win.document, "beforeinput", onBeforeInput, { capture: true });
-      on(win.document, "keydown", onBubbleKeyDown);
+      attachWindowListeners(win.document, win, on);
     });
   } else {
     const maybeDoc = currentDoc();
     const dom = maybeDoc && typeof maybeDoc.addEventListener === "function" ? maybeDoc : null;
     if (dom) {
-      dom.addEventListener("focusin", onFocusIn, true);
-      dom.addEventListener("focusout", onFocusOut);
-      dom.addEventListener("mousedown", onPointerDown, true);
-      dom.addEventListener("keydown", onCaptureKeyDown, true);
-      dom.addEventListener("beforeinput", onBeforeInput, true);
-      dom.addEventListener("keydown", onBubbleKeyDown);
+      const removers: Array<() => void> = [];
+      attachWindowListeners(dom, dom.defaultView, (target, type, run, options) => {
+        target.addEventListener(type, run, options);
+        removers.push(() => target.removeEventListener(type, run, options));
+      });
       stopDom = () => {
-        dom.removeEventListener("focusin", onFocusIn, true);
-        dom.removeEventListener("focusout", onFocusOut);
-        dom.removeEventListener("mousedown", onPointerDown, true);
-        dom.removeEventListener("keydown", onCaptureKeyDown, true);
-        dom.removeEventListener("beforeinput", onBeforeInput, true);
-        dom.removeEventListener("keydown", onBubbleKeyDown);
+        for (const remove of removers) remove();
       };
     }
   }
@@ -597,7 +623,12 @@ export function trackFreshLocalNotes(plugin: Plugin): void {
       if (disposed) return;
       if (tracker.rescue !== null) {
         const expected = tracker.rescue.expectedPath;
-        if (expected === null || path === null || path.toLowerCase() !== expected.toLowerCase()) tracker.rescue = null;
+        if (expected === null) {
+          if (path !== null && isUntitledPath(path)) tracker.rescue.expectedPath = path;
+          else tracker.rescue = null;
+        } else if (path === null || path.toLowerCase() !== expected.toLowerCase()) {
+          tracker.rescue = null;
+        }
       }
       if (path === null || !isUntitledPath(path)) return;
       const entry = tracker.fresh.get(path.toLowerCase());
