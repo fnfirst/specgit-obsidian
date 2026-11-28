@@ -367,6 +367,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
       const modal = showChanges(app, shown, context, yours ? () => since.closed() : undefined);
       if (yours) since.opened(() => modal.close());
     },
+    notifyDeleteWithUndo: (message, actionLabel, run) => showNoticeWithAction(message, actionLabel, run),
     publishedBranch: NOTE_BRANCH,
     ...(deps.stopped ? { stopped: deps.stopped } : {}),
     ...(deps.deleted ? { deleted: deps.deleted } : {}),
@@ -493,9 +494,19 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     unquiet();
     lookSoon("user");
   });
+  const snapshotDraft = (file: { path: string }): void => {
+    if (!LISTED_FILE.test(file.path) || model.hasRepoFile(file.path)) return;
+    const tfile = app.vault.getFileByPath(file.path);
+    if (!tfile) return;
+    void app.vault.read(tfile).then(
+      (text) => placed().cache.snapshots.remember(file.path, text),
+      () => undefined,
+    );
+  };
   plugin.registerEvent(
     app.vault.on("create", (file) => {
       if (!LISTED_FILE.test(file.path) && file.path !== ".gitignore") return;
+      snapshotDraft(file);
       if (isOwnWrite(file.path)) {
         lookSoon("own");
         return;
@@ -542,7 +553,12 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
     }),
   );
   plugin.register(() => renames.forEach((timer) => window.clearTimeout(timer)));
-  plugin.registerEvent(app.vault.on("modify", (file) => watch(file)));
+  plugin.registerEvent(
+    app.vault.on("modify", (file) => {
+      snapshotDraft(file);
+      watch(file);
+    }),
+  );
   plugin.registerEvent(
     app.vault.on("delete", (file) => {
       deps.ownLinks?.forget(file.path);
@@ -578,6 +594,7 @@ export function setUpChanges(plugin: Plugin, deps: ChangesSetup): PanelTabs & { 
   plugin.register(() => window.clearTimeout(first));
   plugin.register(() => clearLookTimer());
   plugin.register(() => current?.cache.flush());
+  plugin.register(() => flows.dispose());
   plugin.register(() => model.dispose());
   const reviewEvents = new ReviewEvents();
   const reaction = createPollGateFor(restingSignals(signals, () => deps.stayOn?.() === true)).reaction(({ expireReviews }) => {

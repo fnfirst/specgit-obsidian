@@ -175,7 +175,13 @@ export class AutoCommitFlows {
       const status = await this.host.deps.review.status(row.doc);
       if (status === null) return { result: "later" };
       const draft = reviewIsOpen(status) ? status.reviewBranch : null;
-      if (draft === null && (hooks.ended === true || this.host.model.sentSha(row.change.path) !== null)) return { result: "later" };
+      if (draft === null) {
+        if (hooks.ended === true) return { result: "later" };
+        if (this.host.model.sentSha(row.change.path) !== null) {
+          if (!this.host.model.wasRecentlyClosedDraft(row.change.path)) return { result: "later" };
+          this.host.model.learnSent(row.change.path, null);
+        }
+      }
       let found: BranchFile | undefined;
       if (draft !== null) {
         found = await this.host.deps.branchFile(row.doc, draft);

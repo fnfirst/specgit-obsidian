@@ -1,6 +1,6 @@
 import { Notice } from "obsidian";
 
-const ACTION_MS = 15_000;
+export const ACTION_MS = 15_000;
 
 const STACK_GAP_PX = 8;
 const stacked: HTMLElement[] = [];

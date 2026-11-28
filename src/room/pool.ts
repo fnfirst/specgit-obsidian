@@ -65,6 +65,7 @@ export class RoomPool {
   acquire(ref: DocumentRef): Room {
     const key = keyOf(ref);
     let entry = this.entries.get(key);
+    const existing = entry !== undefined;
     if (!entry) {
       entry = { room: this.newRoom(ref), holders: 0, closing: null, lastTried: this.now() };
       this.entries.set(key, entry);
@@ -76,6 +77,7 @@ export class RoomPool {
       entry.closing = null;
     }
     entry.holders++;
+    if (existing && entry.room.state === "joining") entry.room.nudgeBridge();
     return entry.room;
   }
 
@@ -109,7 +111,13 @@ export class RoomPool {
   retryFailed(gap = RETRY_AFTER_MS): void {
     const now = this.now();
     for (const entry of this.entries.values()) {
-      if (entry.room.state !== "failed" || entry.room.failureCode === "plugin_outdated" || entry.room.failureCode === "document_deleted" || now - entry.lastTried < gap) continue;
+      if (now - entry.lastTried < gap) continue;
+      if (entry.room.state === "joining") {
+        entry.lastTried = now;
+        entry.room.nudgeBridge();
+        continue;
+      }
+      if (entry.room.state !== "failed" || entry.room.failureCode === "plugin_outdated" || entry.room.failureCode === "document_deleted") continue;
       entry.lastTried = now;
       entry.room.retry();
     }

@@ -195,6 +195,11 @@ export class Room {
     void this.connect();
   }
 
+  nudgeBridge(): void {
+    if (this.destroyed || this.state !== "joining" || this.stopped !== null || this.startOver || this.readOnly) return;
+    this.bridgeRequests.askNow();
+  }
+
   get localEdited(): boolean {
     return this.wroteLocally;
   }

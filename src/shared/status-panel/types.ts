@@ -47,6 +47,9 @@ export interface StatusDoc extends StatusPeople {
 export interface StatusGroupMember {
   id: string;
   name: string;
+  deletedHere?: boolean;
+  bringIn?: boolean;
+  reason?: string;
 }
 
 export interface StatusGroup extends StatusPeople {

@@ -10,6 +10,17 @@ export type Sameness = "same" | "differs" | "unknown" | "needs-read";
 
 const BOM = "\uFEFF";
 
+function isValidCanvasJson(text: string): boolean {
+  const bare = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  if (bare === "") return true;
+  try {
+    JSON.parse(bare);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function layoutShas(text: string): Set<string> {
   const lf = (text.startsWith(BOM) ? text.slice(1) : text).replace(/\r\n/g, "\n");
   const core = lf.replace(/\n+$/, "");
@@ -49,7 +60,7 @@ export async function sameAsRepo(deps: SameTextDeps, path: string, doc: Document
   const bytes = await deps.readBytes(path);
   if (bytes === null || (await gitBlobSha(bytes)) !== sha) return "unknown";
   const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-  if (layoutShas(text).has(repoSha) && (kind !== "board" || sameCanvasText(text, text))) return "same";
+  if (layoutShas(text).has(repoSha) && (kind !== "board" || isValidCanvasJson(text))) return "same";
   if (!structured && !hasFrontMatter(text)) return "differs";
   if (!mayRead) return "needs-read";
   const theirs = await deps.readBlob(doc, repoSha);

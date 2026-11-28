@@ -528,7 +528,12 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
   plugin.register(
     deps.status.subscribe(() => {
       engine?.livened();
-      const now = new Set(deps.status.paths().filter((path) => deps.status.phaseOf(path) !== "local"));
+      const now = new Set(
+        deps.status.paths().filter((path) => {
+          const phase = deps.status.phaseOf(path);
+          return phase === "joining" || phase === "live";
+        }),
+      );
       const freed = [...notLocal].filter((path) => !now.has(path));
       notLocal = now;
       engine?.freed(freed);
@@ -563,7 +568,7 @@ export function setUpStay(plugin: Plugin, deps: StayDeps): StayHandle {
         if ("children" in file) return;
         const delDoc = mapped(file.path);
         if (delDoc) RoomPool.dropFor(delDoc);
-        if (!isHiddenPath(file.path)) deps.flows.noteLocalDelete?.(file.path);
+        if (!isHiddenPath(file.path) && !activity.isOwnWrite(file.path)) deps.flows.noteLocalDelete?.(file.path);
         if (isTrackedFile(file)) touched(file.path, true);
       }),
     );

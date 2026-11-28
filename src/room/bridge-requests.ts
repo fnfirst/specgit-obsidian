@@ -33,6 +33,7 @@ export class BridgeRequests {
     if (!missing) {
       this.clear();
       this.tries = 0;
+      this.told = 0;
     } else this.wait();
   }
 
@@ -40,6 +41,12 @@ export class BridgeRequests {
     if (this.stopped || !this.wanted || this.asking) return;
     this.clear();
     this.timer = window.setTimeout(() => void this.run(), LEAVE_WAIT_MIN_MS + (LEAVE_WAIT_MAX_MS - LEAVE_WAIT_MIN_MS) * this.random());
+  }
+
+  askNow(): void {
+    if (this.stopped || !this.wanted || this.asking || this.told > 0) return;
+    this.clear();
+    void this.run();
   }
 
   stop(): void {

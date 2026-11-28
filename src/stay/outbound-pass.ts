@@ -11,7 +11,7 @@ import { type Case, draftCase, type Draft, type Ended, type FileFacts, follows, 
 import type { End } from "./ends";
 import { type GitObservation, sameGitMark } from "./git-watch";
 import type { StayHolds } from "./holds";
-import { TEXTS_PER_PASS as MAIN_TEXTS_PER_PASS } from "./inbound";
+import { NOTE_PHASE_POLICY, TEXTS_PER_PASS as MAIN_TEXTS_PER_PASS } from "./inbound";
 import type { Pace, WriteBudget } from "./limits";
 import { type BlockedNew, changeKey, hasOwnOrAgreedDraft, isEdit, type OutboundInput } from "./outbound";
 import { type StayData, type StayGitMark, type StayState, TYPED_KEPT } from "./state";
@@ -65,7 +65,7 @@ export const isBlankUntitledCanvasText = (text: string): boolean => {
   }
 };
 
-const BLANK_CANVAS_SHAS: ReadonlySet<string> = new Set(
+export const BLANK_CANVAS_SHAS: ReadonlySet<string> = new Set(
   [
     "",
     "{}",
@@ -284,9 +284,12 @@ export interface AdmitDraftReadsEnv {
   isLeftAlone: (path: string) => Promise<LeftAlone | null>;
 }
 
-export const admitDraftReads = async (env: AdmitDraftReadsEnv): Promise<{ asked: Array<{ doc: DocumentRef; sha: string }>; deferred: Set<string> }> => {
+export const admitDraftReads = async (
+  env: AdmitDraftReadsEnv,
+): Promise<{ asked: Array<{ doc: DocumentRef; sha: string }>; deferred: Set<string>; targets: Array<{ path: string; doc: DocumentRef; branch: string }> }> => {
   const { looked, paths, drafts, skip, ports } = env;
   const asked: Array<{ doc: DocumentRef; sha: string }> = [];
+  const targets: Array<{ path: string; doc: DocumentRef; branch: string }> = [];
   const deferred = new Set<string>();
   const seen = new Set<string>();
   let admitted = 0;
@@ -295,6 +298,10 @@ export const admitDraftReads = async (env: AdmitDraftReadsEnv): Promise<{ asked:
     const draft = drafts.byPath.get(path);
     const doc = ports.documentFor(path);
     if (!draft || !draft.blob || !doc || (ports.inGroup(path) && draft.inGroup !== true)) continue;
+    if (admitted >= env.draftsPerPass) {
+      deferred.add(path);
+      continue;
+    }
     const entry = looked.files.get(path);
     if (isFreshLocalUntitled(path, entry)) continue;
     if (!entry && env.hasCollision(path)) continue;
@@ -302,18 +309,19 @@ export const admitDraftReads = async (env: AdmitDraftReadsEnv): Promise<{ asked:
     const kind = draftCase({ file: env.factsOf(path), draft, login: ports.login(), policy: env.policyFor(path, draft), leftAlone: null, ended: null }).kind;
     const readsDraft = kind === "take" || kind === "create" || kind === "merge" || env.isHeldMeet(kind, path, entry);
     if (!readsDraft || !env.isReady(path) || isSkippableDraftMerge(kind, path, entry, draft.blob, env.isTold, env.isEditHeld, env.cleanMerges)) continue;
-    if ((await env.isLeftAlone(path)) !== null) continue;
-    if (admitted >= env.draftsPerPass || (!seen.has(draft.blob) && asked.length >= env.textsPerPass)) {
+    if (!seen.has(draft.blob) && asked.length >= env.textsPerPass) {
       deferred.add(path);
       continue;
     }
+    if ((await env.isLeftAlone(path)) !== null) continue;
     admitted++;
+    targets.push({ path, doc, branch: draft.branch });
     if (!seen.has(draft.blob)) {
       seen.add(draft.blob);
       asked.push({ doc, sha: draft.blob });
     }
   }
-  return { asked, deferred };
+  return { asked, deferred, targets };
 };
 
 export interface FlushHeardEnv {
@@ -511,7 +519,7 @@ export const keepMissingBases = async (
   const wanted: Array<{ change: Looked["rows"][number]["change"]; doc: DocumentRef }> = [];
   for (const { change, doc } of looked.rows) {
     if (change.kind !== "edited" || change.base === null || change.repoSha !== change.base) continue;
-    if (ports.baseText(change.path, change.base) !== null || ports.phaseOf(change.path) !== "local" || basesTried.has(`${change.path}|${change.base}`)) continue;
+    if (ports.baseText(change.path, change.base) !== null || !NOTE_PHASE_POLICY[ports.phaseOf(change.path)].allowsStayOutbound || basesTried.has(`${change.path}|${change.base}`)) continue;
     basesTried.add(`${change.path}|${change.base}`);
     wanted.push({ change, doc });
   }
@@ -551,12 +559,14 @@ export const matchesDraftBlobOnDisk = async (
   isRemoteRoomBlob: (path: string, diskSha: string, draftBlob: string) => boolean,
   readVault: (path: string) => Promise<string | null>,
   isCurrent: () => boolean,
+  onRead?: (text: string) => void,
 ): Promise<boolean> => {
   if (same.sha === draftBlob || isRemoteRoomBlob(path, same.sha, draftBlob) || same.same === draftBlob) return true;
   const pair = `${same.sha}|${draftBlob}`;
   if (crlfMiss.get(path) === pair) return false;
   const text = await readVault(path);
   if (!isCurrent() || text === null || gitBlobShaOfText(text) !== same.sha) return false;
+  onRead?.(text);
   if (gitBlobShaOfText(toLf(text)) === draftBlob || (hasBom(text) && gitBlobShaOfText(stripBom(toLf(text))) === draftBlob)) return true;
   crlfMiss.set(path, pair);
   return false;

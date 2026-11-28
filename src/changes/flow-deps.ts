@@ -6,6 +6,7 @@ import type { Budget } from "../disk/diff";
 import type { Shown } from "../disk/regions";
 import type { ReviewRequest } from "../editor/services";
 import type { DocumentRef } from "../mapping";
+import type { NoticeHandle } from "../notices";
 import type { BranchFile, MainFile } from "../auth/git-copy";
 import type { Reviewer, ReviewApi } from "../review/review-api";
 import type { ChangesContext } from "../review/words";
@@ -85,4 +86,7 @@ export interface FlowDeps {
   conflictResolved?(path: string): void;
   publishedBranch: string;
   budget?: () => Budget;
+  deleteCloseDelayMs?: number;
+  scheduleTimer?: (fn: () => void, ms: number) => () => void;
+  notifyDeleteWithUndo?: (message: string, label: string, run: () => void) => NoticeHandle;
 }

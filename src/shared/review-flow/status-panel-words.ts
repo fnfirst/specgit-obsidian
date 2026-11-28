@@ -102,6 +102,9 @@ export const STATUS_FOLDS = {
 export const statusFoldProgress = (done: number, total: number): string => `Copying ${done} of ${total}…`;
 export const statusShowMore = (count: number): string => `Show ${count} more`;
 export const statusGroupCount = (count: number, noun: StatusNoun): string => counted(count, noun);
+export const STATUS_GROUP_MEMBER_DELETED = "Deleted here, still in group";
+export const statusGroupMembersDeleted = (count: number): string =>
+  count === 1 ? STATUS_GROUP_MEMBER_DELETED : `${count} deleted here, still in group`;
 
 export const statusWho = (people: readonly string[], asksYou = false): string => {
   const shown = people.map(anonymousDisplayName);

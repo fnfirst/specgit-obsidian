@@ -2739,6 +2739,16 @@ button.specgit-button.is-warning:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sp-theme-obsidian .sp-member-note {
+  color: var(--sp-muted);
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-theme-obsidian .sp-member-deleted .sp-name-link {
+  color: var(--sp-muted);
+}
 .sp-theme-obsidian .sp-member .sp-more {
   margin-inline-start: auto;
 }

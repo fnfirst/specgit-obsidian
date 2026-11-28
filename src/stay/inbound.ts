@@ -3,16 +3,16 @@ import { agreedOf, clearSent, type CacheEntry } from "../changes/cache";
 import { matchedBase } from "../changes/merge-base";
 import { unchangedHere } from "../changes/unchanged-here";
 import type { Looked } from "../changes/model";
-import type { MainFile } from "../auth/git-copy";
+import type { BranchFile, MainFile } from "../auth/git-copy";
 import { Budget } from "../disk/diff";
 import { follows } from "./draft-state";
 import { changesBetween } from "../disk/merge";
 import type { Shown } from "../disk/regions";
 import { stripBom, toLf, withBomAndEol } from "../disk/line-endings";
 import { buildReviewRequest, mergeFile } from "../disk/structured-merge";
-import { notWritableBecause } from "../disk/writable";
 import type { ReviewPayload } from "../editor/services";
 import { CasePathIndex, casePathKey, type DocumentRef, noteName } from "../mapping";
+import type { NotePhase } from "../status";
 import type { Activity } from "./activity";
 import { caseCollisionWords, StayHolds, vaultCaseIndex } from "./holds";
 import { BURST_FILES } from "./limits";
@@ -22,7 +22,50 @@ import type { StayState } from "./state";
 import type { StayPorts } from "./types";
 import { BackoffWaits, WakeClock } from "./wait";
 
+export interface NotePhasePolicy {
+  readonly hasLiveRoom: boolean;
+  readonly blocksInbound: boolean;
+  readonly blocksInboundAllowLive: boolean;
+  readonly allowsStayOutbound: boolean;
+}
+
+export const NOTE_PHASE_POLICY: Readonly<Record<NotePhase, NotePhasePolicy>> = {
+  local: { hasLiveRoom: false, blocksInbound: false, blocksInboundAllowLive: false, allowsStayOutbound: true },
+  joining: { hasLiveRoom: false, blocksInbound: true, blocksInboundAllowLive: true, allowsStayOutbound: false },
+  live: { hasLiveRoom: true, blocksInbound: true, blocksInboundAllowLive: false, allowsStayOutbound: false },
+  offline: { hasLiveRoom: false, blocksInbound: false, blocksInboundAllowLive: false, allowsStayOutbound: true },
+  blocked: { hasLiveRoom: false, blocksInbound: false, blocksInboundAllowLive: false, allowsStayOutbound: false },
+  locked: { hasLiveRoom: false, blocksInbound: false, blocksInboundAllowLive: false, allowsStayOutbound: false },
+};
+
 export const READS_PER_PASS = 40;
+export const BRANCH_READ_CONCURRENCY = 5;
+
+export async function prefetchBranchDrafts(
+  items: ReadonlyArray<{ path: string; doc: DocumentRef; branch: string }>,
+  read: (doc: DocumentRef, branch: string) => Promise<BranchFile>,
+  isCurrent: () => boolean,
+  concurrency = BRANCH_READ_CONCURRENCY,
+): Promise<Map<string, BranchFile>> {
+  const out = new Map<string, BranchFile>();
+  if (items.length === 0) return out;
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (isCurrent()) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      const item = items[i]!;
+      try {
+        const file = await read(item.doc, item.branch);
+        if (isCurrent()) out.set(item.path, file);
+      } catch {
+        void 0;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return out;
+}
 
 export const trashedWords = (names: readonly string[]): string => `Moved ${names.length === 1 ? names[0]! : `${names.length} notes`} to the trash. ${names.length === 1 ? "It was" : "They were"} deleted on GitHub.`;
 export const heldDeletesWords = (count: number): string => `${count} notes were deleted on GitHub at once, so none was moved to the trash.`;
@@ -487,7 +530,7 @@ export class Inbound {
 
   private async free(path: string, doc: DocumentRef, sha: string): Promise<boolean> {
     const { ports } = this.ctx;
-    const why = await notWritableBecause({ phaseOf: (one) => ports.phaseOf(one), hasUnsavedText: (one) => ports.vault.hasUnsavedText(one) }, path);
+    const why = NOTE_PHASE_POLICY[ports.phaseOf(path)].blocksInbound ? "live" : (await ports.vault.hasUnsavedText(path)) ? "typing" : null;
     if (why !== null) {
       if (this.opening.has(path) && why === "live" && ports.phaseOf(path) === "live") {
         if (await ports.vault.hasUnsavedText(path)) {
@@ -639,7 +682,7 @@ export class Inbound {
     const { ports } = this.ctx;
     const draft = looked.drafts?.byPath.get(path);
     const phase = ports.phaseOf(path);
-    if (!draft || (phase !== "local" && !(phase === "live" && this.isCleanDraftForMain(looked, path))) || ports.disconnected(doc) || ports.inGroup(path)) return false;
+    if (!draft || (NOTE_PHASE_POLICY[phase].blocksInbound && !(phase === "live" && this.isCleanDraftForMain(looked, path))) || ports.disconnected(doc) || ports.inGroup(path)) return false;
     return follows(draft, ports.login(), entry, ports.policy());
   }
 
@@ -787,7 +830,7 @@ export class Inbound {
     if (!from || !to) return this.settled(move.from, null);
     if (ports.disconnected(from) || ports.disconnected(to)) return;
     if (this.caseIndex.collision(move.to, move.from) !== null) return this.holdCaseCollision(move.to, move.sha, move.from);
-    if (ports.phaseOf(move.to) !== "local" || !(await this.free(move.from, from, move.sha))) return this.wait(move.from, move.sha);
+    if (NOTE_PHASE_POLICY[ports.phaseOf(move.to)].blocksInbound || !(await this.free(move.from, from, move.sha))) return this.wait(move.from, move.sha);
     await yieldQuiet(this.ctx);
     const mirror = this.looked?.repo;
     if (!mirror || mirror.has(move.from) || mirror.get(move.to) !== move.sha || !this.ctx.current()) return this.wait(move.from, move.sha);

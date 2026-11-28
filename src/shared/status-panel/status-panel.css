@@ -395,6 +395,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sp-member-note {
+  color: var(--sp-muted);
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sp-member-deleted .sp-name-link {
+  color: var(--sp-muted);
+}
 .sp-member .sp-more {
   margin-inline-start: auto;
 }

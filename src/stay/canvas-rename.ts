@@ -95,6 +95,7 @@ function findNodeFileSpans(body: string, from: string): Span[] | null {
     cur = skipWs(body, key.end);
     if (body.charCodeAt(cur) !== 58) return null;
     const valStart = skipWs(body, cur + 1);
+    if (key.value === "nodes") spans.length = 0;
     if (key.value === "nodes" && body.charCodeAt(valStart) === 91) {
       let arrCur = skipWs(body, valStart + 1);
       if (arrCur < body.length && body.charCodeAt(arrCur) === 93) {
@@ -121,6 +122,8 @@ function findNodeFileSpans(body: string, from: string): Span[] | null {
                   else fileSpan = { start: nValStart, end: str.end, value: str.value };
                   objCur = str.end;
                 } else {
+                  if (nKey.value === "type") nodeType = null;
+                  else if (nKey.value === "file") fileSpan = null;
                   const next = skipJsonValue(body, nValStart);
                   if (next < 0) return null;
                   objCur = next;
@@ -167,7 +170,7 @@ function findNodeFileSpans(body: string, from: string): Span[] | null {
 export function rewriteCanvasFileRefsText(raw: string, from: string, to: string): string | null {
   if (from === to || from === "" || to === "") return null;
   const escapedFrom = JSON.stringify(from).slice(1, -1);
-  if (!raw.includes(from) && !raw.includes(escapedFrom) && !raw.includes("\\u")) return null;
+  if (!raw.includes(from) && !raw.includes(escapedFrom) && !raw.includes("\\u") && !(from.includes("/") && raw.includes("\\/"))) return null;
   const body = stripBom(raw);
   let parsed: unknown;
   try {
@@ -205,7 +208,7 @@ export function rewriteCanvasFileRefsText(raw: string, from: string, to: string)
       void 0;
     }
   }
-  const indent = /\n(\t+| +)"/.exec(body)?.[1] ?? 2;
+  const indent = /\n(\t+| +)"/.exec(body)?.[1] ?? (/\r?\n/.test(body.trimEnd()) ? 2 : undefined);
   const trailingNewline = /\r?\n$/.test(body) ? "\n" : "";
   return withBomAndEol(`${JSON.stringify(parsed, null, indent)}${trailingNewline}`, raw);
 }

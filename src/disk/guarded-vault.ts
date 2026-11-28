@@ -69,13 +69,42 @@ interface EditingElementLike {
   contains?: (other: Node | null) => boolean;
 }
 
+interface CanvasHistoryLike {
+  data?: unknown[];
+  index?: number;
+  undos?: unknown[];
+  redos?: unknown[];
+}
+
+interface CanvasLike {
+  isDragging?: boolean;
+  nodes?: unknown;
+  edges?: unknown;
+  x?: number;
+  y?: number;
+  zoom?: number;
+  tx?: number;
+  ty?: number;
+  tZoom?: number;
+  selection?: Iterable<{ id?: unknown }> | null;
+  history?: CanvasHistoryLike | null;
+  requestSave?: { cancel?: () => unknown } | (() => unknown);
+  setViewport?: (x: number, y: number, zoom: number) => void;
+  selectOnly?: (item: unknown) => void;
+  select?: (item: unknown) => void;
+  markViewportChanged?: () => void;
+  requestFrame?: () => void;
+}
+
 interface PaneView {
   file?: { path: string } | null;
+  data?: string;
   editor?: { getValue(): string };
   getViewType(): string;
   getViewData?: () => string;
   setViewData?: (data: string, clear: boolean) => void;
-  canvas?: { isDragging?: boolean; nodes?: unknown } | null;
+  requestSave?: { cancel?: () => unknown } | (() => unknown);
+  canvas?: CanvasLike | null;
   containerEl?: {
     querySelector?: (selector: string) => unknown;
     querySelectorAll?: (selector: string) => Iterable<EditingElementLike>;
@@ -299,6 +328,105 @@ function matchesCanvasDiskBeforeFileRename(view: PaneView, data: string, disk: s
   }
 }
 
+function cancelCanvasSave(view: PaneView): void {
+  try {
+    const viewSave = view.requestSave as { cancel?: () => unknown } | undefined;
+    if (typeof viewSave?.cancel === "function") viewSave.cancel();
+    const canvasSave = view.canvas?.requestSave as { cancel?: () => unknown } | undefined;
+    if (typeof canvasSave?.cancel === "function") canvasSave.cancel();
+  } catch {
+    void 0;
+  }
+}
+
+function canvasItemById(collection: unknown, id: string): unknown {
+  if (collection instanceof Map) return collection.get(id);
+  for (const item of canvasNodes(collection)) {
+    if (item?.id === id) return item;
+  }
+  return undefined;
+}
+
+function syncCanvasView(view: PaneView, syncedText: string): void {
+  if (typeof view.setViewData !== "function") return;
+  const canvas = view.canvas;
+  const hadX = typeof canvas?.x === "number" && Number.isFinite(canvas.x);
+  const hadY = typeof canvas?.y === "number" && Number.isFinite(canvas.y);
+  const hadZoom = typeof canvas?.zoom === "number" && Number.isFinite(canvas.zoom);
+  const hadTx = typeof canvas?.tx === "number" && Number.isFinite(canvas.tx);
+  const hadTy = typeof canvas?.ty === "number" && Number.isFinite(canvas.ty);
+  const hadTZoom = typeof canvas?.tZoom === "number" && Number.isFinite(canvas.tZoom);
+  const vx = typeof canvas?.tx === "number" && Number.isFinite(canvas.tx) ? canvas.tx : typeof canvas?.x === "number" && Number.isFinite(canvas.x) ? canvas.x : null;
+  const vy = typeof canvas?.ty === "number" && Number.isFinite(canvas.ty) ? canvas.ty : typeof canvas?.y === "number" && Number.isFinite(canvas.y) ? canvas.y : null;
+  const vZoom = typeof canvas?.tZoom === "number" && Number.isFinite(canvas.tZoom) ? canvas.tZoom : typeof canvas?.zoom === "number" && Number.isFinite(canvas.zoom) ? canvas.zoom : null;
+  const selectedIds: string[] = [];
+  if (canvas?.selection && typeof canvas.selection[Symbol.iterator] === "function") {
+    for (const item of canvas.selection) {
+      if (typeof item?.id === "string" && item.id !== "") selectedIds.push(item.id);
+    }
+  }
+  cancelCanvasSave(view);
+  try {
+    view.setViewData(syncedText, true);
+  } catch {
+    return;
+  }
+  try {
+    if ("data" in view && typeof view.data === "string") view.data = syncedText;
+    const afterCanvas = view.canvas;
+    const history = afterCanvas?.history;
+    if (history) {
+      if (Array.isArray(history.data) && history.data.length > 1) {
+        const cur = typeof history.index === "number" && history.index >= 0 && history.index < history.data.length ? history.data[history.index] : history.data[history.data.length - 1];
+        history.data = [cur];
+        history.index = 0;
+      } else if (typeof history.index === "number" && history.index !== 0) {
+        history.index = 0;
+      }
+      if (Array.isArray(history.undos)) history.undos.length = 0;
+      if (Array.isArray(history.redos)) history.redos.length = 0;
+    }
+    if (afterCanvas && vx !== null && vy !== null && vZoom !== null) {
+      if (typeof afterCanvas.setViewport === "function") afterCanvas.setViewport(vx, vy, vZoom);
+      if (hadX) afterCanvas.x = vx;
+      if (hadY) afterCanvas.y = vy;
+      if (hadZoom) afterCanvas.zoom = vZoom;
+      if (hadTx) afterCanvas.tx = vx;
+      if (hadTy) afterCanvas.ty = vy;
+      if (hadTZoom) afterCanvas.tZoom = vZoom;
+      afterCanvas.markViewportChanged?.();
+      afterCanvas.requestFrame?.();
+    }
+    if (afterCanvas && selectedIds.length > 0) {
+      const targets: unknown[] = [];
+      for (const id of selectedIds) {
+        const hit = canvasItemById(afterCanvas.nodes, id) ?? canvasItemById(afterCanvas.edges, id);
+        if (hit !== undefined) targets.push(hit);
+      }
+      if (targets.length > 0) {
+        if (typeof afterCanvas.selectOnly === "function") {
+          afterCanvas.selectOnly(targets[0]);
+          if (typeof afterCanvas.select === "function") {
+            for (let i = 1; i < targets.length; i++) afterCanvas.select(targets[i]);
+          }
+        } else if (typeof afterCanvas.select === "function") {
+          for (const target of targets) afterCanvas.select(target);
+        }
+      }
+    }
+  } catch {
+    void 0;
+  }
+  cancelCanvasSave(view);
+}
+
+function canvasReferencesPath(view: PaneView, disk: string, targetPath: string): boolean {
+  for (const node of canvasNodes(view.canvas?.nodes)) {
+    if (node?.filePath === targetPath || node?.file?.path === targetPath) return true;
+  }
+  return disk.includes(targetPath);
+}
+
 function suppressCanvasRenameRewrite(app: App, from: string, to: string): void {
   try {
     const instance = (
@@ -324,6 +452,16 @@ function suppressCanvasRenameRewrite(app: App, from: string, to: string): void {
   }
 }
 
+const suppressedCanvasRenames = new WeakMap<PaneView, { disk: string; viewData: string }>();
+
+function matchesSuppressedCanvasRename(view: PaneView, data: string, disk: string): boolean {
+  const suppressed = suppressedCanvasRenames.get(view);
+  if (!suppressed) return false;
+  if (toLf(suppressed.disk) === toLf(disk) && sameCanvasText(data, suppressed.viewData)) return true;
+  suppressedCanvasRenames.delete(view);
+  return false;
+}
+
 function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
   if (view.editor !== undefined) return stripBom(view.editor.getValue()) !== stripBom(toLf(disk));
   const type = view.getViewType();
@@ -331,7 +469,7 @@ function viewHeld(view: PaneView, disk: string, confirmed: boolean): boolean {
   if (type === "canvas") {
     if (hasDirtyCanvasCard(view)) return true;
     const data = readViewData(view);
-    if (data !== null && toLf(data) !== toLf(disk) && !sameCanvasText(data, disk) && !matchesCanvasDiskBeforeFileRename(view, data, disk)) return true;
+    if (data !== null && toLf(data) !== toLf(disk) && !sameCanvasText(data, disk) && !matchesCanvasDiskBeforeFileRename(view, data, disk) && !matchesSuppressedCanvasRename(view, data, disk)) return true;
     if (confirmed) return false;
     return data === null || view.canvas?.isDragging === true || editingElements(view.containerEl).some(isEditingNodeActive);
   }
@@ -405,19 +543,21 @@ export function guardedVault(app: App): GuardedVault {
       if (writtenText !== null && beforeText !== null && /\.canvas$/i.test(path)) {
         const syncedText = writtenText;
         const priorText = beforeText;
-        workspace.iterateAllLeaves((leaf) => {
-          const view = leaf.view as PaneView;
-          if (view.file?.path !== path || view.getViewType() !== "canvas") return;
-          if (hasDirtyCanvasCard(view) || view.canvas?.isDragging === true || editingElements(view.containerEl).some(isEditingNodeActive)) return;
-          const afterData = readViewData(view);
-          if (afterData !== null && sameCanvasText(afterData, priorText) && !sameCanvasText(afterData, syncedText) && typeof view.setViewData === "function") {
-            try {
-              view.setViewData(syncedText, false);
-            } catch {
-              void 0;
+        if (!sameCanvasText(priorText, syncedText)) {
+          workspace.iterateAllLeaves((leaf) => {
+            const view = leaf.view as PaneView;
+            if (view.file?.path !== path || view.getViewType() !== "canvas") return;
+            if (hasDirtyCanvasCard(view) || view.canvas?.isDragging === true || editingElements(view.containerEl).some(isEditingNodeActive)) return;
+            const afterData = readViewData(view);
+            if (afterData === null || typeof view.setViewData !== "function") return;
+            const cleanPrior = sameCanvasText(afterData, priorText) || matchesCanvasDiskBeforeFileRename(view, afterData, priorText) || matchesSuppressedCanvasRename(view, afterData, priorText);
+            const cleanSynced = sameCanvasText(afterData, syncedText);
+            if (cleanPrior || cleanSynced) {
+              suppressedCanvasRenames.delete(view);
+              syncCanvasView(view, syncedText);
             }
-          }
-        });
+          });
+        }
       }
       return "written";
     },
@@ -437,10 +577,31 @@ export function guardedVault(app: App): GuardedVault {
       const file = fileAt(from);
       if (!file) return "gone";
       if (vault.getAbstractFileByPath(to) || hasVaultCaseCollision(vault, to, from)) return "exists";
+      const cleanOpenCanvases: Array<{ view: PaneView; disk: string }> = [];
+      const openCanvases: Array<{ path: string; view: PaneView }> = [];
+      workspace.iterateAllLeaves((leaf) => {
+        const view = leaf.view as PaneView;
+        if (view.getViewType() !== "canvas" || typeof view.file?.path !== "string") return;
+        openCanvases.push({ path: view.file.path, view });
+      });
+      for (const { path: canvasPath, view } of openCanvases) {
+        const canvasFile = fileAt(canvasPath);
+        if (!canvasFile) continue;
+        const disk = await readRaw(canvasFile);
+        if (disk === null || viewHeld(view, disk, false)) continue;
+        if (canvasReferencesPath(view, disk, from)) cleanOpenCanvases.push({ view, disk });
+      }
       try {
         await ensureFolder(to);
         await vault.rename(file, to);
         suppressCanvasRenameRewrite(app, from, to);
+        for (const { view, disk } of cleanOpenCanvases) {
+          cancelCanvasSave(view);
+          const afterData = readViewData(view);
+          if (afterData !== null && !sameCanvasText(afterData, disk)) {
+            suppressedCanvasRenames.set(view, { disk, viewData: afterData });
+          }
+        }
         return "renamed";
       } catch {
         return vault.getAbstractFileByPath(to) || hasVaultCaseCollision(vault, to, from) ? "exists" : "failed";

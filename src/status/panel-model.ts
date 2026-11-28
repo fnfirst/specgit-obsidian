@@ -1,4 +1,4 @@
-import { draftWorkItems, GROUP_BRANCH_PREFIX, GROUP_PRO_ONLY, inFlightEntries, isGroupBranch, isSomeoneElses, sameLogin, saverWaitingLine, type ChangeSetEntry, type GithubStatusSnapshot, type InFlightBranch, type InFlightResponse, type PrInfo, type SaverStatus } from "../shared/review-flow";
+import { draftWorkItems, GROUP_BRANCH_PREFIX, GROUP_PRO_ONLY, inFlightEntries, isGroupBranch, isSomeoneElses, sameLogin, saverWaitingLine, STATUS_GROUP_MEMBER_DELETED, type ChangeSetEntry, type GithubStatusSnapshot, type InFlightBranch, type InFlightResponse, type PrInfo, type SaverStatus } from "../shared/review-flow";
 import {
   asksYouOf,
   docItemOf,
@@ -351,8 +351,13 @@ export function vaultPanelOf(input: VaultPanelInput): VaultPanelBase {
         ? protectLearnedFacts(rawGroupFacts, null, learnedMember.path, groupLearnedPr)
         : (rawGroupFacts ?? null);
     const item = groupItemOf({ overview, entries, facts: groupFacts, rooms, viewer, now, ...(input.editingGroup === groupId(overview.id) ? { editing: true } : {}) });
-    urls.set(item.id, overview.prUrl);
-    return [info.members.length > 0 ? { ...item, hasChanges: true } : item];
+    const decoratedMembers = item.members.map((member) => {
+      if (input.vaultHas(member.id)) return member;
+      return { ...member, deletedHere: true as const, bringIn: true as const, reason: STATUS_GROUP_MEMBER_DELETED };
+    });
+    const nextItem = decoratedMembers.some((member, at) => member !== item.members[at]) ? { ...item, members: decoratedMembers } : item;
+    urls.set(nextItem.id, overview.prUrl);
+    return [info.members.length > 0 ? { ...nextItem, hasChanges: true } : nextItem];
   });
 
   const named = new Set<string>([...docs.map((one) => one.id), ...groupByPath.keys()]);

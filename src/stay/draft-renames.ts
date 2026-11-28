@@ -1,18 +1,102 @@
 import type { RenamedTarget } from "../auth/git-copy";
+import { gitBlobShaOfText } from "../changes/blob-sha";
 import { agreedOf, type CacheEntry } from "../changes/cache";
 import type { Looked } from "../changes/model";
 import { unchangedHere } from "../changes/unchanged-here";
 import { type DocumentRef, noteName } from "../mapping";
+import { sameLogin } from "../shared/review-flow";
 import type { NotePhase } from "../status";
 import type { DraftContext } from "./draft-inbound";
-import { type Draft, draftKey, follows, isClean, type LeftAlone } from "./draft-state";
+import { type Draft, draftKey, draftWriter, follows, isClean, type LeftAlone } from "./draft-state";
 import { EMPTY_BLOB, READS_PER_PASS } from "./inbound";
 import { changeKey } from "./outbound";
+import { BLANK_CANVAS_SHAS } from "./outbound-pass";
 import { rewriteCanvasFileRefsOnRename } from "./canvas-rename";
 import { DRAFT_SAID } from "./words";
 
 export const RENAME_HOLD_MS = 120_000;
 export const RENAME_MISS_TTL_MS = 5 * 60_000;
+
+const TRIVIAL_BOILERPLATE_SHAS: ReadonlySet<string> = new Set([
+  EMPTY_BLOB,
+  ...BLANK_CANVAS_SHAS,
+  ...[
+    "\n",
+    "\r\n",
+    '{"nodes": [], "edges": []}',
+    '{"nodes": [], "edges": []}\n',
+    '{\n  "nodes": [],\n  "edges": []\n}\n',
+    '{\n  "nodes": [],\n  "edges": []\n}\r\n',
+    '{\n\t"nodes": [],\n\t"edges": []\n}\n',
+    '{\n\t"nodes": [],\n\t"edges": []\n}\r\n',
+    '{\n\t"nodes":[],\n\t"edges":[]\n}',
+    '{\n\t"nodes":[],\n\t"edges":[]\n}\n',
+    "views:\n  - type: table\n    name: Table\n",
+    "views:\n  - type: table\n    name: Table",
+    "views:\r\n  - type: table\r\n    name: Table\r\n",
+    "views:\r\n  - type: table\r\n    name: Table",
+    "views: []",
+    "views: []\n",
+    "views: []\r\n",
+  ].map(gitBlobShaOfText),
+]);
+
+const isBoilerplateBlob = (blob: string | null): boolean => blob === null || TRIVIAL_BOILERPLATE_SHAS.has(blob);
+
+const isOwnDraftAuthor = (draft: Pick<Draft, "by" | "lastBy">, login: string): boolean =>
+  sameLogin(draft.by, login) && (draft.lastBy == null || sameLogin(draft.lastBy, login));
+
+export interface RetiredInboundSource {
+  readonly at: number;
+  readonly blobs: ReadonlySet<string>;
+  readonly prNumber: number | null;
+  readonly branch: string | null;
+  readonly author: string | null;
+}
+
+const prNumberFromSentTo = (sentTo: string | undefined): number | null => {
+  if (!sentTo?.startsWith("pr:")) return null;
+  const parsed = Number.parseInt(sentTo.slice(3), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const branchFromSentTo = (sentTo: string | undefined): string | null => {
+  if (!sentTo?.startsWith("branch:")) return null;
+  const branch = sentTo.slice(7);
+  return branch !== "" ? branch : null;
+};
+
+export const captureRetiredInboundSource = (
+  looked: Looked | null,
+  path: string,
+  now: number,
+  renamedDraft?: Pick<Draft, "by" | "lastBy">,
+): RetiredInboundSource => {
+  const entry = looked?.files.get(path);
+  const oldDraft = looked?.drafts?.byPath.get(path);
+  const blobs = new Set<string>();
+  for (const sha of [entry?.sha, entry?.sent, entry ? agreedOf(entry) : undefined, oldDraft?.blob]) {
+    if (typeof sha === "string" && sha !== "") blobs.add(sha);
+  }
+  const sourceDraft = oldDraft ?? renamedDraft;
+  return {
+    at: now,
+    blobs,
+    prNumber: oldDraft?.prNumber ?? prNumberFromSentTo(entry?.sentTo),
+    branch: oldDraft?.branch ?? branchFromSentTo(entry?.sentTo),
+    author: sourceDraft ? (draftWriter(sourceDraft) ?? sourceDraft.by) : null,
+  };
+};
+
+export const isFreshDraftAtRetired = (retired: RetiredInboundSource, draft: Draft | undefined): boolean => {
+  if (!draft) return false;
+  if (retired.prNumber !== null && draft.prNumber !== null && draft.prNumber !== retired.prNumber) return true;
+  if (retired.branch !== null && draft.branch !== "" && draft.branch !== retired.branch) return true;
+  const nextAuthor = draftWriter(draft) ?? draft.by;
+  if (retired.author !== null && nextAuthor !== null && !sameLogin(nextAuthor, retired.author)) return true;
+  if (draft.blob !== null && draft.blob !== "" && retired.blobs.size > 0 && !retired.blobs.has(draft.blob)) return true;
+  return false;
+};
 
 const fileStateOf = (entry: Pick<CacheEntry, "sha" | "sent" | "sentTo">): string => `${entry.sha}\0${entry.sent ?? ""}\0${entry.sentTo ?? ""}`;
 const targetKeyOf = (to: string, draft: Pick<Draft, "branch">): string => `${to}\0${draft.branch}`;
@@ -24,6 +108,20 @@ const isRemovedBy = (draft: Draft, from: string): boolean => draft.removes?.get(
 
 const isDraftOnly = (looked: Looked, byPath: ReadonlyMap<string, Draft>, from: string, entry: Pick<CacheEntry, "sent">, phase: NotePhase): boolean =>
   !looked.repo.has(from) && !byPath.has(from) && (entry.sent !== undefined || phase === "live");
+
+const isSafeByteOnlyDraftRename = (
+  looked: Looked,
+  byPath: ReadonlyMap<string, Draft>,
+  from: string,
+  entry: Pick<CacheEntry, "sent">,
+  draft: Pick<Draft, "blob" | "by" | "lastBy">,
+  login: string,
+  phase: NotePhase,
+): boolean =>
+  looked.drafts?.level === true &&
+  !isBoilerplateBlob(draft.blob) &&
+  isOwnDraftAuthor(draft, login) &&
+  isDraftOnly(looked, byPath, from, entry, phase);
 
 const bytesMatch = (entry: Pick<CacheEntry, "sha" | "sent" | "base">, blob: string | null): boolean =>
   blob !== null && blob !== EMPTY_BLOB && (entry.sha === blob || entry.sent === blob || isPublishedBytes(entry, blob));
@@ -231,10 +329,11 @@ export class DraftRenames {
     const known = this.knownRenames.get(from);
     if (known !== undefined && ports.documentFor(to)?.path !== known.path) return false;
     if (isRenamedFrom(draft, from, to)) return true;
-    if (entry.sent !== undefined && !byPath.has(from)) return true;
-    if (isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) return true;
     if (isRemovedBy(draft, from)) return draft.blob === null || bytesMatch(entry, draft.blob);
-    return (draft.blob !== null && draft.blob !== EMPTY_BLOB && entry.sent === draft.blob) || isPublishedBytes(entry, draft.blob);
+    if (draft.blob !== null && isBoilerplateBlob(draft.blob)) return false;
+    if (entry.sent !== undefined && !byPath.has(from)) return true;
+    if (isSafeByteOnlyDraftRename(looked, byPath, from, entry, draft, ports.login(), ports.phaseOf(from))) return true;
+    return draft.blob !== null && isOwnDraftAuthor(draft, ports.login()) && entry.sent === draft.blob;
   }
 
   private isRenameCandidate(looked: Looked, byPath: ReadonlyMap<string, Draft>, to: string, draft: Draft, from: string, entry: CacheEntry): boolean {
@@ -243,13 +342,44 @@ export class DraftRenames {
     return this.isRenameCandidateFollows(looked, byPath, to, draft, from, entry);
   }
 
+  private keepBothOnRename(
+    looked: Looked,
+    byPath: ReadonlyMap<string, Draft>,
+    from: string,
+    to: string,
+    entry: CacheEntry,
+    draft: Draft,
+    out: { paths: Set<string> },
+  ): void {
+    const { ports, state } = this.ctx;
+    const token = looked.repo.get(from) ?? state.data.seen?.[from] ?? draft.branch;
+    if (state.noteRenameTold(from, to, token, ports.now())) {
+      ports.notify(DRAFT_SAID.renameKept(noteName(from), noteName(to)));
+    }
+    if (!byPath.has(from)) {
+      if (entry.sent !== undefined) ports.agreed(from, null);
+      this.ctx.clearOwnBlobs?.(from);
+      this.host.forgetEnded(from);
+      this.host.holdRenamedKept(looked, from);
+      this.host.settled(from);
+      out.paths.add(from);
+    }
+  }
+
   async pair(looked: Looked, byPath: ReadonlyMap<string, Draft>): Promise<{ changed: number; paths: Set<string>; heldFrom: Set<string> }> {
     const { ports, activity, state } = this.ctx;
     const out = { changed: 0, paths: new Set<string>(), heldFrom: new Set<string>() };
     let byBytes: Map<string, Array<[string, CacheEntry]>> | null = null;
     let files: ReadonlyArray<[string, CacheEntry]> | null = null;
     let filesByBlob: Map<string, Array<[string, CacheEntry]>> | null = null;
-    let probeCandidates: ReadonlyArray<{ from: string; entry: CacheEntry; fromDoc: DocumentRef; state: string }> | null = null;
+    type ProbeCandidate = { from: string; entry: CacheEntry; fromDoc: DocumentRef; state: string };
+    let probeIndex: {
+      unlisted: ProbeCandidate[];
+      laggedByBlob: Map<string, ProbeCandidate[]>;
+      laggedByBranch: Map<string, ProbeCandidate[]>;
+      laggedByPr: Map<number, ProbeCandidate[]>;
+    } | null = null;
+    let unlistedHoldCandidates: ReadonlyArray<[string, CacheEntry]> | null = null;
     const deletedPaths = looked.deleted.length > 0 ? new Set(looked.deleted.map((gone) => gone.path)) : null;
     const allFiles = (): ReadonlyArray<[string, CacheEntry]> => (files ??= [...looked.files]);
     const indexMatches = (): Map<string, Array<[string, CacheEntry]>> => {
@@ -269,19 +399,69 @@ export class DraftRenames {
       }
       return filesByBlob;
     };
-    const getProbeCandidates = (): ReadonlyArray<{ from: string; entry: CacheEntry; fromDoc: DocumentRef; state: string }> => {
-      if (probeCandidates !== null) return probeCandidates;
-      const list: Array<{ from: string; entry: CacheEntry; fromDoc: DocumentRef; state: string }> = [];
+    const getUnlistedHoldCandidates = (): ReadonlyArray<[string, CacheEntry]> => {
+      if (unlistedHoldCandidates !== null) return unlistedHoldCandidates;
+      const list: Array<[string, CacheEntry]> = [];
+      for (const pair of allFiles()) {
+        const [from, entry] = pair;
+        if (ports.inGroup(from) || ports.documentFor(from) === null) continue;
+        if ((entry.sent !== undefined && !byPath.has(from)) || isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) {
+          list.push(pair);
+        }
+      }
+      unlistedHoldCandidates = list;
+      return list;
+    };
+    const getProbeIndex = () => {
+      if (probeIndex !== null) return probeIndex;
+      const unlisted: ProbeCandidate[] = [];
+      const laggedByBlob = new Map<string, ProbeCandidate[]>();
+      const laggedByBranch = new Map<string, ProbeCandidate[]>();
+      const laggedByPr = new Map<number, ProbeCandidate[]>();
+      const pushMap = <K,>(map: Map<K, ProbeCandidate[]>, key: K, item: ProbeCandidate): void => {
+        const list = map.get(key);
+        if (!list) map.set(key, [item]);
+        else if (list[list.length - 1] !== item) list.push(item);
+      };
       for (const [from, entry] of allFiles()) {
         if (ports.inGroup(from)) continue;
-        if (byPath.has(from) && (looked.repo.has(from) || entry.sent === undefined || (entry.sha !== entry.sent && agreedOf(entry) !== entry.sha))) continue;
+        const existingDraft = byPath.get(from);
+        if (existingDraft !== undefined) {
+          if (looked.repo.has(from) || entry.sent === undefined || (entry.sha !== entry.sent && agreedOf(entry) !== entry.sha)) continue;
+          const fromDoc = ports.documentFor(from);
+          if (!fromDoc) continue;
+          const item: ProbeCandidate = { from, entry, fromDoc, state: fileStateOf(entry) };
+          if (entry.sha !== EMPTY_BLOB) pushMap(laggedByBlob, entry.sha, item);
+          if (entry.sent !== EMPTY_BLOB) pushMap(laggedByBlob, entry.sent, item);
+          if (existingDraft.branch !== "") pushMap(laggedByBranch, existingDraft.branch, item);
+          if (existingDraft.prNumber !== null) pushMap(laggedByPr, existingDraft.prNumber, item);
+          continue;
+        }
         if (entry.sent === undefined && looked.repo.has(from)) continue;
         const fromDoc = ports.documentFor(from);
         if (!fromDoc) continue;
-        list.push({ from, entry, fromDoc, state: fileStateOf(entry) });
+        unlisted.push({ from, entry, fromDoc, state: fileStateOf(entry) });
       }
-      probeCandidates = list;
-      return list;
+      probeIndex = { unlisted, laggedByBlob, laggedByBranch, laggedByPr };
+      return probeIndex;
+    };
+    const getProbeCandidatesFor = (draft: Draft): ReadonlyArray<ProbeCandidate> => {
+      const idx = getProbeIndex();
+      const byBlob = draft.blob !== null && draft.blob !== EMPTY_BLOB ? idx.laggedByBlob.get(draft.blob) : undefined;
+      const byBranch = draft.branch !== "" ? idx.laggedByBranch.get(draft.branch) : undefined;
+      const byPr = draft.prNumber !== null ? idx.laggedByPr.get(draft.prNumber) : undefined;
+      if (!byBlob && !byBranch && !byPr) return idx.unlisted;
+      const combined: ProbeCandidate[] = [...idx.unlisted];
+      const added = new Set<string>(idx.unlisted.map((c) => c.from));
+      for (const group of [byBlob, byBranch, byPr]) {
+        if (!group) continue;
+        for (const item of group) {
+          if (added.has(item.from)) continue;
+          added.add(item.from);
+          combined.push(item);
+        }
+      }
+      return combined;
     };
     let allTargets: ReadonlyArray<string> | null = null;
     const unmatchedTargets = (): ReadonlyArray<string> =>
@@ -309,15 +489,37 @@ export class DraftRenames {
         if (!follows(draft, ports.login(), undefined, ports.policy())) return;
         let hasCandidate = false;
         let held = false;
-        for (const [candidate, candidateEntry] of looked.files) {
-          if (!this.isRenameCandidateFollows(looked, byPath, to, draft, candidate, candidateEntry)) continue;
+        const checked = new Set<string>();
+        const checkCandidate = (candidate: string, candidateEntry: CacheEntry): boolean => {
+          if (checked.has(candidate)) return true;
+          checked.add(candidate);
+          if (!this.isRenameCandidateFollows(looked, byPath, to, draft, candidate, candidateEntry)) return true;
           if (!hasCandidate) {
             hasCandidate = true;
-            if (!this.holding(to)) return;
+            if (!this.holding(to)) return false;
             held = true;
             out.paths.add(to);
           }
           if (!byPath.has(candidate)) out.heldFrom.add(candidate);
+          return true;
+        };
+        if (draft.renamedFrom !== undefined) {
+          const e = looked.files.get(draft.renamedFrom);
+          if (e && !checkCandidate(draft.renamedFrom, e)) return;
+        }
+        if (draft.removes) {
+          for (const removedFrom of draft.removes.keys()) {
+            const e = looked.files.get(removedFrom);
+            if (e && !checkCandidate(removedFrom, e)) return;
+          }
+        }
+        if (draft.blob !== null && draft.blob !== EMPTY_BLOB) {
+          for (const [candidate, candidateEntry] of indexMatches().get(draft.blob) ?? []) {
+            if (!checkCandidate(candidate, candidateEntry)) return;
+          }
+        }
+        for (const [candidate, candidateEntry] of getUnlistedHoldCandidates()) {
+          if (!checkCandidate(candidate, candidateEntry)) return;
         }
         if (!held) return;
       };
@@ -331,15 +533,24 @@ export class DraftRenames {
           ? allFiles().find((pair) => eligible(pair) && isRenamedFrom(draft, pair[0], to))
           : undefined) ??
         (draft.blob !== EMPTY_BLOB
-          ? indexMatches().get(draft.blob)?.find(([from, entry]) => eligible([from, entry]) && (isRemovedBy(draft, from) || isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))))
+          ? indexMatches()
+              .get(draft.blob)
+              ?.find(
+                ([from, entry]) =>
+                  eligible([from, entry]) &&
+                  (isRemovedBy(draft, from) || isSafeByteOnlyDraftRename(looked, byPath, from, entry, draft, ports.login(), ports.phaseOf(from))),
+              )
           : undefined);
       if (!found && ports.renamedTo && looked.drafts?.level) {
         const toDoc = ports.documentFor(to);
         if (toDoc) {
-          const resolved = this.findByRenamedTo(looked, getProbeCandidates(), to, toDoc, draft, unmatchedTargets, out.paths, askedRenames);
-          const matched = resolved instanceof Promise ? await resolved : resolved;
-          if (!this.ctx.current()) break;
-          if (matched !== null) found = matched;
+          const candidates = getProbeCandidatesFor(draft);
+          if (candidates.length > 0) {
+            const resolved = this.findByRenamedTo(looked, candidates, to, toDoc, draft, unmatchedTargets, out.paths, askedRenames);
+            const matched = resolved instanceof Promise ? await resolved : resolved;
+            if (!this.ctx.current()) break;
+            if (matched !== null) found = matched;
+          }
         }
       }
       if (!found) {
@@ -371,26 +582,19 @@ export class DraftRenames {
           if (!byPath.has(from)) out.heldFrom.add(from);
           continue;
         }
-        const token = looked.repo.get(from) ?? state.data.seen?.[from] ?? draft.branch;
-        if (state.noteRenameTold(from, to, token, ports.now())) {
-          ports.notify(DRAFT_SAID.renameKept(noteName(from), noteName(to)));
-        }
-        if (!byPath.has(from)) {
-          if (entry.sent !== undefined) ports.agreed(from, null);
-          this.ctx.clearOwnBlobs?.(from);
-          this.host.forgetEnded(from);
-          this.host.holdRenamedKept(looked, from);
-          this.host.settled(from);
-          out.paths.add(from);
-        }
+        this.keepBothOnRename(looked, byPath, from, to, entry, draft, out);
         continue;
       }
       const left = await this.host.leftAlone(looked, from, { allowLive: true });
       if (!this.ctx.current()) break;
       if (left !== null) {
-        if (left === "unsaved") this.host.deferUnsaved(from);
-        out.paths.add(to);
-        if (!byPath.has(from)) out.heldFrom.add(from);
+        if (this.holding(to)) {
+          if (left === "unsaved") this.host.deferUnsaved(from);
+          out.paths.add(to);
+          if (!byPath.has(from)) out.heldFrom.add(from);
+          continue;
+        }
+        this.keepBothOnRename(looked, byPath, from, to, entry, draft, out);
         continue;
       }
       activity.ownWrite(from, to);
@@ -417,7 +621,7 @@ export class DraftRenames {
       this.host.settled(from);
       const awaitingSent = exactBlob ? draft.blob : (entry.sent ?? entry.base ?? entry.sha);
       this.host.awaiting.set(to, { sent: awaitingSent, to: draftKey(draft), agreed: entry.sha });
-      const updatedCanvases = await rewriteCanvasFileRefsOnRename(ports.vault, activity, state, ports.now(), from, to);
+      const updatedCanvases = looked.repo.has(from) ? 0 : await rewriteCanvasFileRefsOnRename(ports.vault, activity, state, ports.now(), from, to);
       out.paths.add(from);
       out.paths.add(to);
       out.changed += 1 + updatedCanvases;
@@ -447,8 +651,8 @@ export class DraftRenames {
       if (isRenamedFrom(draft, path, to)) return true;
       const toDoc = ports.documentFor(to);
       if (fromDoc && toDoc && knownTarget !== undefined && knownTarget === toDoc.path) return true;
-      if ((isRemovedBy(draft, path) || isDraftOnly(looked, byPath, path, entry, ports.phaseOf(path))) && bytesMatch(entry, draft.blob)) return true;
-      if ((draft.blob === null || (!looked.repo.has(to) && isDraftOnly(looked, byPath, path, entry, ports.phaseOf(path)))) && (this.since.get(to) ?? now) + RENAME_HOLD_MS >= now) return true;
+      if ((isRemovedBy(draft, path) || isSafeByteOnlyDraftRename(looked, byPath, path, entry, draft, ports.login(), ports.phaseOf(path))) && bytesMatch(entry, draft.blob)) return true;
+      if ((draft.blob === null || (!looked.repo.has(to) && isSafeByteOnlyDraftRename(looked, byPath, path, entry, draft, ports.login(), ports.phaseOf(path)))) && (this.since.get(to) ?? now) + RENAME_HOLD_MS >= now) return true;
     }
     return false;
   }
@@ -468,8 +672,7 @@ export class DraftRenames {
     for (const [from, entry] of byBytes.get(at.sha) ?? []) {
       const removed = isRenamedFrom(draft, from, to) || isRemovedBy(draft, from);
       const provenDraftRename = !looked.repo.has(from) && toDoc !== null && this.knownRenames.get(from)?.path === toDoc.path;
-      if (from === to || (byPath.has(from) && !removed && !provenDraftRename) || paths.has(from) || ports.inGroup(from)) continue;
-      if (!removed && !provenDraftRename && !isDraftOnly(looked, byPath, from, entry, ports.phaseOf(from))) continue;
+      if (from === to || (!removed && !provenDraftRename) || paths.has(from) || ports.inGroup(from)) continue;
       if (entry.sent === undefined && at.sha !== draft.blob) continue;
       const fromDoc = ports.documentFor(from);
       const { clean } = isCleanRenameSource(looked, byPath, from, to, entry, draft);
@@ -485,7 +688,7 @@ export class DraftRenames {
       }
       if (!looked.repo.has(from)) ports.forgetDelete(from);
       this.host.noteRemoved(from);
-      const updatedCanvases = await rewriteCanvasFileRefsOnRename(ports.vault, activity, this.ctx.state, ports.now(), from, to);
+      const updatedCanvases = looked.repo.has(from) ? 0 : await rewriteCanvasFileRefsOnRename(ports.vault, activity, this.ctx.state, ports.now(), from, to);
       ports.agreed(from, null);
       this.ctx.clearOwnBlobs?.(from);
       this.host.forgetEnded(from);

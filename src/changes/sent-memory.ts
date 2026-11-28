@@ -134,6 +134,14 @@ export class SentMemory {
     return new SentMemory(this.host, write, this.sentText, true);
   }
 
+  get(path: string): SentRecord | null {
+    return this.sentText.get(path) ?? null;
+  }
+
+  restore(path: string, record: SentRecord): void {
+    this.sentText.set(path, record);
+  }
+
   forget(path: string): void {
     this.sentText.delete(path);
   }

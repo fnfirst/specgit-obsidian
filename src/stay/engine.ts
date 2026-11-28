@@ -8,7 +8,7 @@ import { type Draft, follows, type StayDrafts } from "./draft-state";
 import { DRAFT_SAID, STAY_SAID as SAID } from "./words";
 import type { GitObservation } from "./git-watch";
 import { StayHolds } from "./holds";
-import { Inbound } from "./inbound";
+import { Inbound, NOTE_PHASE_POLICY } from "./inbound";
 import { missingNotes } from "../changes/missing-notes";
 import { WRITES_PER_FILE } from "../changes/burst";
 import { Pace, WriteBudget } from "./limits";
@@ -186,7 +186,7 @@ export class StayConnected {
       this.typedReads.get(from)?.();
       this.typedReads.delete(from);
     }
-    if (this.ports.phaseOf(path) !== "local" && this.roomWrites.has(path)) return;
+    if (NOTE_PHASE_POLICY[this.ports.phaseOf(path)].hasLiveRoom && this.roomWrites.has(path)) return;
     const generation = this.generation;
     if (this.copying?.generation === generation && !this.copying.lower.has(path.toLowerCase())) {
       this.sooner("outbound", this.activity.quietInFor(path, from) + WAKE_PAD_MS, () => this.wakeOutbound(generation));
@@ -537,7 +537,7 @@ export class StayConnected {
     const generation = this.generation;
     const looked = this.looked;
     if (!looked || !this.ports.signedIn() || this.ports.personBusy()) return;
-    this.roomWrites.prune(looked, (path) => this.ports.phaseOf(path));
+    this.roomWrites.prune(looked, (path) => (NOTE_PHASE_POLICY[this.ports.phaseOf(path)].hasLiveRoom ? "live" : "local"));
     const { data } = this.state;
     if (data.seen === null || data.baseline === null) {
       data.baselinePending = true;
@@ -902,7 +902,7 @@ export class StayConnected {
         allowed: (row) => {
           const entry = looked.files.get(row.change.path);
           return (
-            this.ports.phaseOf(row.change.path) === "local" &&
+            NOTE_PHASE_POLICY[this.ports.phaseOf(row.change.path)].allowsStayOutbound &&
             !this.ports.disconnected(row.doc) &&
             !isBlankLocalUntitled(row.change.path, entry) &&
             !(isFreshLocalUntitled(row.change.path, entry) && looked.drafts?.byPath.has(row.change.path) === true) &&

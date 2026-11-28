@@ -10,6 +10,7 @@ import {
   STATUS_LABELS,
   STATUS_OFFLINE,
   STATUS_RETRY,
+  STATUS_ROW_MENU,
   STATUS_SLOW,
   STATUS_SELECT_ALL,
   STATUS_SEPARATE,
@@ -403,23 +404,34 @@ function Loaded({ model, host }: { model: StatusPanelModel; host: PanelHost }) {
     tips,
     menuFor: (id, anchor) => openMenu(itemsFor(id), anchor, id),
     openItems: (items, anchor, id) => openMenu(items, anchor, id),
-    memberMenuFor: (group, member, anchor) =>
-      openMenu(
-        model.readOnly
-          ? []
-          : [
+    memberMenuFor: (group, member, anchor) => {
+      if (model.readOnly) return openMenu([], anchor, memberMenuId(member));
+      const foundGroup = layout.entries.find((entry) => entry.item.kind === "group" && entry.item.id === group)?.item;
+      const foundMember = foundGroup?.kind === "group" ? foundGroup.members.find((one) => one.id === member) : undefined;
+      const items: PanelMenuItem[] = [
+        ...(foundMember?.bringIn === true
+          ? [
               {
-                label: GROUP_CARD.takeOut,
+                label: STATUS_ROW_MENU["bring-in"],
                 ...(off ? { disabled: true } : {}),
                 run: () => {
                   if (offRef.current) return;
-                  act({ type: "take-out", group, id: member });
+                  act({ type: "row", id: member, action: "bring-in" });
                 },
               },
-            ],
-        anchor,
-        memberMenuId(member),
-      ),
+            ]
+          : []),
+        {
+          label: GROUP_CARD.takeOut,
+          ...(off ? { disabled: true } : {}),
+          run: () => {
+            if (offRef.current) return;
+            act({ type: "take-out", group, id: member });
+          },
+        },
+      ];
+      openMenu(items, anchor, memberMenuId(member));
+    },
     act,
   };
 

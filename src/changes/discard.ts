@@ -21,6 +21,7 @@ export interface DiscardHost {
   readReviewsFromMap(files: readonly ChangeRow[]): Promise<ChangeRow[]>;
   inReviewOfSomeoneElse(row: ChangeRow): boolean;
   closeReviews(rows: readonly ChangeRow[], step?: string, expectPr?: number | null): Promise<{ closed: ChangeRow[]; failed: { row: ChangeRow; result: Extract<StepResult, { ok: false }> } | null }>;
+  suppressLocalDelete?<T>(path: string, run: () => Promise<T>, trashed: (result: T) => boolean): Promise<T>;
 }
 
 type Plan = Doing | { kind: "skip"; row: ChangeRow; why: SkipReason };
@@ -282,7 +283,11 @@ export class Discard {
         return null;
       }
       case "trash": {
-        if (!(await deps.vault.trash(change.path, gitBlobShaOfText(plan.mine)))) return (await deps.readText(change.path)) === plan.mine ? "held" : "changed";
+        const trash = (): Promise<boolean> => deps.vault.trash(change.path, gitBlobShaOfText(plan.mine));
+        const ok = this.host.suppressLocalDelete
+          ? await this.host.suppressLocalDelete(change.path, trash, (done) => done)
+          : await trash();
+        if (!ok) return (await deps.readText(change.path)) === plan.mine ? "held" : "changed";
         this.host.model.settledDelete(change.path);
         result.trashed++;
         this.forget(change.path);

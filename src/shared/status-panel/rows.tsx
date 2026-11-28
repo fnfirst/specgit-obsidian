@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   GROUP_CARD,
+  STATUS_GROUP_MEMBER_DELETED,
   STATUS_GROUP_MENU,
   STATUS_LABELS,
   STATUS_ROW_BUTTONS,
@@ -8,6 +9,7 @@ import {
   STATUS_TIPS,
   statusClipReason,
   statusGroupCount,
+  statusGroupMembersDeleted,
   statusShowMore,
   type StatusGroupMenuItem,
   type StatusRowMenuItem,
@@ -350,12 +352,15 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
   const checkable = !ctx.readOnly && ctx.checkables.has(group.id);
   const boxed = ctx.boxes || checkable;
   const button = !ctx.readOnly && group.button && FIX_BUTTONS.includes(group.button) ? <RowButton button={group.button} id={group.id} ctx={ctx} group {...(group.ending ? { ending: true } : {})} /> : null;
+  const deletedMembers = group.members.filter((member) => member.deletedHere);
+  const deletedSummary = deletedMembers.length > 0 ? statusGroupMembersDeleted(deletedMembers.length) : null;
+  const hasSecondLine = Boolean(button || deletedSummary);
   const listId = `${group.id}-members`;
   const count = statusGroupCount(group.members.length, ctx.noun);
   const groupMore = groupMenuItems(group, ctx).length > 0 ? <MoreButton id={group.id} name={group.name} ctx={ctx} /> : null;
   return (
     <li className={cx("sp-group", entry.open && "sp-row-open", flashClass(group.id, ctx))} data-row-id={group.id}>
-      <div className={cx("sp-row sp-group-row", button && "sp-row-two")}>
+      <div className={cx("sp-row sp-group-row", hasSecondLine && "sp-row-two")}>
         <div className={cx("sp-line", group.editing && "sp-row-editing")}>
           <Check item={group} ctx={ctx} />
           {hasMembers ? (
@@ -380,15 +385,21 @@ export function GroupCard({ entry, ctx, lane }: { entry: Entry; ctx: Ctx; lane: 
           )}
           <Edge when={group.when} more={groupMore} open={ctx.openMenuId === group.id} />
         </div>
-        {button ? <div className={cx("sp-line sp-line-2", !boxed && "sp-line-flush")}>{button}</div> : null}
+        {hasSecondLine ? (
+          <div className={cx("sp-line sp-line-2", !boxed && "sp-line-flush")}>
+            {deletedSummary ? <span className="sp-reason">{deletedSummary}</span> : null}
+            {button}
+          </div>
+        ) : null}
       </div>
       {open && hasMembers ? (
         <ul className={cx("sp-members", !boxed && "sp-members-flush")} id={listId} aria-label={STATUS_LABELS.files(group.name)}>
           {group.members.slice(0, shown).map((member) => (
-            <li key={member.id} className="sp-member">
+            <li key={member.id} className={cx("sp-member", member.deletedHere && "sp-member-deleted")}>
               <button type="button" className="sp-name-link" onClick={() => ctx.act({ type: "row", id: member.id, action: "open" })}>
                 {member.name}
               </button>
+              {member.deletedHere ? <span className="sp-member-note">{statusClipReason(member.reason ?? STATUS_GROUP_MEMBER_DELETED)}</span> : null}
               {!ctx.readOnly ? <MoreButton id={memberMenuId(member.id)} name={member.name} ctx={ctx} disabled={buttonsOff(ctx)} open={(anchor) => ctx.memberMenuFor(group.id, member.id, anchor)} /> : null}
             </li>
           ))}
